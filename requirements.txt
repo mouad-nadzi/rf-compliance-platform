@@ -1,0 +1,48 @@
+# requirements.txt — Python dependencies for the OCR + Q&A pipeline.
+#
+# This is the single source of truth for all standard Python packages.
+# Used by setup.sh (pip install -r requirements.txt) and installable
+# directly with: pip install -r requirements.txt
+#
+# NOTE: Special packages requiring custom wheel index URLs:
+#   - torch / torchvision  → requires --index-url https://download.pytorch.org/whl/cu118
+#   - llama-cpp-python     → Colab only: install the prebuilt v0.3.34-cu122 GitHub release wheel
+#                            (https://github.com/abetlen/llama-cpp-python/releases) — do NOT use
+#                            --extra-index-url (no cp312 binary on the abetlen pip index for 0.3.34;
+#                            it falls back to a ~15 min source compile).
+#   - flash-attn           → requires --no-build-isolation
+
+# ── Core Transformers Stack ──────────────────────────────────────────────────
+# GLM-OCR requires transformers>=5.0 (native AutoModelForImageTextToText backend,
+# see engines/ocr/glm_ocr.py). vLLM was removed 2026-08-20 — no engine imports it.
+transformers>=5.0
+tokenizers>=0.20.3
+accelerate
+huggingface_hub
+tiktoken
+verovio
+
+# ── DeepSeek-OCR-2 & Vision dependencies ──────────────────────────────────
+einops
+addict
+easydict
+bitsandbytes
+
+# ── Document Processing ─────────────────────────────────────────────────────
+pdf2image
+Pillow
+
+# ── API & Web ────────────────────────────────────────────────────────────────
+fastapi
+uvicorn
+python-multipart
+httpx
+streamlit
+
+# ── Database & Vector Storage ────────────────────────────────────────────────
+psycopg2-binary
+sqlalchemy
+pgvector
+sentence-transformers
+
+

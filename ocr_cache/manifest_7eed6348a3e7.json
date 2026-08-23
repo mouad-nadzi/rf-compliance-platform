@@ -1,0 +1,22 @@
+{
+  "batch_id": "7eed6348a3e7",
+  "phase": "done",
+  "total": 2,
+  "ocr_done": 2,
+  "extract_done": 2,
+  "failed": 0,
+  "skipped": 0,
+  "current_file": null,
+  "files": {
+    "AR_IM3C_ENACOM_ID_H-22392__04.04.2028_.pdf": {
+      "status": "extracted",
+      "ocr_ok": true,
+      "certificate_id": "cert_4d324ce82fe9"
+    },
+    "AR_SD1A_ENACOM_H-31977__24.04.2028_.pdf": {
+      "status": "extracted",
+      "ocr_ok": true,
+      "certificate_id": "cert_7280a87a6bc5"
+    }
+  }
+}

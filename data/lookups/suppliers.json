@@ -1,0 +1,352 @@
+[
+  {
+    "canonical_supplier": "VALEO",
+    "aliases": [
+      "Valeo",
+      "Valeo Comfort and Driving Assistance",
+      "Valeo Comfort and Driving Assistance S.A.S.",
+      "Valeo Comfort & Driving Assistance",
+      "Valeo Auto Eletric"
+    ]
+  },
+  {
+    "canonical_supplier": "BOSCH",
+    "aliases": [
+      "Bosch",
+      "Robert Bosch GmbH",
+      "Bosch Automotive",
+      "Bosch Car Multimedia",
+      "BOSCH"
+    ]
+  },
+  {
+    "canonical_supplier": "APTIV",
+    "aliases": [
+      "Aptiv",
+      "Aptiv Services",
+      "Aptiv Services, Deutschland GmbH",
+      "Aptiv Services Deutschland GmbH",
+      "Delphi"
+    ]
+  },
+  {
+    "canonical_supplier": "FIH",
+    "aliases": [
+      "FIH Mobile Limited",
+      "FIH Co., Ltd.",
+      "Foxconn",
+      "FIH"
+    ]
+  },
+  {
+    "canonical_supplier": "CONTINENTAL",
+    "aliases": [
+      "Continental",
+      "Continental Automotive",
+      "Continental Automotive GmbH",
+      "Continental Teves AG & Co. oHG",
+      "Conti"
+    ]
+  },
+  {
+    "canonical_supplier": "DENSO",
+    "aliases": [
+      "Denso",
+      "Denso Corporation",
+      "DENSO WAVE",
+      "Denso International"
+    ]
+  },
+  {
+    "canonical_supplier": "MARELLI",
+    "aliases": [
+      "Marelli",
+      "Magneti Marelli",
+      "Magneti Marelli S.p.A.",
+      "Marelli Europe S.p.A."
+    ]
+  },
+  {
+    "canonical_supplier": "HARMAN",
+    "aliases": [
+      "Harman",
+      "Harman International",
+      "Harman International Industries",
+      "Harman Becker",
+      "Harman Becker Automotive Systems"
+    ]
+  },
+  {
+    "canonical_supplier": "ZF",
+    "aliases": [
+      "ZF Group",
+      "ZF Friedrichshafen AG",
+      "ZF TRW",
+      "TRW Automotive"
+    ]
+  },
+  {
+    "canonical_supplier": "MOBIS",
+    "aliases": [
+      "Mobis",
+      "Hyundai Mobis",
+      "Hyundai Mobis Co., Ltd.",
+      "Hyundai MOBIS"
+    ]
+  },
+  {
+    "canonical_supplier": "FORVIA",
+    "aliases": [
+      "Forvia",
+      "Faurecia",
+      "Hella",
+      "HELLA GmbH & Co. KGaA",
+      "Faurecia Automotive"
+    ]
+  },
+  {
+    "canonical_supplier": "PANASONIC",
+    "aliases": [
+      "Panasonic",
+      "Panasonic Automotive",
+      "Panasonic Automotive Systems",
+      "Panasonic Corporation"
+    ]
+  },
+  {
+    "canonical_supplier": "VISTEON",
+    "aliases": [
+      "Visteon",
+      "Visteon Corporation",
+      "Visteon Electronics"
+    ]
+  },
+  {
+    "canonical_supplier": "MITSUBISHI ELECTRIC",
+    "aliases": [
+      "Mitsubishi Electric",
+      "Mitsubishi Electric Corporation",
+      "MELCO"
+    ]
+  },
+  {
+    "canonical_supplier": "LG ELECTRONICS",
+    "aliases": [
+      "LG",
+      "LG Electronics Inc.",
+      "LG Vehicle Component Solutions",
+      "LGE"
+    ]
+  },
+  {
+    "canonical_supplier": "ALPS ALPINE",
+    "aliases": [
+      "Alps Alpine",
+      "Alpine Electronics",
+      "Alps Electric",
+      "Alpine"
+    ]
+  },
+  {
+    "canonical_supplier": "HITACHI ASTEMO",
+    "aliases": [
+      "Hitachi",
+      "Hitachi Astemo",
+      "Hitachi Automotive Systems",
+      "Astemo",
+      "Keihin",
+      "Showamu",
+      "Nissin Kogyo"
+    ]
+  },
+  {
+    "canonical_supplier": "AISIN",
+    "aliases": [
+      "Aisin",
+      "Aisin Seiki",
+      "Aisin Corporation",
+      "AW Europe"
+    ]
+  },
+  {
+    "canonical_supplier": "DESAY SV",
+    "aliases": [
+      "Desay SV",
+      "Desay SV Automotive",
+      "Huizhou Desay SV Automotive Co., Ltd.",
+      "Desay"
+    ]
+  },
+  {
+    "canonical_supplier": "COBO",
+    "aliases": [
+      "Cobo",
+      "Cobo Group",
+      "C.O.B.O. S.p.A.",
+      "COBO SPA"
+    ]
+  },
+  {
+    "canonical_supplier": "KATEK",
+    "aliases": [
+      "KATEK",
+      "KATEK Group",
+      "Katek SE",
+      "Steca Elektronik"
+    ]
+  },
+  {
+    "canonical_supplier": "KOSTAL",
+    "aliases": [
+      "Kostal",
+      "Leopold Kostal GmbH & Co. KG",
+      "Kostal Automobil Elektrik"
+    ]
+  },
+  {
+    "canonical_supplier": "PEIKKO",
+    "aliases": [
+      "Peikko",
+      "Peikko Group"
+    ]
+  },
+  {
+    "canonical_supplier": "MAGNA",
+    "aliases": [
+      "Magna",
+      "Magna International",
+      "Magna Electronics",
+      "Magna Steyr"
+    ]
+  },
+  {
+    "canonical_supplier": "GENTEX",
+    "aliases": [
+      "Gentex",
+      "Gentex Corporation",
+      "GNTX"
+    ]
+  },
+  {
+    "canonical_supplier": "LEAR",
+    "aliases": [
+      "Lear",
+      "Lear Corporation",
+      "Lear Electronics"
+    ]
+  },
+  {
+    "canonical_supplier": "PIONNER",
+    "aliases": [
+      "Pioneer",
+      "Pioneer Corporation",
+      "Pioneer Automotive Electronics"
+    ]
+  },
+  {
+    "canonical_supplier": "CLARION",
+    "aliases": [
+      "Clarion",
+      "Clarion Co., Ltd.",
+      "Faurecia Clarion Electronics"
+    ]
+  },
+  {
+    "canonical_supplier": "NIDEC",
+    "aliases": [
+      "Nidec",
+      "Nidec Corporation",
+      "Nidec Elesys"
+    ]
+  },
+  {
+    "canonical_supplier": "SUMITOMO ELECTRIC",
+    "aliases": [
+      "Sumitomo",
+      "Sumitomo Electric Industries",
+      "SEI",
+      "Sumitomo Wiring Systems"
+    ]
+  },
+  {
+    "canonical_supplier": "YAZAKI",
+    "aliases": [
+      "Yazaki",
+      "Yazaki Corporation",
+      "Yazaki North America"
+    ]
+  },
+  {
+    "canonical_supplier": "BROSE",
+    "aliases": [
+      "Brose",
+      "Brose Fahrzeugteile",
+      "Brose Group"
+    ]
+  },
+  {
+    "canonical_supplier": "HUMAX",
+    "aliases": [
+      "Humax",
+      "Humax Automotive",
+      "Humax Co., Ltd."
+    ]
+  },
+  {
+    "canonical_supplier": "HUF",
+    "aliases": [
+      "Huf",
+      "Huf Hülsbeck & Fürst",
+      "Huf Group",
+      "Huf Hülsbeck & Fürst GmbH & Co. KG"
+    ]
+  },
+  {
+    "canonical_supplier": "MARQUARDT",
+    "aliases": [
+      "Marquardt",
+      "Marquardt GmbH",
+      "Marquardt Switches"
+    ]
+  },
+  {
+    "canonical_supplier": "WEBASTO",
+    "aliases": [
+      "Webasto",
+      "Webasto SE",
+      "Webasto Thermo & Comfort"
+    ]
+  },
+  {
+    "canonical_supplier": "EBERSPAECHER",
+    "aliases": [
+      "Eberspaecher",
+      "Eberspächer",
+      "Eberspächer Gruppe GmbH & Co. KG"
+    ]
+  },
+  {
+    "canonical_supplier": "BITRON",
+    "aliases": [
+      "Bitron",
+      "Bitron Industrie",
+      "Bitron Group"
+    ]
+  },
+  {
+    "canonical_supplier": "KUERZ",
+    "aliases": [
+      "Kuerz",
+      "Kürz",
+      "Kürz GmbH"
+    ]
+  },
+  {
+    "canonical_supplier": "SST",
+    "aliases": [
+      "SST",
+      "Silicon Storage Technology",
+      "SST Sensing"
+    ]
+  }
+]

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "colab-mcp": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "git+https://github.com/googlecolab/colab-mcp"
+      ],
+      "env": {
+        "COLAB_AUTHUSER": "1"
+      },
+      "enabled": true
+    }
+  }
+}

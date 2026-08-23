@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RF Compliance Platform</title>
+  <!-- React + Babel CDN (no build step needed) -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: #f0f4f9;
+      color: #1e293b;
+    }
+    .layout { display: flex; min-height: 100vh; }
+    
+    /* ── Left Nav Rail ── */
+    .nav-rail {
+      width: 200px;
+      background: #0f172a;
+      border-radius: 0 16px 16px 0;
+      padding: 1.5rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      box-shadow: 4px 0 20px rgba(15,23,42,0.15);
+    }
+    .nav-brand {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding-bottom: 1.25rem; border-bottom: 1px solid #1e293b;
+      margin-bottom: 1rem;
+    }
+    .nav-logo {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-weight: 800; font-size: 0.9rem;
+      box-shadow: 0 4px 10px rgba(37,99,235,0.4);
+    }
+    .nav-title { color: #fff; font-weight: 700; font-size: 0.9rem; }
+    .nav-sub { color: #64748b; font-size: 0.7rem; }
+    .nav-label { color: #64748b; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; padding: 0 0.25rem; margin-bottom: 0.25rem; }
+    .nav-btn {
+      width: 100%; padding: 0.65rem 0.75rem;
+      border: none; border-radius: 10px;
+      font-size: 0.88rem; font-weight: 600;
+      cursor: pointer; text-align: left;
+      transition: all 0.18s ease;
+    }
+    .nav-btn.active {
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      color: #fff; box-shadow: 0 4px 12px rgba(37,99,235,0.35);
+    }
+    .nav-btn:not(.active) {
+      background: transparent; color: #94a3b8;
+    }
+    .nav-btn:not(.active):hover { background: #1e293b; color: #fff; }
+    .nav-divider { border: none; border-top: 1px solid #1e293b; margin: 0.75rem 0; }
+    .status-pill {
+      margin-top: auto; background: #1e293b; border-radius: 8px; padding: 0.6rem 0.75rem;
+    }
+    .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #22c55e; margin-right: 0.4rem; }
+    .status-text { font-size: 0.75rem; color: #94a3b8; font-weight: 600; }
+
+    /* ── Main Content Area ── */
+    .main-area { flex: 1; padding: 1.5rem; overflow-y: auto; }
+    .header-bar {
+      background: #fff; border-radius: 14px; padding: 0.9rem 1.5rem;
+      display: flex; justify-content: space-between; align-items: center;
+      border: 1px solid #e2e8f0; box-shadow: 0 2px 10px rgba(15,23,42,0.03);
+      margin-bottom: 1.25rem;
+    }
+    .breadcrumb-sub { font-size: 0.72rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
+    .breadcrumb-title { font-size: 1.15rem; font-weight: 700; color: #0f172a; }
+    .badge-connected {
+      background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;
+      padding: 0.35rem 0.85rem; border-radius: 20px; font-size: 0.78rem; font-weight: 600;
+      display: flex; align-items: center; gap: 0.4rem;
+    }
+
+    /* ── KPI Cards ── */
+    .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.25rem; }
+    .kpi-card { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 15px rgba(15,23,42,0.03); }
+    .kpi-hdr { background: #0f172a; color: #fff; padding: 0.6rem 1rem; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; display: flex; justify-content: space-between; align-items: center; }
+    .kpi-body { padding: 1rem; display: flex; justify-content: space-between; align-items: flex-end; }
+    .kpi-val { font-size: 1.6rem; font-weight: 800; color: #0f172a; }
+    .badge-green { background: #dcfce7; color: #166534; padding: 0.2rem 0.5rem; border-radius: 10px; font-size: 0.72rem; font-weight: 600; }
+    .badge-blue  { background: #dbeafe; color: #1e40af; padding: 0.2rem 0.5rem; border-radius: 10px; font-size: 0.72rem; font-weight: 600; }
+
+    /* ── Content Card ── */
+    .content-card { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; padding: 1.5rem; box-shadow: 0 4px 20px rgba(15,23,42,0.03); }
+    .section-title { font-size: 1.05rem; font-weight: 700; color: #0f172a; margin-bottom: 0.4rem; }
+    .section-caption { font-size: 0.8rem; color: #64748b; margin-bottom: 1.25rem; }
+    
+    /* ── Upload / Chat / DB ── */
+    .upload-area { border: 2px dashed #cbd5e1; border-radius: 12px; padding: 2.5rem; text-align: center; color: #94a3b8; margin-bottom: 1rem; cursor: pointer; transition: 0.18s; }
+    .upload-area:hover { border-color: #2563eb; color: #2563eb; background: #eff6ff; }
+    .btn-primary { background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #fff; border: none; border-radius: 10px; padding: 0.7rem 1.5rem; font-weight: 600; font-size: 0.88rem; cursor: pointer; transition: 0.18s; box-shadow: 0 4px 12px rgba(37,99,235,0.3); width: 100%; }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(37,99,235,0.4); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    
+    /* Chat */
+    .chat-input-row { display: flex; gap: 0.75rem; margin-bottom: 1rem; }
+    .chat-input { flex: 1; padding: 0.75rem 1rem; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 0.88rem; outline: none; }
+    .chat-input:focus { border-color: #2563eb; }
+    .chat-btn { background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #fff; border: none; border-radius: 10px; padding: 0.75rem 1.25rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    .msg { padding: 0.9rem 1rem; border-radius: 12px; margin-bottom: 0.75rem; border: 1px solid #e2e8f0; font-size: 0.88rem; line-height: 1.5; }
+    .msg.user { background: #eff6ff; border-color: #bfdbfe; }
+    .msg.assistant { background: #fff; }
+    .msg-route { font-size: 0.75rem; font-weight: 700; color: #2563eb; margin-bottom: 0.4rem; }
+    
+    /* Progress */
+    .progress-bar { height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin: 0.75rem 0; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #2563eb, #60a5fa); border-radius: 3px; transition: width 0.3s ease; }
+    .phase-msg { font-size: 0.82rem; color: #64748b; }
+    
+    /* Table */
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    th { background: #0f172a; color: #fff; padding: 0.65rem 1rem; text-align: left; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px; }
+    td { padding: 0.65rem 1rem; border-bottom: 1px solid #f1f5f9; }
+    tr:hover td { background: #f8fafc; }
+    
+    /* Alert */
+    .alert-info { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.82rem; margin-bottom: 1rem; }
+    .alert-success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.82rem; margin-bottom: 1rem; }
+    .alert-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.82rem; margin-bottom: 1rem; }
+
+    /* DB action buttons row */
+    .action-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; margin-bottom: 1.25rem; }
+    .btn-secondary { background: #fff; color: #1e293b; border: 1px solid #e2e8f0; border-radius: 10px; padding: 0.6rem 0.75rem; font-weight: 600; font-size: 0.82rem; cursor: pointer; transition: 0.18s; }
+    .btn-secondary:hover { background: #f8fafc; border-color: #cbd5e1; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+// ──────────────────────────────────────────────────────────────────────────────
+// Configuration — set your Cloudflare tunnel URL here when running in Colab
+// ──────────────────────────────────────────────────────────────────────────────
+const API_BASE = window.API_BASE_URL || "http://localhost:8000";
+
+const { useState, useEffect } = React;
+
+function KPICard({ title, value, badge, badgeClass, icon }) {
+  return (
+    <div className="kpi-card">
+      <div className="kpi-hdr"><span>{title}</span><span>{icon}</span></div>
+      <div className="kpi-body">
+        <div className="kpi-val">{value}</div>
+        <span className={badgeClass}>{badge}</span>
+      </div>
+    </div>
+  );
+}
+
+function IngestionPage({ apiBase, certs, setCerts }) {
+  const [files, setFiles] = useState([]);
+  const [progress, setProgress] = useState(0);
+  const [phase, setPhase] = useState("");
+  const [status, setStatus] = useState("idle");
+
+  const handleUpload = async () => {
+    if (!files.length) return;
+    setStatus("running"); setProgress(0);
+    const fd = new FormData();
+    for (const f of files) fd.append("files", f);
+    try {
+      const r = await fetch(`${apiBase}/api/v1/batch/ingest`, { method: "POST", body: fd });
+      const data = await r.json();
+      const batchId = data.batch_id;
+      let done = false;
+      while (!done) {
+        await new Promise(res => setTimeout(res, 2500));
+        const s = await fetch(`${apiBase}/api/v1/batch/status/${batchId}`).then(r => r.json());
+        const total = s.total || files.length;
+        const units = (s.ocr_done||0) + (s.extract_done||0) + 2*(s.skipped||0);
+        setProgress(Math.min(units / (2*total) * 100, 100));
+        if (s.phase === "ocr") setPhase(`Phase 1/2 — OCR (${s.ocr_done}/${total}) ${s.current_file||""}`);
+        else if (s.phase === "extract") setPhase(`Phase 2/2 — Extraction (${s.extract_done}/${total}) ${s.current_file||""}`);
+        else if (s.phase === "done") { setPhase(`✅ Complete — ${s.extract_done} extracted, ${s.skipped} skipped`); done = true; setStatus("done"); }
+        else if (s.phase === "error") { setPhase(`❌ Error: ${s.error}`); done = true; setStatus("error"); }
+      }
+      const certsResp = await fetch(`${apiBase}/api/v1/certificates?batch_id=${batchId}`).then(r => r.json());
+      setCerts(certsResp.certificates || []);
+    } catch (e) { setPhase(`Error: ${e.message}`); setStatus("error"); }
+  };
+
+  return (
+    <div className="content-card">
+      <div className="section-title">Upload Certificates & Folders</div>
+      <div className="section-caption">Supported formats: PDF, PNG, JPG, JPEG or ZIP archives containing nested folders</div>
+      <label>
+        <div className="upload-area">
+          📁 Click to select files, or drag & drop<br/>
+          <small>PDF · PNG · JPG · JPEG · ZIP</small>
+          {files.length > 0 && <div style={{marginTop:"0.5rem",color:"#2563eb",fontWeight:600}}>{files.length} file(s) selected</div>}
+        </div>
+        <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.zip" style={{display:"none"}} onChange={e => setFiles([...e.target.files])} />
+      </label>
+      <button className="btn-primary" onClick={handleUpload} disabled={!files.length || status==="running"}>
+        {status === "running" ? "Processing..." : "🚀 Process Batch Ingestion"}
+      </button>
+      {phase && (
+        <div style={{marginTop:"0.75rem"}}>
+          <div className="progress-bar"><div className="progress-fill" style={{width:`${progress}%`}}></div></div>
+          <div className="phase-msg">{phase}</div>
+        </div>
+      )}
+      {certs.length > 0 && (
+        <div style={{marginTop:"1.5rem"}}>
+          <div className="section-title" style={{marginBottom:"0.75rem"}}>Extracted Certificate Data</div>
+          <table>
+            <thead><tr><th>Component</th><th>Supplier</th><th>Country</th><th>Cert No.</th><th>Authority</th><th>Issue Date</th><th>Exp Date</th></tr></thead>
+            <tbody>{certs.map((c,i) => (
+              <tr key={i}><td>{c.component||"—"}</td><td>{c.supplier||"—"}</td><td>{c.country||"—"}</td><td>{c.certif_number||"—"}</td><td>{c.authority||"—"}</td><td>{c.issue_date||"—"}</td><td>{c.exp_date||"—"}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChatPage({ apiBase }) {
+  const [history, setHistory] = useState([]);
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const send = async () => {
+    if (!query.trim() || loading) return;
+    const q = query; setQuery(""); setLoading(true);
+    setHistory(h => [{ role:"user", content:q }, ...h]);
+    try {
+      const r = await fetch(`${apiBase}/api/v1/chat`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({query:q}) });
+      const d = await r.json();
+      setHistory(h => [{ role:"assistant", content:d.answer, intent:d.intent, latency:d.latency_ms, sources:d.sources||[] }, ...h]);
+    } catch(e) { setHistory(h => [{ role:"assistant", content:`Error: ${e.message}` }, ...h]); }
+    setLoading(false);
+  };
+  const routeLabel = (intent) => {
+    if (intent==="METADATA_QUERY") return "🔵 SQL Relational DB Path";
+    if (intent==="HYBRID_QUERY") return "🟣 Dual-Path Hybrid (SQL + Vector)";
+    return "🟢 Hybrid Vector RAG (Dense + Sparse RRF)";
+  };
+  return (
+    <div className="content-card">
+      <div className="section-title">Smart Compliance Q&A</div>
+      <div className="section-caption">Ask queries against structured SQL database & un-structured document vectors.</div>
+      <div className="chat-input-row">
+        <input className="chat-input" value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()} placeholder="e.g., 'Which certificates expire in 2026?'" />
+        <button className="chat-btn" onClick={send} disabled={loading}>{loading?"...":"Send"}</button>
+      </div>
+      <hr style={{borderColor:"#f1f5f9",marginBottom:"1rem"}}/>
+      {history.map((m,i) => (
+        <div key={i} className={`msg ${m.role}`}>
+          {m.role==="assistant" && m.intent && <div className="msg-route">{routeLabel(m.intent)} | {(m.latency||0).toFixed(1)} ms</div>}
+          <div style={{whiteSpace:"pre-wrap"}}>{m.content}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DatabasePage({ apiBase }) {
+  const [certs, setCerts] = useState([]);
+  const [msg, setMsg] = useState(null);
+  const load = async () => {
+    try {
+      const r = await fetch(`${apiBase}/api/v1/certificates`).then(r=>r.json());
+      setCerts(r.certificates||[]);
+    } catch(e) { setMsg({type:"error",text:e.message}); }
+  };
+  useEffect(()=>{ load(); },[]);
+  const dedup = async () => {
+    const r = await fetch(`${apiBase}/api/v1/certificates/deduplicate`,{method:"POST"}).then(r=>r.json());
+    setMsg({type:"success",text:`Removed ${r.duplicates_removed||0} duplicate(s).`});
+    load();
+  };
+  return (
+    <div className="content-card">
+      <div className="section-title">Compliance Database Records</div>
+      <div className="section-caption">Inspect, restore, export, or modify certificate database records.</div>
+      {msg && <div className={`alert-${msg.type}`}>{msg.text}</div>}
+      <div className="action-row">
+        <button className="btn-secondary" onClick={load}>🔄 Refresh</button>
+        <button className="btn-secondary">📥 Restore SQL</button>
+        <button className="btn-secondary">📤 Export SQL</button>
+        <button className="btn-secondary" onClick={dedup}>🧹 Clean Duplicates</button>
+      </div>
+      <table>
+        <thead><tr><th>Cert ID</th><th>File</th><th>Component</th><th>Supplier</th><th>Country</th><th>Cert No.</th><th>Authority</th><th>Issue</th><th>Exp</th></tr></thead>
+        <tbody>{certs.length===0
+          ? <tr><td colSpan={9} style={{textAlign:"center",color:"#94a3b8",padding:"2rem"}}>No certificates in database.</td></tr>
+          : certs.map((c,i)=>(<tr key={i}><td style={{fontFamily:"monospace",fontSize:"0.75rem"}}>{(c.certificate_id||"").slice(0,14)}</td><td>{c.file_name||"—"}</td><td>{c.component||"—"}</td><td>{c.supplier||"—"}</td><td>{c.country||"—"}</td><td>{c.certif_number||"—"}</td><td>{c.authority||"—"}</td><td>{c.issue_date||"—"}</td><td>{c.exp_date||"—"}</td></tr>))
+        }</tbody>
+      </table>
+    </div>
+  );
+}
+
+function App() {
+  const [page, setPage] = useState("ingestion");
+  const [certs, setCerts] = useState([]);
+  const [apiStatus, setApiStatus] = useState("checking...");
+  const [totalCerts, setTotalCerts] = useState(0);
+  useEffect(() => {
+    fetch(`${API_BASE}/`).then(r=>r.json()).then(d=>{ setApiStatus(d.status==="online"?"Connected":"Error"); }).catch(()=>setApiStatus("Disconnected"));
+    fetch(`${API_BASE}/api/v1/certificates`).then(r=>r.json()).then(d=>{ setTotalCerts((d.certificates||[]).length); }).catch(()=>{});
+  }, []);
+  const pages = {
+    ingestion: { label:"DOCUMENT INGESTION", sub:"Batch PDF/ZIP Extraction Pipeline" },
+    chat:      { label:"RAG Q&A CHAT",       sub:"Hybrid SQL + Vector Search Engine" },
+    database:  { label:"COMPLIANCE DATABASE", sub:"Certificate Records & Management" }
+  };
+  return (
+    <div className="layout">
+      <nav className="nav-rail">
+        <div>
+          <div className="nav-brand">
+            <div className="nav-logo">RF</div>
+            <div><div className="nav-title">COMPLIANCE</div><div className="nav-sub">Platform v2.0</div></div>
+          </div>
+          <div className="nav-label">PAGES</div>
+          {[["ingestion","📥 Ingestion"],["chat","💬 Q&A Chat"],["database","📊 Database"]].map(([k,label])=>(
+            <button key={k} className={`nav-btn ${page===k?"active":""}`} onClick={()=>setPage(k)}>{label}</button>
+          ))}
+        </div>
+        <div>
+          <hr className="nav-divider"/>
+          <div className="status-pill">
+            <span className="status-dot"></span>
+            <span className="status-text">API: {apiStatus}</span>
+          </div>
+        </div>
+      </nav>
+      <main className="main-area">
+        <div className="header-bar">
+          <div>
+            <div className="breadcrumb-sub">HOME › {pages[page]?.label}</div>
+            <div className="breadcrumb-title">{pages[page]?.label}</div>
+          </div>
+          <div className="badge-connected">
+            <span style={{display:"inline-block",width:"7px",height:"7px",background:"#22c55e",borderRadius:"50%"}}></span>
+            API {apiStatus}
+          </div>
+        </div>
+        <div className="kpi-row">
+          <KPICard title="Total Certs" value={totalCerts} badge="+ SQL Active" badgeClass="badge-green" icon="📊"/>
+          <KPICard title="Indexed Chunks" value={certs.length} badge="RAG Chunks" badgeClass="badge-blue" icon="⚡"/>
+          <KPICard title="System Health" value="100%" badge="Operational" badgeClass="badge-green" icon="🛡️"/>
+          <KPICard title="Engine Mode" value="T4 GPU" badge="FastAPI" badgeClass="badge-blue" icon="🚀"/>
+        </div>
+        {page==="ingestion" && <IngestionPage apiBase={API_BASE} certs={certs} setCerts={setCerts}/>}
+        {page==="chat"      && <ChatPage apiBase={API_BASE}/>}
+        {page==="database"  && <DatabasePage apiBase={API_BASE}/>}
+      </main>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App/>);
+</script>
+</body>
+</html>
