@@ -34,6 +34,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-rf_certificates}
     volumes:
+      - .:/app
       - ./data/lookups:/app/data/lookups
       - ./data/uploads:/app/batch_uploads
       - ./data/ocr_cache:/app/ocr_cache
