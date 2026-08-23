@@ -23,7 +23,9 @@ RUN pip3 install --no-cache-dir -U \
     --index-url https://download.pytorch.org/whl/cu118
 
 # 4. Install llama-cpp-python with full CUDA hardware acceleration
-RUN CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip3 install llama-cpp-python==0.3.34
+# Install pre-compiled llama-cpp-python CUDA wheel
+RUN pip3 install --no-cache-dir \
+    "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-cu122/llama_cpp_python-0.3.34-py3-none-manylinux_2_35_x86_64.whl"
 
 # 5. Install Transformers & rest of requirements.txt
 RUN pip3 install --no-cache-dir transformers==5.15.1
