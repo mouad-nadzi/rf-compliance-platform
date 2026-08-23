@@ -3,13 +3,16 @@ FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
 # Prevent interactive prompts during apt installations
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Python 3.10 and required system packages
+# Install Python 3.10 and required system packages (including poppler-utils)
 RUN apt-get update && apt-get install -y \
     python3.10 \
     python3.10-venv \
     python3.10-dev \
     python3-pip \
     postgresql-client \
+    poppler-utils \
+    libpq-dev \
+    gcc \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
