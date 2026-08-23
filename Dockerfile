@@ -1,45 +1,42 @@
 FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
 
-# Prevent interactive prompts during apt installations
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install Python 3.10 and required system packages (including poppler-utils)
-RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3.10-venv \
-    python3.10-dev \
+# 1. System dependencies (poppler-utils, postgres client headers, gcc)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
-    postgresql-client \
+    python3-dev \
     poppler-utils \
     libpq-dev \
     gcc \
-    wget \
+    g++ \
+    make \
+    git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
-
-# Set python3 as default python
-RUN ln -s /usr/bin/python3.10 /usr/bin/python
 
 WORKDIR /app
 
-# Upgrade pip
-RUN python -m pip install --upgrade pip
+# 2. PyTorch + torchvision (CUDA 11.8 / 12 build)
+RUN pip3 install --no-cache-dir -U \
+    torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+    --index-url https://download.pytorch.org/whl/cu118
 
-# Copy requirements and install dependencies
+# 3. Pre-compiled llama-cpp-python CUDA wheel (v0.3.34-cu122)
+RUN pip3 install --no-cache-dir \
+    "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-cu122/llama_cpp_python-0.3.34-py3-none-manylinux_2_35_x86_64.whl"
+
+# 4. Transformers >= 5.0 (Required for GLM-OCR)
+RUN pip3 install --no-cache-dir transformers==5.15.1
+
+# 5. Standard Python Requirements
 COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Pre-install llama-cpp-python specific wheel as required for GPU on Ubuntu 22.04
-RUN CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python
+# 6. Apply ABI/Numpy fix
+RUN pip3 install --no-cache-dir "numpy==2.0.2" && \
+    pip3 uninstall -y torchcodec || true
 
-# Install the rest of the dependencies
-RUN pip install -r requirements.txt
-
-# Copy the rest of the application
+# 7. Copy Application Code & Setup Entrypoint
 COPY . .
-
-# Ensure entrypoint is executable
 RUN chmod +x entrypoint.sh
 
-# Expose FastAPI and Streamlit ports
-EXPOSE 8000 8501
-
-ENTRYPOINT ["./entrypoint.sh"]
+ENTRYPOINT ["/bin/bash", "entrypoint.sh"]
