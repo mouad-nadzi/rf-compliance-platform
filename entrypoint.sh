@@ -10,15 +10,15 @@ echo "PostgreSQL is up."
 
 # Run database migrations/initialization
 echo "Initializing database..."
-python -c "from storage.database import init_db; init_db()"
+python3 -c "from storage.database import init_db; init_db()"
 
 # Seed lookup datasets
 echo "Seeding lookup datasets..."
-python -m storage.seed_lookups
+python3 -m storage.seed_lookups
 
 # Start FastAPI and Streamlit
 echo "Starting Streamlit..."
-streamlit run ui/app.py --server.headless true --server.port 8501 &
+python3 -m streamlit run ui/app.py --server.headless true --server.port 8501 --server.address 0.0.0.0 &
 
 echo "Starting FastAPI app..."
-exec uvicorn main:app --host 0.0.0.0 --port 8000
+exec python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
