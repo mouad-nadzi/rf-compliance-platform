@@ -1,19 +1,37 @@
 # Agent Protocols & System Directives
 
-## 1. Antigravity Agent Directives - Google Colab Synchronization
+## 1. Primary Production Directives — GCP NVIDIA L4 Instance & Docker Architecture (Active Production Host)
+
+### A. Host & Container Infrastructure
+- **Active Production Host:** GCP NVIDIA L4 GPU Instance (24 GB VRAM, Driver `580.173.02`, CUDA `13.0`).
+- **Working Directory:** `/home/mouadnadzi3/rf-compliance-platform` (bind-mounted directly to `/app` inside the `rf_app` container).
+- **Container Stack (`docker-compose.yaml`):**
+  - `rf_app` (`rf-compliance-platform-app`): Runs FastAPI backend (`:8000`) and Streamlit UI (`:8501`).
+  - `rf_postgres_db` (`pgvector/pgvector:pg16`): Persistent PostgreSQL 16 database with pgvector extension (`:5432`).
+- **Production Execution:** All operations, services, and API calls run natively inside the Docker container ecosystem. Colab-specific ingress workarounds (`cloudflared`/`localtunnel`) and ephemeral sandbox workarounds are completely superseded in Production.
+
+### B. GPU VRAM & Hardware Acceleration
+- **Active Hardware:** Single GCP NVIDIA L4 GPU (24 GB VRAM footprint).
+- **VRAM Coexistence:** Both GLM-OCR (~2.2 GB VRAM) and Qwen3.8-27B GGUF (~6.3 GB VRAM) co-exist in GPU VRAM, leaving ~15 GB VRAM headroom.
+- **Model Quantization Rules:** Model quantization format/precision (e.g. `UD-IQ1_M` / `UD-IQ2_M`) must remain locked during debugging. Do not upgrade to FP16 or unquantized weights without evaluating VRAM impact.
+
+### C. Automated Production Host Synchronization & Git Directives
+- **Automated GCP Host Sync:** Whenever workspace files or configuration modules are added, updated, or edited in the IDE, the agent MUST automatically transfer and sync those files to the remote GCP server (`/home/mouadnadzi3/rf-compliance-platform`) via `scp` or remote SSH commands without waiting for explicit user prompts. If containerized app files (`main.py`, `ui/app.py`, `config.py`, etc.) are modified, restart the service container (`sudo docker restart rf_app`).
+- **Automated Git Commit & Push:** For any significant changes, feature additions, UI modifications, bug fixes, or documentation updates, the agent MUST automatically stage, commit, and push changes to the remote GitHub repository (`git push origin main`).
+
+---
+
+## 2. Legacy Google Colab Sandbox Directives (Historical / Development Reference Only)
 
 ### A. Guardrails & Workspace Constraints
 - **Strict File Isolation:** Never execute `drive.mount()` or mount the user's global Google Drive. 
-- **Working Directory:** All operations inside Google Colab must strictly happen inside the `/content/Project` directory.
-- **Local Sandbox Only:** Do not read or write files outside the local project repository folder.
-- **Targeted Cloud Cache Routing & Proactive OOM Prevention:** Whenever a code cell triggers a model download, file swap, or execution, ensure the system handles the data directly inside the cloud container's fast disk directory at `/content/model_cache/`. Crucially, BEFORE initializing the model loader or transferring weights, you MUST explicitly execute an aggressive GPU VRAM memory flush cell to clear pre-existing allocations and avoid OOM crashes.
+- **Working Directory:** All operations inside Google Colab sandbox happen inside `/content/Project`.
+- **Targeted Cloud Cache Routing:** Routes model downloads to `/content/model_cache/`.
 
 ### B. Strict Notebook & Code Execution Rules
-- **No Local Python Execution:** Never execute `.py` scripts or test scripts on the user's local terminal machine.
-- **Single Notebook Enforcement:** All code running, debugging, prototyping, and testing must happen **exclusively** inside the existing `main.ipynb` notebook file.
-- **Hardware Acceleration & Rigid Size Ceilings:** You MUST ensure the Google Colab session is configured with a **T4 GPU** before running code. Crucially, when troubleshooting, debugging, or fixing model initialization errors, the agent is **STRICTLY FORBIDDEN** from changing or upgrading the model's quantization format or precision level (e.g., upgrading from 4-bit/INT4 to FP16 or unquantized weights). The active model size plus context must NEVER exceed a strict threshold of **13 GB of VRAM** to guarantee a buffer against uncatchable OOM kernel crashes. If a quantization format fails, you must debug the loading code parameters, dependencies, or configuration layers—NEVER upgrade to a heavier precision model tier.
-- **No New Notebooks:** Do not create any new `.ipynb` files or temporary scratchpad notebooks in the workspace or in Colab.
-- **Cell Manipulation:** Always use the `colab-mcp` tools to append, modify, or execute cells within the unified `main.ipynb` canvas.
+- **Single Notebook Enforcement:** Prototyping inside Colab sandbox uses `main.ipynb`.
+- **Hardware Acceleration:** T4 GPU sandbox ceiling (13 GB VRAM).
+- **Cell Manipulation:** Use `colab-mcp` tools within `main.ipynb`.
 
 ### C. Unified Cloud Environment Initialization (Trigger: "connect")
 1. **Immediate Execution Loop:** When the user types the trigger word "connect", the agent must immediately execute the setup pipeline without halting or prompting with multi-choice questionnaires.
@@ -53,36 +71,19 @@ For **ALL** tasks you perform in this codebase:
 - **Production Removal Documentation:** Whenever you add, update, or modify any Colab-specific environment logic, custom notebook code, or development sandbox dependencies, you **MUST** update `handoff_report.md` with explicit, step-by-step instructions detailing how to safely remove or bypass those additions during the production deployment phase.
 - **Colab Decision vs. Production Mapping:** You MUST document in `handoff_report.md` all architectural and framework decisions made specifically due to Colab constraints (e.g., `localtunnel`/`cloudflared` instead of standard reverse proxies, bash-compiled PostgreSQL vs. Docker containers, local disk staging vs. direct network mount reads), and explain explicitly how those decisions should be transformed or swapped in the production environment.
 
-## 4. System Directive for Environment: Google Colab + Streamlit + API Deployment
-You are executing, testing, and developing code for an ephemeral Google Colab managed runtime. You MUST strictly adhere to the following infrastructure, hardware, dependency, network, and security constraints:
+## 4. System Directive for Production Environment: GCP NVIDIA L4 Host + Docker Infrastructure
+You are executing, testing, and developing code for a production GCP NVIDIA L4 GPU server (`gcp-gpu-server`). You MUST strictly adhere to the following infrastructure, hardware, dependency, and deployment constraints:
 
-### A. Hardware, Memory & Package Collision Limits
-- **Resource Constraints:** RAM is strictly capped (~12.7 GB) and GPU VRAM is limited (Tesla T4 16 GB). Intensive memory operations can trigger uncatchable OOM kernel crashes. Keep batching small and manage memory footprint aggressively.
-- **Package Collisions & Version Drift:** Colab pre-installs older package versions that cause silent dependency collisions (e.g., outdated PyPI wheels). Always check for conflicts and force upgrade (`pip install -U ...`) when necessary — **EXCEPT for `llama-cpp-python`**, which must NEVER be upgraded blindly: pin `llama-cpp-python==0.3.34` together with `--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu122` (unpinned, PyPI's higher CPU-only build silently wins and runs on CPU; downgrading below 0.3.34 breaks the `gemma4` GGUF architecture of the default `gemma4-26b-gguf` engine). After any C-extension wheel reinstall, restart the Colab kernel to flush the stale `libllama.so` shared-library handle. Document all version constraints.
-- **Docker Non-Usability in Colab:** Docker containers cannot run natively inside standard Google Colab runtimes. Infrastructure components (such as PostgreSQL 16 + pgvector) must be compiled/installed directly via local bash scripts (`colab/setup.sh`) during development/testing, while maintaining clean production configuration (like `docker-compose.yaml`).
-- **Targeted Cloud Container Caching:** Cloud Direct configuration routes all model downloads directly to `/content/model_cache/` on the fast container disk, bypassing network mounts completely.
+### A. Production Hardware & Container Runtime
+- **Hardware:** GCP NVIDIA L4 GPU instance (24 GB VRAM, Driver `580.173.02`, CUDA `13.0`).
+- **Container Infrastructure:** Deployed natively via `docker-compose.yaml`.
+  - `rf_app`: FastAPI backend (`:8000`) and Streamlit UI (`:8501`).
+  - `rf_postgres_db`: PostgreSQL 16 + pgvector (`:5432`).
+- **Path Isolation:** All container operations map directly to `/home/mouadnadzi3/rf-compliance-platform` mounted into `/app`.
 
 ### B. Security & Secret Management
-- **Zero Credential Exposure:** Never hardcode or display API keys, tokens, or plaintext credentials in code, notebook cells, outputs, or git commits.
-- **Secure Secret Ingestion:** Retrieve platform secrets securely via Google Colab's encrypted engine:
-  ```python
-  from google.colab import userdata
-  import os
-  os.environ["YOUR_API_KEY"] = userdata.get('YOUR_API_KEY')
-  ```
-- **Streamlit Ingestion:** Inject these environment variables natively into the active OS environment block before initializing or calling sub-processes.
+- **Zero Credential Exposure:** Never hardcode or display API keys, tokens, or plaintext credentials in code, configuration files, or logs.
+- **Environment Ingestion:** Ingest configuration and environment secrets securely from environment files or OS environment variables injected into the Docker container context.
 
-### C. Streamlit Networking, CORS & Ingress Workarounds
-- **Closed Ingress Ports:** Public ingress to local ports (e.g., Streamlit 8501, FastAPI 8000) is structurally blocked by Google's firewall infrastructure.
-- **Headless Enforcement:** Always initialize Streamlit servers headlessly:
-  ```bash
-  streamlit run ui/app.py --server.headless true --server.port 8501
-  ```
-- **Reverse Tunneling:** Expose interfaces publicly using routing providers like `cloudflared` or `localtunnel` to create an accessible bridge to port 8501 / FastAPI endpoints, bypassing HTML block screens and firewall blocks.
-- **WebSocket & CORS Overrides:** Colab regularly drops standard WebSockets and blocks cross-origin traffic, resulting in stuck "Please Wait" screens or 403 Forbidden errors. Automatically generate a `.streamlit/config.toml` file before boot-up containing:
-  ```toml
-  [server]
-  headless = true
-  enableCORS = false
-  enableXsrfProtection = false
-  ```
+### C. Legacy Sandbox Ingress Workarounds (Superseded in Production)
+- In the production GCP environment, ports `8000` (FastAPI) and `8501` (Streamlit) are served directly. Reverse tunneling workarounds (`cloudflared`/`localtunnel`) and `.streamlit/config.toml` CORS overrides required for ephemeral Colab runtimes are not required in production.

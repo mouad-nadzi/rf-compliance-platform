@@ -34,7 +34,7 @@ api_client = get_api_client()
 
 st.set_page_config(
     page_title="Automotive Compliance Platform",
-    page_icon="🚘",
+    page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -265,9 +265,9 @@ with st.sidebar:
     # Connection Indicator in Sidebar Footer
     try:
         api_client.get("/")
-        conn_status = "🟢 Online"
+        conn_status = "Online"
     except Exception:
-        conn_status = "🔴 Offline"
+        conn_status = "Offline"
         
     st.caption(f"Engine Status: **{conn_status}**")
     st.caption("Automotive Compliance Pipeline v3.0")
@@ -289,7 +289,7 @@ st.markdown(
             <div class="breadcrumb-title">{selected_nav} PAGE</div>
         </div>
         <div class="user-profile-badge">
-            <span>👤 System Administrator</span>
+            <span>System Administrator</span>
         </div>
     </div>
     """,
@@ -337,7 +337,7 @@ if selected_nav == "HOME":
             <div class="stat-card-white">
                 <div class="stat-label">System Readiness</div>
                 <div class="stat-value">Active</div>
-                <div class="stat-trend trend-up">✦ GLM-OCR + Qwen3.8-27B</div>
+                <div class="stat-trend trend-up">GLM-OCR + Qwen3.8-27B</div>
             </div>
             """,
             unsafe_allow_html=True
@@ -379,7 +379,7 @@ if selected_nav == "HOME":
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Upload Section ─────────────────────────────────────────────────────
-    st.header("📄 Batch Certificate Ingestion")
+    st.header("Batch Certificate Ingestion")
     st.markdown("Upload compliance certificates (`.pdf`, `.png`, `.jpg`) for layout-aware OCR extraction and vector indexing.")
     
     uploaded_files = st.file_uploader(
@@ -389,9 +389,9 @@ if selected_nav == "HOME":
     )
 
     if uploaded_files:
-        st.info(f"📎 Selected {len(uploaded_files)} file(s) for ingestion.")
+        st.info(f"Selected {len(uploaded_files)} file(s) for ingestion.")
 
-        if st.button("🚀 Process Batch Ingestion", type="primary"):
+        if st.button("Process Batch Ingestion", type="primary"):
             total = len(uploaded_files)
             progress_bar = st.progress(0.0)
             phase_placeholder = st.empty()
@@ -406,12 +406,12 @@ if selected_nav == "HOME":
                     curr_resp = api_client.get("/api/v1/batch/status")
                     if curr_resp.status_code == 200 and "batch_id" in curr_resp.json():
                         batch_id = curr_resp.json()["batch_id"]
-                        st.info(f"ℹ️ Attaching to processing batch '{batch_id}'...")
+                        st.info(f"Attaching to processing batch '{batch_id}'...")
                     else:
-                        st.error(f"❌ Batch start failed: {ingest_resp.text[:300]}")
+                        st.error(f"Batch start failed: {ingest_resp.text[:300]}")
                         ingest_resp.raise_for_status()
                 elif ingest_resp.status_code != 200:
-                    st.error(f"❌ Batch start failed: {ingest_resp.text[:300]}")
+                    st.error(f"Batch start failed: {ingest_resp.text[:300]}")
                     ingest_resp.raise_for_status()
                 else:
                     batch_id = ingest_resp.json()["batch_id"]
@@ -435,16 +435,16 @@ if selected_nav == "HOME":
                     progress_bar.progress(progress)
 
                     if phase in ("starting", "unknown"):
-                        phase_placeholder.warning(f"⚙️ Initializing batch ({total} files)… {current}")
+                        phase_placeholder.warning(f"Initializing batch ({total} files)… {current}")
                     elif phase == "ocr":
-                        phase_placeholder.warning(f"🖼️ Phase 1/2 — GLM-OCR ({ocr_done}/{total} files)… {current}")
+                        phase_placeholder.warning(f"Phase 1/2 — GLM-OCR ({ocr_done}/{total} files)… {current}")
                     elif phase == "extract":
-                        phase_placeholder.info(f"🧠 Phase 2/2 — Extraction ({extract_done}/{total} files)… {current}")
+                        phase_placeholder.info(f"Phase 2/2 — Extraction ({extract_done}/{total} files)… {current}")
                     elif phase == "done":
-                        phase_placeholder.success(f"✅ Ingestion Complete — {extract_done} extracted, {skipped} skipped, {failed} failed.")
+                        phase_placeholder.success(f"Ingestion Complete — {extract_done} extracted, {skipped} skipped, {failed} failed.")
                         done = True
                     elif phase == "error":
-                        phase_placeholder.error(f"❌ Ingestion failed: {status.get('error', 'unknown error')}")
+                        phase_placeholder.error(f"Ingestion failed: {status.get('error', 'unknown error')}")
                         done = True
 
                 progress_bar.progress(1.0)
@@ -460,7 +460,7 @@ if selected_nav == "HOME":
                     )
 
             except Exception as e:
-                st.error(f"❌ Batch ingestion error: {str(e)}")
+                st.error(f"Batch ingestion error: {str(e)}")
 
     # Display Extracted Data Cards
     if st.session_state.certificates:
@@ -469,19 +469,19 @@ if selected_nav == "HOME":
         for idx, cert in enumerate(st.session_state.certificates):
             with st.expander(f"Certificate #{idx + 1} - {cert.get('supplier', 'Unknown Supplier')}", expanded=True):
                 c1, c2, c3, c4 = st.columns(4)
-                c1.markdown(f"**🧩 Component**\n\n#### `{cert.get('component', 'N/A')}`")
-                c2.markdown(f"**🏢 Supplier**\n\n#### `{cert.get('supplier', 'N/A')}`")
-                c3.markdown(f"**🌍 Country**\n\n#### `{cert.get('country', 'N/A')}`")
-                c4.markdown(f"**🔢 Certif Number**\n\n#### `{cert.get('certif_number', 'N/A')}`")
+                c1.markdown(f"**Component**\n\n#### `{cert.get('component', 'N/A')}`")
+                c2.markdown(f"**Supplier**\n\n#### `{cert.get('supplier', 'N/A')}`")
+                c3.markdown(f"**Country**\n\n#### `{cert.get('country', 'N/A')}`")
+                c4.markdown(f"**Certif Number**\n\n#### `{cert.get('certif_number', 'N/A')}`")
                 
                 st.markdown("---")
                 c5, c6, c7 = st.columns(3)
-                c5.markdown(f"**🏛️ Authority**\n\n#### `{cert.get('authority', 'N/A')}`")
-                c6.markdown(f"**📅 Issue Date**\n\n#### `{cert.get('issue_date', 'N/A')}`")
-                c7.markdown(f"**⏳ Exp Date**\n\n#### `{cert.get('exp_date', 'N/A')}`")
+                c5.markdown(f"**Authority**\n\n#### `{cert.get('authority', 'N/A')}`")
+                c6.markdown(f"**Issue Date**\n\n#### `{cert.get('issue_date', 'N/A')}`")
+                c7.markdown(f"**Exp Date**\n\n#### `{cert.get('exp_date', 'N/A')}`")
 
         if st.session_state.raw_markdown:
-            with st.expander("🔍 Debug: View Raw OCR Output", expanded=False):
+            with st.expander("Debug: View Raw OCR Output", expanded=False):
                 st.text_area("OCR Markdown", st.session_state.raw_markdown, height=350)
 
 
@@ -489,7 +489,7 @@ if selected_nav == "HOME":
 # PAGE 2: CHAT (RAG Q&A Assistant)
 # ──────────────────────────────────────────────────────────────────────────────
 elif selected_nav == "CHAT":
-    st.header("💬 Hybrid RAG Compliance Assistant")
+    st.header("Hybrid RAG Compliance Assistant")
     st.markdown("Ask natural language questions across all indexed certificates and document chunks.")
     
     with st.form("chat_form", clear_on_submit=True):
@@ -536,11 +536,11 @@ elif selected_nav == "CHAT":
                 latency = msg.get("latency_ms", 0.0)
 
                 if intent == "METADATA_QUERY":
-                    st.markdown(f"`⚡ SQL Path (Relational Database)` | ⏱️ `{latency:.1f} ms`")
+                    st.markdown(f"`SQL Path (Relational Database)` | `{latency:.1f} ms`")
                 elif intent == "HYBRID_QUERY":
-                    st.markdown(f"`🔗 Dual-Path Hybrid (SQL + Vector RRF)` | ⏱️ `{latency:.1f} ms`")
+                    st.markdown(f"`Dual-Path Hybrid (SQL + Vector RRF)` | `{latency:.1f} ms`")
                 else:
-                    st.markdown(f"`🔍 Hybrid Vector RAG (Dense + Sparse RRF)` | ⏱️ `{latency:.1f} ms`")
+                    st.markdown(f"`Hybrid Vector RAG (Dense + Sparse RRF)` | `{latency:.1f} ms`")
 
                 if reasoning:
                     st.caption(f"**Router Decision:** {reasoning}")
@@ -549,7 +549,7 @@ elif selected_nav == "CHAT":
 
                 sources = msg.get("sources", [])
                 if sources:
-                    with st.expander(f"📚 Retrieved Context Sources ({len(sources)})", expanded=False):
+                    with st.expander(f"Retrieved Context Sources ({len(sources)})", expanded=False):
                         for idx, src in enumerate(sources, start=1):
                             fname = src.get("file_name") or src.get("certificate_id") or "Unknown"
                             pages = src.get("pages") or src.get("page_number") or "N/A"
@@ -563,14 +563,14 @@ elif selected_nav == "CHAT":
 # PAGE 3: DATABASES (Database Management & CRUD)
 # ──────────────────────────────────────────────────────────────────────────────
 elif selected_nav == "DATABASES":
-    st.header("🗄️ Relational & Vector Database Management")
+    st.header("Relational & Vector Database Management")
     st.markdown("View live database records, perform manual additions/deletions, and manage automated SQL backups.")
     
     colA, colB = st.columns([3, 1])
     
     with colA:
         st.subheader("Persisted Certificate Records")
-        if st.button("🔄 Refresh Table Data"):
+        if st.button("Refresh Table Data"):
             pass
             
         try:
@@ -590,9 +590,9 @@ elif selected_nav == "DATABASES":
             st.error(f"Error fetching data: {e}")
 
     with colB:
-        st.subheader("🛠️ Management Actions")
+        st.subheader("Management Actions")
         
-        with st.expander("➕ Add Manual Record", expanded=False):
+        with st.expander("Add Manual Record", expanded=False):
             with st.form("add_manual_form", clear_on_submit=True):
                 m_comp = st.text_input("Component", "IM3A")
                 m_supp = st.text_input("Supplier", "VALEO")
@@ -622,7 +622,7 @@ elif selected_nav == "DATABASES":
                     except Exception as e:
                         st.error(f"Error: {e}")
 
-        with st.expander("🗑️ Delete Record", expanded=False):
+        with st.expander("Delete Record", expanded=False):
             with st.form("delete_form", clear_on_submit=True):
                 del_id = st.text_input("Certificate ID to delete")
                 submitted_del = st.form_submit_button("Delete Record")

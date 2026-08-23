@@ -181,8 +181,8 @@ function IngestionPage({ apiBase, certs, setCerts }) {
         setProgress(Math.min(units / (2*total) * 100, 100));
         if (s.phase === "ocr") setPhase(`Phase 1/2 — OCR (${s.ocr_done}/${total}) ${s.current_file||""}`);
         else if (s.phase === "extract") setPhase(`Phase 2/2 — Extraction (${s.extract_done}/${total}) ${s.current_file||""}`);
-        else if (s.phase === "done") { setPhase(`✅ Complete — ${s.extract_done} extracted, ${s.skipped} skipped`); done = true; setStatus("done"); }
-        else if (s.phase === "error") { setPhase(`❌ Error: ${s.error}`); done = true; setStatus("error"); }
+        else if (s.phase === "done") { setPhase(`Complete — ${s.extract_done} extracted, ${s.skipped} skipped`); done = true; setStatus("done"); }
+        else if (s.phase === "error") { setPhase(`Error: ${s.error}`); done = true; setStatus("error"); }
       }
       const certsResp = await fetch(`${apiBase}/api/v1/certificates?batch_id=${batchId}`).then(r => r.json());
       setCerts(certsResp.certificates || []);
@@ -195,14 +195,14 @@ function IngestionPage({ apiBase, certs, setCerts }) {
       <div className="section-caption">Supported formats: PDF, PNG, JPG, JPEG or ZIP archives containing nested folders</div>
       <label>
         <div className="upload-area">
-          📁 Click to select files, or drag & drop<br/>
+          Click to select files, or drag & drop<br/>
           <small>PDF · PNG · JPG · JPEG · ZIP</small>
           {files.length > 0 && <div style={{marginTop:"0.5rem",color:"#2563eb",fontWeight:600}}>{files.length} file(s) selected</div>}
         </div>
         <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.zip" style={{display:"none"}} onChange={e => setFiles([...e.target.files])} />
       </label>
       <button className="btn-primary" onClick={handleUpload} disabled={!files.length || status==="running"}>
-        {status === "running" ? "Processing..." : "🚀 Process Batch Ingestion"}
+        {status === "running" ? "Processing..." : "Process Batch Ingestion"}
       </button>
       {phase && (
         <div style={{marginTop:"0.75rem"}}>
@@ -241,9 +241,9 @@ function ChatPage({ apiBase }) {
     setLoading(false);
   };
   const routeLabel = (intent) => {
-    if (intent==="METADATA_QUERY") return "🔵 SQL Relational DB Path";
-    if (intent==="HYBRID_QUERY") return "🟣 Dual-Path Hybrid (SQL + Vector)";
-    return "🟢 Hybrid Vector RAG (Dense + Sparse RRF)";
+    if (intent==="METADATA_QUERY") return "SQL Relational DB Path";
+    if (intent==="HYBRID_QUERY") return "Dual-Path Hybrid (SQL + Vector)";
+    return "Hybrid Vector RAG (Dense + Sparse RRF)";
   };
   return (
     <div className="content-card">
@@ -285,10 +285,10 @@ function DatabasePage({ apiBase }) {
       <div className="section-caption">Inspect, restore, export, or modify certificate database records.</div>
       {msg && <div className={`alert-${msg.type}`}>{msg.text}</div>}
       <div className="action-row">
-        <button className="btn-secondary" onClick={load}>🔄 Refresh</button>
-        <button className="btn-secondary">📥 Restore SQL</button>
-        <button className="btn-secondary">📤 Export SQL</button>
-        <button className="btn-secondary" onClick={dedup}>🧹 Clean Duplicates</button>
+        <button className="btn-secondary" onClick={load}>Refresh</button>
+        <button className="btn-secondary">Restore SQL</button>
+        <button className="btn-secondary">Export SQL</button>
+        <button className="btn-secondary" onClick={dedup}>Clean Duplicates</button>
       </div>
       <table>
         <thead><tr><th>Cert ID</th><th>File</th><th>Component</th><th>Supplier</th><th>Country</th><th>Cert No.</th><th>Authority</th><th>Issue</th><th>Exp</th></tr></thead>
@@ -324,7 +324,7 @@ function App() {
             <div><div className="nav-title">COMPLIANCE</div><div className="nav-sub">Platform v2.0</div></div>
           </div>
           <div className="nav-label">PAGES</div>
-          {[["ingestion","📥 Ingestion"],["chat","💬 Q&A Chat"],["database","📊 Database"]].map(([k,label])=>(
+          {[["ingestion","Ingestion"],["chat","Q&A Chat"],["database","Database"]].map(([k,label])=>(
             <button key={k} className={`nav-btn ${page===k?"active":""}`} onClick={()=>setPage(k)}>{label}</button>
           ))}
         </div>
@@ -348,10 +348,10 @@ function App() {
           </div>
         </div>
         <div className="kpi-row">
-          <KPICard title="Total Certs" value={totalCerts} badge="+ SQL Active" badgeClass="badge-green" icon="📊"/>
-          <KPICard title="Indexed Chunks" value={certs.length} badge="RAG Chunks" badgeClass="badge-blue" icon="⚡"/>
-          <KPICard title="System Health" value="100%" badge="Operational" badgeClass="badge-green" icon="🛡️"/>
-          <KPICard title="Engine Mode" value="T4 GPU" badge="FastAPI" badgeClass="badge-blue" icon="🚀"/>
+          <KPICard title="Total Certs" value={totalCerts} badge="+ SQL Active" badgeClass="badge-green" icon=""/>
+          <KPICard title="Indexed Chunks" value={certs.length} badge="RAG Chunks" badgeClass="badge-blue" icon=""/>
+          <KPICard title="System Health" value="100%" badge="Operational" badgeClass="badge-green" icon=""/>
+          <KPICard title="Engine Mode" value="T4 GPU" badge="FastAPI" badgeClass="badge-blue" icon=""/>
         </div>
         {page==="ingestion" && <IngestionPage apiBase={API_BASE} certs={certs} setCerts={setCerts}/>}
         {page==="chat"      && <ChatPage apiBase={API_BASE}/>}
