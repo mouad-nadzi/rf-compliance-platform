@@ -628,6 +628,85 @@ async def add_supplier(payload: dict, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/v1/lookups/authorities/import")
+async def import_authorities_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Imports authority lookups from an uploaded CSV or Excel file."""
+    from storage.models import AuthorityLookup
+    import pandas as pd
+    filename_lower = (file.filename or "").lower()
+    if not (filename_lower.endswith(".csv") or filename_lower.endswith(".xlsx") or filename_lower.endswith(".xls")):
+        raise HTTPException(status_code=400, detail="Uploaded file must be a .csv, .xlsx, or .xls file.")
+    try:
+        content = await file.read()
+        file_bytes = io.BytesIO(content)
+        if filename_lower.endswith(".csv"):
+            df = pd.read_csv(file_bytes, dtype=str)
+        else:
+            df = pd.read_excel(file_bytes, dtype=str)
+        df = df.fillna("")
+        imported = 0
+        for _, row in df.iterrows():
+            canonical = str(row.get("canonical_authority") or "").strip()
+            if not canonical:
+                continue
+            record = AuthorityLookup(
+                canonical_authority=canonical,
+                abbreviation=str(row.get("abbreviation") or "").strip() or None,
+                country=str(row.get("country") or "").strip(),
+                standard_validity_years=int(float(row["standard_validity_years"])) if str(row.get("standard_validity_years") or "").strip() else None,
+                aliases=[a.strip() for a in str(row.get("aliases") or "").split(",") if a.strip()],
+            )
+            db.add(record)
+            imported += 1
+        db.commit()
+        from storage.backup import export_database_to_sql
+        export_database_to_sql()
+        logger.info(f"Imported {imported} authority lookup records.")
+        return {"status": "success", "imported_count": imported}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Authority import failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/lookups/suppliers/import")
+async def import_suppliers_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Imports supplier lookups from an uploaded CSV or Excel file."""
+    from storage.models import SupplierLookup
+    import pandas as pd
+    filename_lower = (file.filename or "").lower()
+    if not (filename_lower.endswith(".csv") or filename_lower.endswith(".xlsx") or filename_lower.endswith(".xls")):
+        raise HTTPException(status_code=400, detail="Uploaded file must be a .csv, .xlsx, or .xls file.")
+    try:
+        content = await file.read()
+        file_bytes = io.BytesIO(content)
+        if filename_lower.endswith(".csv"):
+            df = pd.read_csv(file_bytes, dtype=str)
+        else:
+            df = pd.read_excel(file_bytes, dtype=str)
+        df = df.fillna("")
+        imported = 0
+        for _, row in df.iterrows():
+            canonical = str(row.get("canonical_supplier") or "").strip()
+            if not canonical:
+                continue
+            record = SupplierLookup(
+                canonical_supplier=canonical,
+                aliases=[a.strip() for a in str(row.get("aliases") or "").split(",") if a.strip()],
+            )
+            db.add(record)
+            imported += 1
+        db.commit()
+        from storage.backup import export_database_to_sql
+        export_database_to_sql()
+        logger.info(f"Imported {imported} supplier lookup records.")
+        return {"status": "success", "imported_count": imported}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Supplier import failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/v1/lookups/suppliers")
 async def list_suppliers(db: Session = Depends(get_db)):
     """Lists supplier lookup reference table entries."""
