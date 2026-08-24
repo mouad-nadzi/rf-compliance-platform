@@ -33,7 +33,7 @@ class GOTOCR2Engine(BaseOCREngine):
     def load(self, cache_dir: str) -> None:
         """Load GOT-OCR2_0 model and tokenizer."""
         if self._model is not None:
-            logger.info("⚡ GOT-OCR2_0 is already loaded, skipping reload.")
+            logger.info(" GOT-OCR2_0 is already loaded, skipping reload.")
             return
 
         logger.info(f"⏳ Loading '{self.MODEL_ID}' into GPU memory...")
@@ -56,10 +56,10 @@ class GOTOCR2Engine(BaseOCREngine):
             ).eval()
 
         except Exception as e:
-            logger.error(f"❌ CRITICAL ERROR: Failed to load GOT-OCR2_0. Details: {e}")
+            logger.error(f" CRITICAL ERROR: Failed to load GOT-OCR2_0. Details: {e}")
             raise RuntimeError(f"Failed to load GOT-OCR2_0: {e}") from e
 
-        logger.info("✅ GOT-OCR2_0 loaded successfully!")
+        logger.info(" GOT-OCR2_0 loaded successfully!")
 
     def _run_inference(self, image_path: str, output_folder: str = "") -> str:
         """Run inference using model.chat() with layout formatting."""

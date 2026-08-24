@@ -1,4 +1,4 @@
-# 🚀 Model Integration Workflow for Coding Agents
+#  Model Integration Workflow for Coding Agents
 
 **CRITICAL RULE:** Whenever you are tasked with integrating a new model (LLM, OCR, Embedding, etc.) into the registry architecture, **DO NOT** assume the current environment, dependencies, prompt templates, or sampling parameters will work out of the box. 
 
@@ -110,11 +110,11 @@ Engines MUST implement `_generate_raw()` and MUST NOT re-implement JSON extracti
 ### Known per-model switches (as deployed)
 - **Qwen3 (8B / 14B):** ChatML; soft ` /no_think` / ` /think` tag injected INSIDE the user block (never after `<|im_start|>assistant\n`). Sampling = base default.
 - **Qwen3.6 / Qwen-AgentWorld (35B):** ChatML; `/no_think` is **IGNORED** (thinks by default). Non-thinking = emit an already-closed empty `<think>\n</think>` block right after the assistant header (equiv. `enable_thinking=false`). Do NOT inject `/no_think`.
-- **Gemma 4 26B:** `<start_of_turn>/<end_of_turn>` turns (incl. a `<start_of_turn>system` block). No soft switch → fixed sampling `0.7/0.8`.
+- **Gemma 4 26B:** `<start_of_turn>/<end_of_turn>` turns (incl. a `<start_of_turn>system` block). No soft switch  fixed sampling `0.7/0.8`.
 - **Qwen2 7B:** ChatML + native `response_format={"type": "json_object"}` (with TypeError fallback that retries without it), sampling `0.1/0.7`.
 
 ### The Qwen3 empty-JSON bug (WHY scrubbing is unconditional)
-The integration uses the **raw completion API** — NO `reasoning_content`/`content` split, so the entire `<think>...</think>` trace + answer arrive in ONE string. For short JSON-only tasks the model can bury the whole answer inside the thinking block, wrap the JSON inside the trace, or duplicate it across a code fence + a `</think>` block → empty `""`/`{}`. Therefore reasoning-trace scrubbing is **unconditional (mode-agnostic)**; gating it on `disable_thinking` is exactly what let stale traces leak and produce `{}`.
+The integration uses the **raw completion API** — NO `reasoning_content`/`content` split, so the entire `<think>...</think>` trace + answer arrive in ONE string. For short JSON-only tasks the model can bury the whole answer inside the thinking block, wrap the JSON inside the trace, or duplicate it across a code fence + a `</think>` block  empty `""`/`{}`. Therefore reasoning-trace scrubbing is **unconditional (mode-agnostic)**; gating it on `disable_thinking` is exactly what let stale traces leak and produce `{}`.
 
 ### `extract_json` parse ladder (current — raw-first)
 1. **Scan the RAW content** for a balanced-brace JSON object that parses — done BEFORE scrubbing, so JSON trapped inside a think trace or duplicated across a fence + `</think>` block is still recovered. This also handles thinking blocks opened with `` thinking`` but *without* a closing `` response`` marker, which persist past the scrub.
@@ -123,7 +123,7 @@ The integration uses the **raw completion API** — NO `reasoning_content`/`cont
 4. Fallback `"{}"` (accepted last-resort guard — must never be the common path).
 
 ### FREE-FORM generation, NOT grammar
-In `llama-cpp-python` v0.3.x, `response_format={"type": "json_object"}` is **silently rejected** on Qwen3-family raw completion, and a GBNF `grammar=` does constrain JSON but makes sampling ~5x slower (~1.2s → ~5.1s/query on the 99-query benchmark; ~130 ms/token vs ~22 ms/token free-form). The verified approach is FREE-FORM generation + the unconditional scrub + `extract_json` ladder (gemma4-26b: 15/15 valid at ~1.1 s/query). Exception: Qwen2's `json_object` response_format IS supported on that model and is used with a TypeError fallback.
+In `llama-cpp-python` v0.3.x, `response_format={"type": "json_object"}` is **silently rejected** on Qwen3-family raw completion, and a GBNF `grammar=` does constrain JSON but makes sampling ~5x slower (~1.2s  ~5.1s/query on the 99-query benchmark; ~130 ms/token vs ~22 ms/token free-form). The verified approach is FREE-FORM generation + the unconditional scrub + `extract_json` ladder (gemma4-26b: 15/15 valid at ~1.1 s/query). Exception: Qwen2's `json_object` response_format IS supported on that model and is used with a TypeError fallback.
 
 ### Hard rules
 - **Single-pass, no retries:** `generate_json` makes exactly **one** inference call. Do NOT introduce `max_attempts`/retry loops — retries were trialed and rejected for masking root-cause mode-handling defects.
@@ -133,5 +133,5 @@ In `llama-cpp-python` v0.3.x, `response_format={"type": "json_object"}` is **sil
 ### Benchmark Evidence (Qwen3-35B — Qwen3.6-35B-A3B, IQ2_M, single load on T4, 99-query benchmark, non-thinking mode, max_tokens=4096)
 - Pre-scrub (raw `response_format` path): **83.8% (83/99)**, ~529 s.
 - With GBNF `grammar=json_object_grammar()`: **99.0% (98/99)**, 692 s, ~6.99 s/query, but grammar sampling cost ~5x latency. The single remaining mismatch is an intentionally-broken/truncated query (index 84, "...what are the roll-out of?"), so 98/98 valid queries classified correctly.
-- **LATENCY REVERSION (current):** the GBNF grammar was removed from ALL engines in favor of free-form generation + trace scrubbing (see "FREE-FORM generation" above) because grammar-constrained sampling measured ~130 ms/token vs ~22 ms/token free-form (~5x slower). Verified on gemma4-26b: 15/15 valid classifications at ~1.1 s/query without grammar. Engines now call the raw completion with NO `grammar=` and rely on `extract_json`'s scrub→parse→extract ladder.
+- **LATENCY REVERSION (current):** the GBNF grammar was removed from ALL engines in favor of free-form generation + trace scrubbing (see "FREE-FORM generation" above) because grammar-constrained sampling measured ~130 ms/token vs ~22 ms/token free-form (~5x slower). Verified on gemma4-26b: 15/15 valid classifications at ~1.1 s/query without grammar. Engines now call the raw completion with NO `grammar=` and rely on `extract_json`'s scrubparseextract ladder.
 - **Model load note:** the ~12 GB GGUF can be memory-mapped/loaded only **once per Colab kernel**. Dropping the instance (`_engine_instance = None`) and re-loading in the same session fails with "Failed to load model from file" because the freed 12 GB region cannot be remapped alongside lingering driver/CUDA state. To re-run the benchmark, **restart the Colab runtime** (model stays disk-cached at `/content/model_cache/`, no re-download) and load once.

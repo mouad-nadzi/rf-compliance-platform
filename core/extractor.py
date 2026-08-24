@@ -171,7 +171,7 @@ def _parse_iso_date(date_str: Optional[str]) -> Optional[date]:
             d_val, m_num, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
             if y < 100:
                 # Only in this path can we confirm the year was 2-digit in the source.
-                # Always map to 20xx for certificate documents (99 → 2099, 24 → 2024).
+                # Always map to 20xx for certificate documents (99  2099, 24  2024).
                 y += 2000
             try:
                 return date(y, m_num, d_val)
@@ -202,7 +202,7 @@ def extract_certificate_data(
     full_text = raw_markdown
     if len(raw_markdown) > MAX_EXTRACTION_PROMPT_CHARS:
         logger.warning(
-            f"⚠️  Truncating extraction document from {len(raw_markdown)} to "
+            f"  Truncating extraction document from {len(raw_markdown)} to "
             f"{MAX_EXTRACTION_PROMPT_CHARS} chars to fit the LLM context window."
         )
         raw_markdown = raw_markdown[:MAX_EXTRACTION_PROMPT_CHARS]
@@ -228,7 +228,7 @@ def extract_certificate_data(
     try:
         parsed_data = CertificateExtractionSchema.model_validate_json(raw_json_response)
     except (json.JSONDecodeError, pydantic.ValidationError) as e:
-        logger.warning(f"⚠️  JSON/Pydantic validation failed for {file_name}: {e}")
+        logger.warning(f"  JSON/Pydantic validation failed for {file_name}: {e}")
         logger.info("    Falling back to default 'Not Found' values to prevent crash.")
         
         parsed_data = CertificateExtractionSchema(
@@ -333,7 +333,7 @@ def save_certificate_to_db(
         db.add_all(chunk_records)
         db.commit()
         db.refresh(metadata_record)
-        logger.info(f"✅ Successfully persisted Certificate '{cert_id}' with {len(chunk_records)} chunks to PostgreSQL.")
+        logger.info(f" Successfully persisted Certificate '{cert_id}' with {len(chunk_records)} chunks to PostgreSQL.")
         
         # Trigger automated backup
         from storage.backup import export_database_to_sql
@@ -342,7 +342,7 @@ def save_certificate_to_db(
         return metadata_record
     except Exception as e:
         db.rollback()
-        logger.error(f"❌ Database error persisting Certificate '{cert_id}': {e}")
+        logger.error(f" Database error persisting Certificate '{cert_id}': {e}")
         raise
     finally:
         if close_session_on_exit:

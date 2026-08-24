@@ -9,26 +9,21 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# Import local RAG Q&A logic
-from core.rag import (
-    chunk_for_qa,
-    retrieve_relevant_chunks,
-    answer_query_with_citations,
-)
+# Local RAG chunking utility (standalone; keeps the UI process free of heavy ML imports)
+from core.rag.chunker import chunk_for_qa
 
-# Import FastAPI for in-process networking bypass
-from fastapi.testclient import TestClient
-from server.main import app as fastapi_app
+# HTTP client for the FastAPI backend (real uvicorn service on :8000)
+import httpx
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Config & Setup
 # ──────────────────────────────────────────────────────────────────────────────
+from server.config import API_PORT
+
 @st.cache_resource
 def get_api_client():
-    """Initializes the FastAPI TestClient and keeps model loaded in memory."""
-    client = TestClient(fastapi_app)
-    client.__enter__()
-    return client
+    """Initializes a persistent HTTP client for the FastAPI backend."""
+    return httpx.Client(base_url=f"http://localhost:{API_PORT}", timeout=600)
 
 api_client = get_api_client()
 
@@ -47,6 +42,29 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap');
 
+    /* Blue theme overriding Streamlit's default red primary color */
+    :root {
+        --brand-blue: #243881;
+        --brand-blue-light: #4a63b8;
+        --brand-blue-dark: #1a295f;
+    }
+    :root, [data-testid="stAppViewContainer"], .stApp {
+        --primary-color: var(--brand-blue);
+        --primary-color-light: var(--brand-blue-light);
+        --primary-color-dark: var(--brand-blue-dark);
+    }
+
+    /* Alerts / callouts (error, warning, info, success) use the logo blue */
+    div[data-testid="stAlert"] {
+        border: 1px solid var(--brand-blue-light) !important;
+        border-left: 4px solid var(--brand-blue) !important;
+        background-color: #eef2ff !important;
+        color: var(--brand-blue) !important;
+    }
+    div[data-testid="stAlert"] * {
+        color: var(--brand-blue) !important;
+    }
+
     /* Global Body Light Theme Enforcement */
     html, body, [class*="css"] {
         font-family: 'Inter', sans-serif;
@@ -54,10 +72,15 @@ st.markdown(
         color: #1e293b !important;
     }
 
+    /* Keep the page background gray; only the canvas data tables are white */
+    [data-testid="stAppViewContainer"], [data-testid="stMain"], [data-testid="stMainBlockContainer"], .stApp {
+        background-color: #f4f6f9 !important;
+    }
+
     .main .block-container, [data-testid="stMainBlockContainer"], div.block-container {
-        padding-top: 0.2rem !important;
+        padding-top: 0 !important;
         margin-top: 0rem !important;
-        padding-bottom: 2rem;
+        padding-bottom: 3rem !important;
         max-width: 96%;
     }
 
@@ -87,9 +110,15 @@ st.markdown(
     }
 
     .top-nav-icon {
-        width: 60px;
-        height: 60px;
+        height: 56px;
+        width: auto;
+        max-width: 100%;
         object-fit: contain;
+    }
+
+    /* Vertically center nav row content so the larger logo stays aligned */
+    div[data-testid="stHorizontalBlock"]:has(div[role="radiogroup"]) {
+        align-items: center;
     }
 
     .top-nav-text {
@@ -113,7 +142,8 @@ st.markdown(
         align-items: center;
         gap: 8px;
         background: #ffffff;
-        padding: 6px 14px;
+        padding: 10px 14px;
+        margin-top: -9px;
         border-radius: 20px;
         border: 1px solid #e2e8f0;
         font-size: 0.85rem;
@@ -134,7 +164,7 @@ st.markdown(
         width: 8px;
         height: 8px;
         border-radius: 50%;
-        background-color: #dc2626;
+        background-color: var(--brand-blue);
         display: inline-block;
     }
 
@@ -145,6 +175,7 @@ st.markdown(
         gap: 8px;
         background: #ffffff;
         padding: 4px 8px;
+        margin-top: 6px;
         border-radius: 30px;
         border: 1px solid #e2e8f0;
         box-shadow: 0 2px 8px rgba(0,0,0,0.02);
@@ -164,18 +195,23 @@ st.markdown(
         margin: 0 !important;
     }
 
+    /* Hide the default radio circle indicators */
+    div[data-testid="stHorizontalBlock"] div[role="radiogroup"] label > div > div > div:first-child {
+        display: none !important;
+    }
+
     div[data-testid="stHorizontalBlock"] div[role="radiogroup"] label:hover {
         background: #f1f5f9;
         color: #0f172a !important;
     }
 
-    div[data-testid="stHorizontalBlock"] div[role="radiogroup"] label[data-checked="true"] {
-        background: #f87171 !important;
+    div[data-testid="stHorizontalBlock"] div[role="radiogroup"] label[data-selected="true"] {
+        background: var(--brand-blue) !important;
         color: #ffffff !important;
-        box-shadow: 0 4px 12px rgba(248, 113, 113, 0.3);
+        box-shadow: 0 4px 12px rgba(36, 56, 129, 0.3);
     }
 
-    div[data-testid="stHorizontalBlock"] div[role="radiogroup"] label[data-checked="true"] * {
+    div[data-testid="stHorizontalBlock"] div[role="radiogroup"] label[data-selected="true"] * {
         color: #ffffff !important;
     }
 
@@ -215,7 +251,8 @@ st.markdown(
         align-items: center;
         gap: 10px;
         background: #f8fafc;
-        padding: 6px 14px;
+        padding: 10px 14px;
+        margin-top: -9px;
         border-radius: 20px;
         border: 1px solid #e2e8f0;
         font-weight: 600;
@@ -260,8 +297,8 @@ st.markdown(
         margin-top: 4px;
     }
 
-    .trend-up { color: #16a34a; }
-    .trend-neutral { color: #2563eb; }
+    .trend-up { color: var(--brand-blue); }
+    .trend-neutral { color: var(--brand-blue); }
 
     /* Content Card Container */
     .content-card {
@@ -298,7 +335,7 @@ except Exception:
     conn_status = "Offline"
     status_class = "status-offline"
 
-nav_col1, nav_col2, nav_col3 = st.columns([3, 5, 3])
+nav_col1, nav_col2, nav_col3 = st.columns([4, 4, 3])
 
 with nav_col1:
     st.markdown(
@@ -336,29 +373,7 @@ with nav_col3:
         unsafe_allow_html=True
     )
 
-st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# TOP BREADCRUMB HEADER BAR
-# ──────────────────────────────────────────────────────────────────────────────
-sub_title_map = {
-    "HOME": "HOME > INGESTION DASHBOARD",
-    "CHAT": "CHAT > HYBRID RAG COMPLIANCE ASSISTANT",
-    "DATABASES": "DATABASES > RELATIONAL & VECTOR STORAGE"
-}
-
-st.markdown(
-    f"""
-    <div class="top-header-bar">
-        <div>
-            <div class="breadcrumb-sub">{sub_title_map.get(selected_nav, "DASHBOARD")}</div>
-            <div class="breadcrumb-title">{selected_nav} PAGE</div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
+st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PAGE 1: HOME (Document Ingestion & Overview)
@@ -440,90 +455,6 @@ if selected_nav == "HOME":
         )
 
     st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Upload Section ─────────────────────────────────────────────────────
-    st.header("Batch Certificate Ingestion")
-    st.markdown("Upload compliance certificates (`.pdf`, `.png`, `.jpg`) for layout-aware OCR extraction and vector indexing.")
-    
-    uploaded_files = st.file_uploader(
-        "Select certificate documents",
-        type=["pdf", "png", "jpg"],
-        accept_multiple_files=True,
-    )
-
-    if uploaded_files:
-        st.info(f"Selected {len(uploaded_files)} file(s) for ingestion.")
-
-        if st.button("Process Batch Ingestion", type="primary"):
-            total = len(uploaded_files)
-            progress_bar = st.progress(0.0)
-            phase_placeholder = st.empty()
-
-            try:
-                files_payload = [
-                    ("files", (f.name, f.getvalue(), f.type)) for f in uploaded_files
-                ]
-                ingest_resp = api_client.post("/api/v1/batch/ingest", files=files_payload)
-                
-                if ingest_resp.status_code == 409:
-                    curr_resp = api_client.get("/api/v1/batch/status")
-                    if curr_resp.status_code == 200 and "batch_id" in curr_resp.json():
-                        batch_id = curr_resp.json()["batch_id"]
-                        st.info(f"Attaching to processing batch '{batch_id}'...")
-                    else:
-                        st.error(f"Batch start failed: {ingest_resp.text[:300]}")
-                        ingest_resp.raise_for_status()
-                elif ingest_resp.status_code != 200:
-                    st.error(f"Batch start failed: {ingest_resp.text[:300]}")
-                    ingest_resp.raise_for_status()
-                else:
-                    batch_id = ingest_resp.json()["batch_id"]
-
-                done = False
-                while not done:
-                    time.sleep(3)
-                    status_resp = api_client.get(f"/api/v1/batch/status/{batch_id}")
-                    status = status_resp.json() if status_resp.status_code == 200 else {}
-
-                    phase = status.get("phase", "unknown")
-                    ocr_done = status.get("ocr_done", 0)
-                    extract_done = status.get("extract_done", 0)
-                    skipped = status.get("skipped", 0)
-                    failed = status.get("failed", 0)
-                    current = status.get("current_file", "") or ""
-
-                    work_units = 2 * max(total, 1)
-                    done_units = ocr_done + extract_done + 2 * skipped
-                    progress = min(done_units / work_units, 1.0)
-                    progress_bar.progress(progress)
-
-                    if phase in ("starting", "unknown"):
-                        phase_placeholder.warning(f"Initializing batch ({total} files)… {current}")
-                    elif phase == "ocr":
-                        phase_placeholder.warning(f"Phase 1/2 — GLM-OCR ({ocr_done}/{total} files)… {current}")
-                    elif phase == "extract":
-                        phase_placeholder.info(f"Phase 2/2 — Extraction ({extract_done}/{total} files)… {current}")
-                    elif phase == "done":
-                        phase_placeholder.success(f"Ingestion Complete — {extract_done} extracted, {skipped} skipped, {failed} failed.")
-                        done = True
-                    elif phase == "error":
-                        phase_placeholder.error(f"Ingestion failed: {status.get('error', 'unknown error')}")
-                        done = True
-
-                progress_bar.progress(1.0)
-
-                if extract_done + skipped > 0:
-                    certs = api_client.get("/api/v1/certificates", params={"batch_id": batch_id}).json()
-                    st.session_state.certificates = certs.get("certificates", [])
-                    if certs.get("raw_markdown"):
-                        st.session_state.raw_markdown = certs["raw_markdown"]
-                    st.session_state.chunks = _index_document_chunks(
-                        {"raw_markdown": certs.get("raw_markdown", ""), "filename": "batch"},
-                        "batch",
-                    )
-
-            except Exception as e:
-                st.error(f"Batch ingestion error: {str(e)}")
 
     # Display Extracted Data Cards
     if st.session_state.certificates:
@@ -664,57 +595,118 @@ elif selected_nav == "DATABASES":
         selected_db_table = st.session_state.selected_db_table
 
         # ── Left-side Table Actions & Management Tools ─────────────────────────
+        db_table_meta = {
+            "RF Certificates": ("cert_table", "cert_table_df", "certificates"),
+            "Authorities": ("auth_table", "auth_table_df", "authorities"),
+            "Suppliers": ("supp_table", "supp_table_df", "suppliers"),
+        }
+        db_widget_key, db_df_key, db_prefix = db_table_meta[selected_db_table]
+
+        st.markdown(
+            """
+            <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 1px; margin-bottom: 10px; margin-top: 8px; text-transform: uppercase;">
+                TABLE ACTIONS
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        if st.button("Refresh Table", use_container_width=True):
+            pass
+
+        # Selected-row actions (selection comes from the current table)
+        db_sel_state = st.session_state.get(db_widget_key)
+        db_sel_rows = db_sel_state.selection.rows if db_sel_state is not None and getattr(db_sel_state, "selection", None) else []
+        db_table_df = st.session_state.get(db_df_key)
+        db_has_selection = db_table_df is not None and not db_table_df.empty and bool(db_sel_rows)
+        db_selected_df = db_table_df.iloc[list(db_sel_rows)] if db_has_selection else None
+
+        if db_has_selection:
+            st.markdown(f"**{len(db_selected_df)} record(s) selected**")
+
+        # Export only the visible columns
         if selected_db_table == "RF Certificates":
-            st.markdown(
-                """
-                <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 1px; margin-bottom: 10px; margin-top: 8px; text-transform: uppercase;">
-                    TABLE ACTIONS
-                </div>
-                """,
-                unsafe_allow_html=True
+            db_export_df = db_selected_df.drop(columns=[c for c in ["certificate_id", "last_update"] if c in db_selected_df.columns]) if db_has_selection else None
+        else:
+            db_export_df = db_selected_df.drop(columns=[c for c in ["id", "aliases"] if c in db_selected_df.columns]) if db_has_selection else None
+
+        c_exp, c_del = st.columns(2)
+        with c_exp:
+            excel_bytes = None
+            if db_has_selection:
+                import io
+                buf = io.BytesIO()
+                db_export_df.to_excel(buf, index=False, engine="openpyxl")
+                excel_bytes = buf.getvalue()
+            st.download_button(
+                "Export Excel",
+                data=excel_bytes or b"",
+                file_name=f"selected_{db_prefix}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                disabled=not db_has_selection,
             )
-            
-            if st.button("Refresh Table", use_container_width=True):
-                pass
+        with c_del:
+            if st.button("Delete Selected", type="primary", use_container_width=True, disabled=not db_has_selection):
+                deleted_count = 0
+                failed_count = 0
+                if selected_db_table == "RF Certificates":
+                    ids_to_delete = [c for c in db_selected_df["certificate_id"].astype(str).tolist() if c and c.strip() and c != "nan"]
+                    for cert_id in ids_to_delete:
+                        try:
+                            resp = api_client.delete(f"/api/v1/certificates/{cert_id}")
+                            if resp.status_code == 200:
+                                deleted_count += 1
+                            else:
+                                failed_count += 1
+                        except Exception:
+                            failed_count += 1
+                elif selected_db_table == "Authorities":
+                    ids_to_delete = db_selected_df["id"].astype(int).tolist()
+                    for auth_id in ids_to_delete:
+                        try:
+                            resp = api_client.delete(f"/api/v1/lookups/authorities/{auth_id}")
+                            if resp.status_code == 200:
+                                deleted_count += 1
+                            else:
+                                failed_count += 1
+                        except Exception:
+                            failed_count += 1
+                else:
+                    ids_to_delete = db_selected_df["id"].astype(int).tolist()
+                    for supp_id in ids_to_delete:
+                        try:
+                            resp = api_client.delete(f"/api/v1/lookups/suppliers/{supp_id}")
+                            if resp.status_code == 200:
+                                deleted_count += 1
+                            else:
+                                failed_count += 1
+                        except Exception:
+                            failed_count += 1
+                if deleted_count:
+                    st.success(f"Deleted {deleted_count} record(s).")
+                if failed_count:
+                    st.error(f"Failed to delete {failed_count} record(s).")
+                st.rerun()
 
-            try:
-                csv_exp_resp = api_client.get("/api/v1/certificates/export/csv")
-                if csv_exp_resp.status_code == 200:
-                    st.download_button(
-                        label="Export to CSV",
-                        data=csv_exp_resp.content,
-                        file_name="certificates_export.csv",
-                        mime="text/csv",
-                        type="secondary",
-                        use_container_width=True
-                    )
-            except Exception as e_exp:
-                st.caption(f"CSV Export offline: {e_exp}")
+        if db_has_selection:
+            if st.button("Edit Selected", use_container_width=True):
+                st.session_state["edit_row"] = db_selected_df.iloc[0].to_dict()
+                st.session_state["edit_table"] = selected_db_table
+                st.rerun()
 
-            try:
-                excel_exp_resp = api_client.get("/api/v1/certificates/export/excel")
-                if excel_exp_resp.status_code == 200:
-                    st.download_button(
-                        label="Export to Excel",
-                        data=excel_exp_resp.content,
-                        file_name="certificates_export.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="secondary",
-                        use_container_width=True
-                    )
-            except Exception as e_exp:
-                st.caption(f"Excel Export offline: {e_exp}")
+        st.markdown("<br>", unsafe_allow_html=True)
 
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown(
-                """
-                <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 1px; margin-bottom: 10px; text-transform: uppercase;">
-                    MANAGEMENT ACTIONS
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+        st.markdown(
+            """
+            <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 1px; margin-bottom: 10px; text-transform: uppercase;">
+                MANAGEMENT ACTIONS
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
+        if selected_db_table == "RF Certificates":
             with st.expander("Import CSV / Excel", expanded=False):
                 uploaded_file = st.file_uploader("Select CSV or Excel file", type=["csv", "xlsx", "xls"], key="file_import_uploader")
                 if uploaded_file:
@@ -740,58 +732,140 @@ elif selected_nav == "DATABASES":
                     except Exception as e_imp:
                         st.error(f"Error reading file: {e_imp}")
 
+            with st.expander("Ingest Certificate Documents", expanded=False):
+                ingest_files = st.file_uploader(
+                    "Select certificate documents",
+                    type=["pdf", "png", "jpg"],
+                    accept_multiple_files=True,
+                    key="cert_ingest_uploader",
+                )
+                if ingest_files:
+                    st.info(f"Selected {len(ingest_files)} file(s) for ingestion.")
+                    if st.button("Process Batch Ingestion", type="primary", use_container_width=True):
+                        total = len(ingest_files)
+                        progress_bar = st.progress(0.0)
+                        phase_placeholder = st.empty()
+
+                        try:
+                            files_payload = [
+                                ("files", (f.name, f.getvalue(), f.type)) for f in ingest_files
+                            ]
+                            ingest_resp = api_client.post("/api/v1/batch/ingest", files=files_payload)
+
+                            if ingest_resp.status_code == 409:
+                                curr_resp = api_client.get("/api/v1/batch/status")
+                                if curr_resp.status_code == 200 and "batch_id" in curr_resp.json():
+                                    batch_id = curr_resp.json()["batch_id"]
+                                    st.info(f"Attaching to processing batch '{batch_id}'...")
+                                else:
+                                    st.error(f"Batch start failed: {ingest_resp.text[:300]}")
+                                    ingest_resp.raise_for_status()
+                            elif ingest_resp.status_code != 200:
+                                st.error(f"Batch start failed: {ingest_resp.text[:300]}")
+                                ingest_resp.raise_for_status()
+                            else:
+                                batch_id = ingest_resp.json()["batch_id"]
+
+                            done = False
+                            while not done:
+                                time.sleep(3)
+                                status_resp = api_client.get(f"/api/v1/batch/status/{batch_id}")
+                                status = status_resp.json() if status_resp.status_code == 200 else {}
+
+                                phase = status.get("phase", "unknown")
+                                ocr_done = status.get("ocr_done", 0)
+                                extract_done = status.get("extract_done", 0)
+                                skipped = status.get("skipped", 0)
+                                failed = status.get("failed", 0)
+                                current = status.get("current_file", "") or ""
+
+                                work_units = 2 * max(total, 1)
+                                done_units = ocr_done + extract_done + 2 * skipped
+                                progress = min(done_units / work_units, 1.0)
+                                progress_bar.progress(progress)
+
+                                if phase in ("starting", "unknown"):
+                                    phase_placeholder.warning(f"Initializing batch ({total} files)… {current}")
+                                elif phase in ("ocr", "extract", "processing"):
+                                    processed = max(ocr_done, extract_done)
+                                    phase_placeholder.info(f"Processing {processed}/{total} files (OCR + Extraction)… {current}")
+                                elif phase == "done":
+                                    phase_placeholder.success(f"Ingestion Complete — {extract_done} extracted, {skipped} skipped, {failed} failed.")
+                                    done = True
+                                elif phase == "error":
+                                    phase_placeholder.error(f"Ingestion failed: {status.get('error', 'unknown error')}")
+                                    done = True
+
+                            progress_bar.progress(1.0)
+
+                            if extract_done + skipped > 0:
+                                certs = api_client.get("/api/v1/certificates", params={"batch_id": batch_id}).json()
+                                st.session_state.certificates = certs.get("certificates", [])
+                                if certs.get("raw_markdown"):
+                                    st.session_state.raw_markdown = certs["raw_markdown"]
+                                st.session_state.chunks = _index_document_chunks(
+                                    {"raw_markdown": certs.get("raw_markdown", ""), "filename": "batch"},
+                                    "batch",
+                                )
+
+                        except Exception as e:
+                            st.error(f"Batch ingestion error: {str(e)}")
+
+        elif selected_db_table == "Authorities":
             with st.expander("Add Manual Record", expanded=False):
-                with st.form("add_manual_form", clear_on_submit=True):
-                    m_comp = st.text_input("Component", "IM3A")
-                    m_supp = st.text_input("Supplier", "VALEO")
-                    m_coun = st.text_input("Country", "Bolivia")
-                    m_cert = st.text_input("Certif Number", "401/2025")
-                    m_auth = st.text_input("Authority", "ATT")
-                    m_iss = st.text_input("Issue Date", "2025-06-04")
-                    m_exp = st.text_input("Exp Date", "2035-06-03")
-                    m_link = st.text_input("Link (URL)", placeholder="https://...")
-                    
-                    submitted_add = st.form_submit_button("Save Record", type="primary", use_container_width=True)
-                    if submitted_add:
+                with st.form("add_auth_form", clear_on_submit=True):
+                    a_canon = st.text_input("Canonical Authority", placeholder="e.g. ATT")
+                    a_abbr = st.text_input("Abbreviation", placeholder="e.g. ATT")
+                    a_country = st.text_input("Country", placeholder="e.g. Bolivia")
+                    a_validity = st.number_input("Standard Validity (Years)", min_value=0, value=5)
+                    a_aliases = st.text_input("Aliases (comma-separated)", placeholder="e.g. ATT, Agencia de Transporte")
+
+                    submitted_auth = st.form_submit_button("Save Record", type="primary", use_container_width=True)
+                    if submitted_auth:
                         payload = {
-                            "component": m_comp,
-                            "supplier": m_supp,
-                            "country": m_coun,
-                            "certif_number": m_cert,
-                            "authority": m_auth,
-                            "issue_date": m_iss if m_iss else None,
-                            "exp_date": m_exp if m_exp else None,
-                            "cert_link": m_link if m_link else None
+                            "canonical_authority": a_canon,
+                            "abbreviation": a_abbr or None,
+                            "country": a_country,
+                            "standard_validity_years": int(a_validity) if a_validity else None,
+                            "aliases": [x.strip() for x in a_aliases.split(",") if x.strip()] if a_aliases else []
                         }
                         try:
-                            resp = api_client.post("/api/v1/certificates/manual", json=payload)
+                            resp = api_client.post("/api/v1/lookups/authorities", json=payload)
                             if resp.status_code == 200:
-                                st.success(f"Added! ID: {resp.json().get('certificate_id')}")
+                                st.success("Added authority record successfully!")
+                                st.rerun()
                             else:
                                 st.error(f"Failed to add: {resp.text}")
                         except Exception as e:
                             st.error(f"Error: {e}")
 
-            with st.expander("Delete Record", expanded=False):
-                with st.form("delete_form", clear_on_submit=True):
-                    del_id = st.text_input("Certificate ID to delete")
-                    submitted_del = st.form_submit_button("Delete Record", use_container_width=True)
-                    if submitted_del and del_id:
+        elif selected_db_table == "Suppliers":
+            with st.expander("Add Manual Record", expanded=False):
+                with st.form("add_supp_form", clear_on_submit=True):
+                    s_canon = st.text_input("Canonical Supplier", placeholder="e.g. VALEO")
+                    s_aliases = st.text_input("Aliases (comma-separated)", placeholder="e.g. Valeo, Valeo S.A.")
+
+                    submitted_supp = st.form_submit_button("Save Record", type="primary", use_container_width=True)
+                    if submitted_supp:
+                        payload = {
+                            "canonical_supplier": s_canon,
+                            "aliases": [x.strip() for x in s_aliases.split(",") if x.strip()] if s_aliases else []
+                        }
                         try:
-                            resp = api_client.delete(f"/api/v1/certificates/{del_id}")
+                            resp = api_client.post("/api/v1/lookups/suppliers", json=payload)
                             if resp.status_code == 200:
-                                st.success(f"Deleted {del_id} successfully.")
+                                st.success("Added supplier record successfully!")
+                                st.rerun()
                             else:
-                                st.error(f"Failed to delete: {resp.text}")
+                                st.error(f"Failed to add: {resp.text}")
                         except Exception as e:
-                            st.error(f"Error deleting: {e}")
+                            st.error(f"Error: {e}")
 
     with db_main_col:
         # ──────────────────────────────────────────────────────────────────────
         # TABLE 1: RF CERTIFICATES
         # ──────────────────────────────────────────────────────────────────────
         if selected_db_table == "RF Certificates":
-            st.subheader("Persisted RF Certificates Table")
             
             try:
                 certs_resp = api_client.get("/api/v1/certificates")
@@ -823,21 +897,177 @@ elif selected_nav == "DATABASES":
 
                             df["cert_link"] = df["cert_link"].apply(_normalize_link)
 
-                        base_cols = ["certificate_id", "component", "supplier", "country", "certif_number", "authority", "issue_date", "exp_date", "cert_link"]
+                        base_cols = ["certificate_id", "component", "supplier", "country", "certif_number", "authority", "issue_date", "exp_date", "cert_link", "last_update"]
                         df = df[[c for c in base_cols if c in df.columns]]
-                        
+
+                        # Column-based multi-filter for RF Certificates
+                        if "cert_filters" not in st.session_state:
+                            st.session_state.cert_filters = [{"col": "component", "value": ""}]
+
+                        filter_cols = [c for c in df.columns if c != "cert_link"]
+
+                        if st.button("Add Filter", key="add_cert_filter", use_container_width=True):
+                            st.session_state.cert_filters.append({"col": filter_cols[0], "value": ""})
+                            st.rerun()
+
+                        remove_idx = None
+                        for i, f in enumerate(st.session_state.cert_filters):
+                            c1, c2, c3 = st.columns([3, 4, 1])
+                            with c1:
+                                f["col"] = st.selectbox(
+                                    "Column",
+                                    filter_cols,
+                                    index=filter_cols.index(f["col"]) if f["col"] in filter_cols else 0,
+                                    key=f"cert_fcol_{i}",
+                                    label_visibility="collapsed",
+                                )
+                            with c2:
+                                f["value"] = st.text_input("Value", value=f["value"], key=f"cert_fval_{i}", label_visibility="collapsed")
+                            with c3:
+                                if st.button("", key=f"cert_fdel_{i}"):
+                                    remove_idx = i
+
+                        if remove_idx is not None:
+                            st.session_state.cert_filters.pop(remove_idx)
+                            st.rerun()
+
+                        # Apply all active column filters (AND)
+                        for f in st.session_state.cert_filters:
+                            q = (f.get("value") or "").strip()
+                            col = f.get("col")
+                            if col in df.columns and q:
+                                df = df[df[col].astype(str).str.lower().str.contains(q.lower(), na=False)]
+
+                        st.session_state["cert_table_df"] = df
+
+                        display_cols = [c for c in ["component", "supplier", "country", "certif_number", "authority", "issue_date", "exp_date", "cert_link", "last_update"] if c in df.columns]
+                        df_display = df[display_cols]
+
                         st.dataframe(
-                            df,
+                            df_display,
                             use_container_width=True,
                             hide_index=True,
+                            on_select="rerun",
+                            selection_mode="multi-row",
+                            key="cert_table",
                             column_config={
                                 "cert_link": st.column_config.LinkColumn(
                                     label="Certificate Link",
                                     display_text="open file",
                                     help="Click to open the certificate document in your browser"
-                                )
+                                ),
                             }
                         )
+
+                        # ── Quick Add Row (plus button -> empty row -> fill -> save) ──
+                        if st.button("+ Add Row", use_container_width=True):
+                            st.session_state.show_add_row = True
+                        if st.session_state.get("show_add_row"):
+                            add_cols = ["component", "supplier", "country", "certif_number", "authority", "issue_date", "exp_date", "cert_link"]
+                            new_rows_df = st.data_editor(
+                                pd.DataFrame(columns=add_cols),
+                                use_container_width=True,
+                                hide_index=True,
+                                num_rows="dynamic",
+                                key="new_rows_editor",
+                                column_config={
+                                    "component": "Component",
+                                    "supplier": "Supplier",
+                                    "country": "Country",
+                                    "certif_number": "Certif Number",
+                                    "authority": "Authority",
+                                    "issue_date": "Issue Date",
+                                    "exp_date": "Exp Date",
+                                    "cert_link": "Certificate Link",
+                                },
+                            )
+                            c_save, c_cancel = st.columns(2)
+                            with c_save:
+                                if st.button("Save New Rows", type="primary", use_container_width=True):
+                                    saved_count = 0
+                                    failed_count = 0
+                                    for _, row in new_rows_df.iterrows():
+                                        if not (row.get("component") or "").strip() and not (row.get("supplier") or "").strip():
+                                            continue
+                                        payload = {
+                                            "component": row.get("component") or None,
+                                            "supplier": row.get("supplier") or None,
+                                            "country": row.get("country") or None,
+                                            "certif_number": row.get("certif_number") or None,
+                                            "authority": row.get("authority") or None,
+                                            "issue_date": row.get("issue_date") or None,
+                                            "exp_date": row.get("exp_date") or None,
+                                            "cert_link": row.get("cert_link") or None,
+                                        }
+                                        try:
+                                            resp = api_client.post("/api/v1/certificates/manual", json=payload)
+                                            if resp.status_code == 200:
+                                                saved_count += 1
+                                            else:
+                                                failed_count += 1
+                                        except Exception:
+                                            failed_count += 1
+                                    st.success(f"Saved {saved_count} new record(s).")
+                                    if failed_count:
+                                        st.error(f"Failed to save {failed_count} record(s).")
+                                    st.session_state.show_add_row = False
+                                    st.rerun()
+                            with c_cancel:
+                                if st.button("Cancel", use_container_width=True):
+                                    st.session_state.show_add_row = False
+                                    st.rerun()
+
+                        # ── Edit Selected Row ──────────────────────────────────
+                        edit_row = st.session_state.get("edit_row")
+                        if edit_row and st.session_state.get("edit_table") == "RF Certificates":
+                            edit_cols = ["component", "supplier", "country", "certif_number", "authority", "issue_date", "exp_date", "cert_link"]
+                            edit_df = pd.DataFrame([edit_row])[edit_cols]
+                            st.markdown(f"**Editing `{edit_row.get('certificate_id')}`**")
+                            new_edit = st.data_editor(
+                                edit_df,
+                                use_container_width=True,
+                                hide_index=True,
+                                num_rows="fixed",
+                                key="edit_cert_editor",
+                                column_config={
+                                    "component": "Component",
+                                    "supplier": "Supplier",
+                                    "country": "Country",
+                                    "certif_number": "Certif Number",
+                                    "authority": "Authority",
+                                    "issue_date": "Issue Date",
+                                    "exp_date": "Exp Date",
+                                    "cert_link": "Certificate Link",
+                                },
+                            )
+                            c_save, c_cancel = st.columns(2)
+                            with c_save:
+                                if st.button("Save Changes", type="primary", use_container_width=True):
+                                    row = new_edit.iloc[0]
+                                    payload = {
+                                        "component": row.get("component") or None,
+                                        "supplier": row.get("supplier") or None,
+                                        "country": row.get("country") or None,
+                                        "certif_number": row.get("certif_number") or None,
+                                        "authority": row.get("authority") or None,
+                                        "issue_date": row.get("issue_date") or None,
+                                        "exp_date": row.get("exp_date") or None,
+                                        "cert_link": row.get("cert_link") or None,
+                                    }
+                                    try:
+                                        resp = api_client.put(f"/api/v1/certificates/{edit_row['certificate_id']}", json=payload)
+                                        if resp.status_code == 200:
+                                            st.success("Record updated.")
+                                        else:
+                                            st.error(f"Update failed: {resp.text}")
+                                    except Exception as e:
+                                        st.error(f"Update error: {e}")
+                                    st.session_state.pop("edit_row", None)
+                                    st.rerun()
+                            with c_cancel:
+                                if st.button("Cancel", use_container_width=True):
+                                    st.session_state.pop("edit_row", None)
+                                    st.rerun()
 
                     else:
                         st.info("No certificates currently stored in the database.")
@@ -850,8 +1080,6 @@ elif selected_nav == "DATABASES":
         # TABLE 2: AUTHORITIES LOOKUP TABLE
         # ──────────────────────────────────────────────────────────────────────
         elif selected_db_table == "Authorities":
-            st.subheader("Regulatory Issuing Authorities Reference Table (`authority_lookups`)")
-            st.markdown("Master dataset for regulatory issuing authorities, country jurisdictions, standard validity years, and normalization aliases.")
             
             try:
                 auth_resp = api_client.get("/api/v1/lookups/authorities")
@@ -882,19 +1110,71 @@ elif selected_nav == "DATABASES":
                                 df_auth["abbreviation"].astype(str).str.lower().str.contains(q)
                             ]
 
+                        auth_display_cols = [c for c in ["canonical_authority", "abbreviation", "country", "standard_validity_years"] if c in df_auth.columns]
+                        df_auth_display = df_auth[auth_display_cols]
+
+                        st.session_state["auth_table_df"] = df_auth
+
                         st.dataframe(
-                            df_auth,
+                            df_auth_display,
                             use_container_width=True,
                             hide_index=True,
+                            on_select="rerun",
+                            selection_mode="multi-row",
+                            key="auth_table",
                             column_config={
-                                "id": "ID",
                                 "canonical_authority": "Canonical Authority",
                                 "abbreviation": "Abbreviation",
                                 "country": "Country",
-                                "standard_validity_years": "Standard Validity (Years)",
-                                "aliases": "Aliases"
+                                "standard_validity_years": "Standard Validity (Years)"
                             }
                         )
+
+                        # ── Edit Selected Authority ──────────────────────────────
+                        auth_edit_row = st.session_state.get("edit_row")
+                        if auth_edit_row and st.session_state.get("edit_table") == "Authorities":
+                            auth_edit_cols = [c for c in ["canonical_authority", "abbreviation", "country", "standard_validity_years", "aliases"] if c in auth_edit_row]
+                            auth_edit_df = pd.DataFrame([auth_edit_row])[auth_edit_cols]
+                            st.markdown(f"**Editing authority `{auth_edit_row.get('canonical_authority')}`**")
+                            auth_edit = st.data_editor(
+                                auth_edit_df,
+                                use_container_width=True,
+                                hide_index=True,
+                                num_rows="fixed",
+                                key="edit_auth_editor",
+                                column_config={
+                                    "canonical_authority": "Canonical Authority",
+                                    "abbreviation": "Abbreviation",
+                                    "country": "Country",
+                                    "standard_validity_years": "Standard Validity (Years)",
+                                    "aliases": "Aliases",
+                                },
+                            )
+                            c_save, c_cancel = st.columns(2)
+                            with c_save:
+                                if st.button("Save Changes", type="primary", use_container_width=True):
+                                    a_row = auth_edit.iloc[0]
+                                    a_payload = {
+                                        "canonical_authority": a_row.get("canonical_authority") or None,
+                                        "abbreviation": a_row.get("abbreviation") or None,
+                                        "country": a_row.get("country") or None,
+                                        "standard_validity_years": int(a_row["standard_validity_years"]) if a_row.get("standard_validity_years") else None,
+                                        "aliases": [x.strip() for x in str(a_row.get("aliases") or "").split(",") if x.strip()],
+                                    }
+                                    try:
+                                        a_resp = api_client.put(f"/api/v1/lookups/authorities/{auth_edit_row['id']}", json=a_payload)
+                                        if a_resp.status_code == 200:
+                                            st.success("Authority updated.")
+                                        else:
+                                            st.error(f"Update failed: {a_resp.text}")
+                                    except Exception as e:
+                                        st.error(f"Update error: {e}")
+                                    st.session_state.pop("edit_row", None)
+                                    st.rerun()
+                            with c_cancel:
+                                if st.button("Cancel", use_container_width=True):
+                                    st.session_state.pop("edit_row", None)
+                                    st.rerun()
                     else:
                         st.info("No authority lookup records currently seeded in the database.")
                 else:
@@ -906,8 +1186,6 @@ elif selected_nav == "DATABASES":
         # TABLE 3: SUPPLIERS LOOKUP TABLE
         # ──────────────────────────────────────────────────────────────────────
         elif selected_db_table == "Suppliers":
-            st.subheader("Global Component Suppliers Reference Table (`supplier_lookups`)")
-            st.markdown("Master dataset for OEM component manufacturers, global brand names, and legal entity aliases.")
             
             try:
                 supp_resp = api_client.get("/api/v1/lookups/suppliers")
@@ -932,16 +1210,62 @@ elif selected_nav == "DATABASES":
                                 df_supp["aliases"].astype(str).str.lower().str.contains(q)
                             ]
 
+                        supp_display_cols = [c for c in ["canonical_supplier"] if c in df_supp.columns]
+                        df_supp_display = df_supp[supp_display_cols]
+
+                        st.session_state["supp_table_df"] = df_supp
+
                         st.dataframe(
-                            df_supp,
+                            df_supp_display,
                             use_container_width=True,
                             hide_index=True,
+                            on_select="rerun",
+                            selection_mode="multi-row",
+                            key="supp_table",
                             column_config={
-                                "id": "ID",
-                                "canonical_supplier": "Canonical Supplier",
-                                "aliases": "Aliases"
+                                "canonical_supplier": "Canonical Supplier"
                             }
                         )
+
+                        # ── Edit Selected Supplier ──────────────────────────────
+                        supp_edit_row = st.session_state.get("edit_row")
+                        if supp_edit_row and st.session_state.get("edit_table") == "Suppliers":
+                            supp_edit_cols = [c for c in ["canonical_supplier", "aliases"] if c in supp_edit_row]
+                            supp_edit_df = pd.DataFrame([supp_edit_row])[supp_edit_cols]
+                            st.markdown(f"**Editing supplier `{supp_edit_row.get('canonical_supplier')}`**")
+                            supp_edit = st.data_editor(
+                                supp_edit_df,
+                                use_container_width=True,
+                                hide_index=True,
+                                num_rows="fixed",
+                                key="edit_supp_editor",
+                                column_config={
+                                    "canonical_supplier": "Canonical Supplier",
+                                    "aliases": "Aliases",
+                                },
+                            )
+                            c_save, c_cancel = st.columns(2)
+                            with c_save:
+                                if st.button("Save Changes", type="primary", use_container_width=True):
+                                    s_row = supp_edit.iloc[0]
+                                    s_payload = {
+                                        "canonical_supplier": s_row.get("canonical_supplier") or None,
+                                        "aliases": [x.strip() for x in str(s_row.get("aliases") or "").split(",") if x.strip()],
+                                    }
+                                    try:
+                                        s_resp = api_client.put(f"/api/v1/lookups/suppliers/{supp_edit_row['id']}", json=s_payload)
+                                        if s_resp.status_code == 200:
+                                            st.success("Supplier updated.")
+                                        else:
+                                            st.error(f"Update failed: {s_resp.text}")
+                                    except Exception as e:
+                                        st.error(f"Update error: {e}")
+                                    st.session_state.pop("edit_row", None)
+                                    st.rerun()
+                            with c_cancel:
+                                if st.button("Cancel", use_container_width=True):
+                                    st.session_state.pop("edit_row", None)
+                                    st.rerun()
                     else:
                         st.info("No supplier lookup records currently seeded in the database.")
                 else:

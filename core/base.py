@@ -137,6 +137,10 @@ class BaseOCREngine(ABC):
         Template method: resolves PDF/image paths, iterates through pages,
         calls model-specific _run_inference(), and injects <Page X> delimiters.
 
+        Raises RuntimeError if any page fails so callers never treat partial or
+        error-marked OCR output as a successful extraction (which previously led
+        to empty records being persisted and error text being cached).
+
         Args:
             file_path:     Absolute path to the input document.
             output_folder: Folder for temporary intermediate files.
@@ -145,26 +149,30 @@ class BaseOCREngine(ABC):
             Layout-preserved Markdown string with <Page X> tags injected.
         """
         if not os.path.exists(file_path):
-            return f"Error: File not found — '{file_path}'."
+            raise RuntimeError(f"File not found: '{file_path}'.")
 
         image_paths = self._resolve_image_paths(file_path, output_folder)
         if not image_paths:
-            return "Error: Could not extract any images from the document."
+            raise RuntimeError("Could not extract any images from the document.")
 
         extracted_pages = []
+        failed_pages = []
         engine_name = getattr(self, "ENGINE_NAME", self.__class__.__name__)
 
         for i, target_image_path in enumerate(image_paths):
             page_num = i + 1
-            logger.info(f"⚙️  Running {engine_name} inference on page {page_num}/{len(image_paths)}...")
+            logger.info(f"  Running {engine_name} inference on page {page_num}/{len(image_paths)}...")
             try:
                 raw_output = self._run_inference(target_image_path, output_folder)
                 page_content = f"\n\n<Page {page_num}>\n\n{raw_output}"
                 extracted_pages.append(page_content)
             except Exception as e:
                 error_msg = f"Error processing page {page_num}: {e}"
-                logger.error(f"❌  {error_msg}")
-                extracted_pages.append(f"\n\n<Page {page_num}>\n\n[ERROR: {error_msg}]")
+                logger.error(f"  {error_msg}")
+                failed_pages.append(error_msg)
+
+        if failed_pages:
+            raise RuntimeError("; ".join(failed_pages))
 
         return "".join(extracted_pages).strip()
 
@@ -174,7 +182,7 @@ class BaseOCREngine(ABC):
         JPEG images, or returns the image path directly for standard image files.
         """
         if file_path.lower().endswith(".pdf"):
-            logger.info(f"📄 Converting PDF to high-resolution images (200 DPI): {os.path.basename(file_path)}")
+            logger.info(f" Converting PDF to high-resolution images (200 DPI): {os.path.basename(file_path)}")
             if convert_from_path is None:
                 raise ImportError(
                     "pdf2image is not installed. Run: pip install pdf2image && apt-get install -y poppler-utils"
@@ -182,7 +190,7 @@ class BaseOCREngine(ABC):
             try:
                 pages = convert_from_path(file_path, dpi=200)
             except Exception as e:
-                logger.error(f"❌ Error converting PDF: {e}")
+                logger.error(f" Error converting PDF: {e}")
                 return []
 
             if output_folder:
@@ -195,7 +203,7 @@ class BaseOCREngine(ABC):
 
             return image_paths
 
-        logger.info(f"🖼️  Using image: {os.path.basename(file_path)}")
+        logger.info(f"  Using image: {os.path.basename(file_path)}")
         return [file_path]
 
 
@@ -268,12 +276,12 @@ class BaseLLMEngine(ABC):
 
         if disable_thinking:
             logger.info(
-                f"⚡ Running {self.__class__.__name__} in Fast Non-Thinking Mode "
+                f" Running {self.__class__.__name__} in Fast Non-Thinking Mode "
                 f"(max_tokens={max_tokens})..."
             )
         else:
             logger.info(
-                f"🧠 Running {self.__class__.__name__} in Deep Thinking Mode "
+                f" Running {self.__class__.__name__} in Deep Thinking Mode "
                 f"(max_tokens={max_tokens})..."
             )
 
@@ -285,7 +293,7 @@ class BaseLLMEngine(ABC):
                 max_tokens=max_tokens,
             )
         except Exception as exc:
-            logger.error(f"❌ {self.__class__.__name__} completion failed: {exc}")
+            logger.error(f" {self.__class__.__name__} completion failed: {exc}")
             return "{}"
 
         logger.debug(f"Raw model output (first 500 chars): {raw_content[:500]}")

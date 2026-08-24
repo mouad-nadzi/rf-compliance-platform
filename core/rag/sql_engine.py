@@ -125,16 +125,16 @@ def _validate_sql(sql: str) -> bool:
     sanitized = _strip_sql_comments(stripped)
 
     if _MULTI_STATEMENT_RE.search(sanitized):
-        logger.warning("⚠️  Rejected SQL: multi-statement payload detected.")
+        logger.warning("  Rejected SQL: multi-statement payload detected.")
         return False
     if _FORBIDDEN_SQL_KEYWORDS.search(sanitized):
-        logger.warning("⚠️  Rejected SQL: forbidden DDL/DML keyword detected.")
+        logger.warning("  Rejected SQL: forbidden DDL/DML keyword detected.")
         return False
     if _SETUP_STATEMENT_RE.search(sanitized):
-        logger.warning("⚠️  Rejected SQL: session-altering SET statement detected.")
+        logger.warning("  Rejected SQL: session-altering SET statement detected.")
         return False
     if not _SELECT_PREFIX_RE.match(sanitized):
-        logger.warning("⚠️  Rejected SQL: statement does not begin with SELECT/WITH.")
+        logger.warning("  Rejected SQL: statement does not begin with SELECT/WITH.")
         return False
 
     return True
@@ -226,7 +226,7 @@ def _enforce_read_only(db_session) -> None:
         connection = db_session.connection()
         connection.exec_driver_sql("SET TRANSACTION READ ONLY")
     except Exception as e:
-        logger.warning(f"⚠️  Could not enforce read-only transaction: {e}")
+        logger.warning(f"  Could not enforce read-only transaction: {e}")
 
 
 def _cell_to_text(value: Any) -> str:
@@ -285,9 +285,9 @@ def _synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, Any]], co
         answer = str(parsed.get("answer", "")).strip()
         if answer:
             return answer
-        logger.warning("⚠️  Empty answer returned by SQL result synthesis LLM.")
+        logger.warning("  Empty answer returned by SQL result synthesis LLM.")
     except Exception as e:
-        logger.warning(f"⚠️  SQL result synthesis failed: {e}")
+        logger.warning(f"  SQL result synthesis failed: {e}")
 
     return _format_python_answer(user_query, rows, columns)
 
@@ -332,19 +332,19 @@ def execute_metadata_query(user_query: str, db_session) -> str:
         logger.warning("Empty or blank user query provided to execute_metadata_query.")
         return FALLBACK_MESSAGE
 
-    # 1. LLM → SQL translation
+    # 1. LLM  SQL translation
     try:
         sql = generate_sql_query(clean_query)
     except Exception as e:
-        logger.warning(f"⚠️  Text-to-SQL generation failed: {e}")
+        logger.warning(f"  Text-to-SQL generation failed: {e}")
         return FALLBACK_MESSAGE
 
     if not sql or not _validate_sql(sql):
-        logger.warning(f"⚠️  Generated SQL failed validation. SQL: {sql!r}")
+        logger.warning(f"  Generated SQL failed validation. SQL: {sql!r}")
         return FALLBACK_MESSAGE
 
     sql = _ensure_row_cap(sql)
-    logger.info(f"🔎 Executing generated SQL for METADATA_QUERY: {sql}")
+    logger.info(f" Executing generated SQL for METADATA_QUERY: {sql}")
 
     # 2. Open a local session if the caller did not supply one
     close_session_on_exit = False
@@ -361,18 +361,18 @@ def execute_metadata_query(user_query: str, db_session) -> str:
         columns = list(result.keys())
         rows = [dict(row) for row in result.mappings().all()]
     except SQLAlchemyError as e:
-        logger.warning(f"⚠️  SQLAlchemy error during metadata query execution: {e}")
+        logger.warning(f"  SQLAlchemy error during metadata query execution: {e}")
         try:
             db_session.rollback()
         except Exception as rollback_err:
-            logger.warning(f"⚠️  Rollback failed: {rollback_err}")
+            logger.warning(f"  Rollback failed: {rollback_err}")
         return FALLBACK_MESSAGE
     except Exception as e:
-        logger.warning(f"⚠️  Unexpected error during metadata query execution: {e}")
+        logger.warning(f"  Unexpected error during metadata query execution: {e}")
         try:
             db_session.rollback()
         except Exception as rollback_err:
-            logger.warning(f"⚠️  Rollback failed: {rollback_err}")
+            logger.warning(f"  Rollback failed: {rollback_err}")
         return FALLBACK_MESSAGE
     finally:
         if close_session_on_exit:
@@ -423,6 +423,6 @@ if __name__ == "__main__":
     print()
 
     if all_passed:
-        print("✅ All SQL validation tests passed.")
+        print(" All SQL validation tests passed.")
     else:
-        print("❌ Some SQL validation tests failed.")
+        print(" Some SQL validation tests failed.")

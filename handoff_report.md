@@ -30,7 +30,7 @@ The entire pipeline operates **100% locally** without relying on any external AP
 │   │ Document Ingestion│            │   RAG Q&A Chat        │     │
 │   └────────┬─────────┘            └───────────┬───────────┘     │
 │     TestClient (in-process)             engines.rag             │
-│                                (router → retriever → qa)        │
+│                                (router  retriever  qa)        │
 └────────────┼──────────────────────────────────┼─────────────────┘
              ▼                                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -38,7 +38,7 @@ The entire pipeline operates **100% locally** without relying on any external AP
 │                                                                 │
 │   POST /api/v1/parse                                            │
 │   ┌──────────┐   ┌──────────────┐       ┌─────────────────┐     │
-│   │OCR Engine│ → │  Extractor   │ ----> │ Storage Hydrator│     │
+│   │OCR Engine│  │  Extractor   │ ----> │ Storage Hydrator│     │
 │   │(registry)│   │  (LLM Engine)│       │  (pgvector)     │     │
 │   └──────────┘   └──────────────┘       └────────┬────────┘     │
 └──────────────────────────────────────────────────┼──────────────┘
@@ -56,65 +56,65 @@ The entire pipeline operates **100% locally** without relying on any external AP
 
 ```
 Project/
-├── server/                          ← FastAPI application package (model-agnostic via registry & auto DB init)
-│   ├── main.py                   ← FastAPI app entrypoint (uvicorn server.main:app)
-│   ├── config.py                 ← Central config (LLM_ENGINE=qwen3.8-27b-gguf, OCR_ENGINE=glm-ocr, DEFAULT_CONTEXT_WINDOW=8192, EMBEDDING_DEVICE=cpu)
+├── server/                           FastAPI application package (model-agnostic via registry & auto DB init)
+│   ├── main.py                    FastAPI app entrypoint (uvicorn server.main:app)
+│   ├── config.py                  Central config (LLM_ENGINE=qwen3.8-27b-gguf, OCR_ENGINE=glm-ocr, DEFAULT_CONTEXT_WINDOW=8192, EMBEDDING_DEVICE=cpu)
 │   └── __init__.py
-├── core/                         ← Production-ready AI compute & RAG engines (formerly engines/)
+├── core/                          Production-ready AI compute & RAG engines (formerly engines/)
 │   │
-│   ├── rag/                      ← RAG Q&A pipeline (router, chunker, embeddings, retriever, sql_engine, hybrid_engine, orchestrator, qa)
+│   ├── rag/                       RAG Q&A pipeline (router, chunker, embeddings, retriever, sql_engine, hybrid_engine, orchestrator, qa)
 │   │   ├── __init__.py
-│   │   ├── router.py             ← Intent Router (METADATA_QUERY, UNSTRUCTURED_RAG, HYBRID_QUERY)
-│   │   ├── sql_engine.py         ← Text-to-SQL engine (execute_metadata_query)
-│   │   ├── hybrid_engine.py      ← Hybrid Dense/Sparse RRF Engine with Parent Expansion (retrieve_hybrid_context & execute_unstructured_query)
-│   │   ├── orchestrator.py       ← Central Dual-Path RAG Orchestrator (answer_compliance_query)
-│   │   ├── chunker.py            ← Page-aware paragraph chunking with <Page X> tracking
-│   │   ├── embeddings.py         ← 1024-d dense vector embeddings facade (BAAI/bge-m3, CPU)
-│   │   ├── retriever.py          ← Dual-path retrieval (Text-to-SQL + Hybrid Dense/Sparse RRF)
-│   │   └── qa.py                 ← Cross-lingual Q&A synthesis with citation generation
+│   │   ├── router.py              Intent Router (METADATA_QUERY, UNSTRUCTURED_RAG, HYBRID_QUERY)
+│   │   ├── sql_engine.py          Text-to-SQL engine (execute_metadata_query)
+│   │   ├── hybrid_engine.py       Hybrid Dense/Sparse RRF Engine with Parent Expansion (retrieve_hybrid_context & execute_unstructured_query)
+│   │   ├── orchestrator.py        Central Dual-Path RAG Orchestrator (answer_compliance_query)
+│   │   ├── chunker.py             Page-aware paragraph chunking with <Page X> tracking
+│   │   ├── embeddings.py          1024-d dense vector embeddings facade (BAAI/bge-m3, CPU)
+│   │   ├── retriever.py           Dual-path retrieval (Text-to-SQL + Hybrid Dense/Sparse RRF)
+│   │   └── qa.py                  Cross-lingual Q&A synthesis with citation generation
 │   │
-│   ├── utils/                    ← GPU guardrails & VRAM helper utilities
+│   ├── utils/                     GPU guardrails & VRAM helper utilities
 │   │   ├── __init__.py
-│   │   ├── vram.py               ← ensure_headroom() graceful MemoryError guard + free_vram_mb() + flush_gpu_cache()
-│   │   └── system_check.py       ← System readiness verification & initialization gate
+│   │   ├── vram.py                ensure_headroom() graceful MemoryError guard + free_vram_mb() + flush_gpu_cache()
+│   │   └── system_check.py        System readiness verification & initialization gate
 │   │
-│   ├── llm/                      ← Pluggable LLM engines (qwen3_8_27b, qwen3_35b, qwen3_14b, qwen3_8b, qwen2_gguf, gemma4_26b, qwen_agentworld)
-│   ├── ocr/                      ← Pluggable OCR engines (glm_ocr, got_ocr2, deepseek_ocr2)
-│   ├── registry.py               ← Model registry (OCR_REGISTRY, LLM_REGISTRY) + lazy factory
-│   ├── extractor.py              ← Structured extraction, lookup enrichment (enrich_certificate_metadata), & atomic DB hydration
-│   ├── prompts.py                ← System prompt configurations (CERTIFICATE_EXTRACTION_SYSTEM_PROMPT, router, & cross-lingual QA)
-│   └── base.py                   ← Abstract BaseOCREngine / BaseLLMEngine contracts
+│   ├── llm/                       Pluggable LLM engines (qwen3_8_27b, qwen3_35b, qwen3_14b, qwen3_8b, qwen2_gguf, gemma4_26b, qwen_agentworld)
+│   ├── ocr/                       Pluggable OCR engines (glm_ocr, got_ocr2, deepseek_ocr2)
+│   ├── registry.py                Model registry (OCR_REGISTRY, LLM_REGISTRY) + lazy factory
+│   ├── extractor.py               Structured extraction, lookup enrichment (enrich_certificate_metadata), & atomic DB hydration
+│   ├── prompts.py                 System prompt configurations (CERTIFICATE_EXTRACTION_SYSTEM_PROMPT, router, & cross-lingual QA)
+│   └── base.py                    Abstract BaseOCREngine / BaseLLMEngine contracts
 │
-├── schemas/                      ← Pydantic data models & SQLAlchemy ORM models
-│   ├── extraction.py             ← 7-field CertificateExtractionSchema + CertificateMetadata & CertificateChunk ORM
-│   └── qa.py                     ← Citation & QAResponseSchema Pydantic models
+├── schemas/                       Pydantic data models & SQLAlchemy ORM models
+│   ├── extraction.py              7-field CertificateExtractionSchema + CertificateMetadata & CertificateChunk ORM
+│   └── qa.py                      Citation & QAResponseSchema Pydantic models
 │
-├── storage/                      ← Relational, vector, lookup DB storage & master seed data
-│   ├── database.py               ← SQLAlchemy engine, SessionLocal, get_db_session, & pgvector init_db()
-│   ├── models.py                 ← ORM models for AuthorityLookup & SupplierLookup reference tables
-│   ├── seed_lookups.py           ← Idempotent JSON ingestion script reading from data/lookups/*.json
-│   ├── backup.py                 ← Portable pg_dump database export utility
+├── storage/                       Relational, vector, lookup DB storage & master seed data
+│   ├── database.py                SQLAlchemy engine, SessionLocal, get_db_session, & pgvector init_db()
+│   ├── models.py                  ORM models for AuthorityLookup & SupplierLookup reference tables
+│   ├── seed_lookups.py            Idempotent JSON ingestion script reading from data/lookups/*.json
+│   ├── backup.py                  Portable pg_dump database export utility
 │   └── __init__.py
 │
-├── ui/                           ← Streamlit frontend
-│   ├── app.py                    ← Two-tab UI (Document Ingestion + RAG Q&A Chat with Intent Badges & Sources)
-│   └── static/                   ← Branding assets (stellantis.png)
+├── ui/                            Streamlit frontend
+│   ├── app.py                     Two-tab UI (Document Ingestion + RAG Q&A Chat with Intent Badges & Sources)
+│   └── static/                    Branding assets (stellantis.png)
 │
-├── data/                         ← Consolidated runtime data & seed datasets
-│   ├── lookups/                  ← Master reference datasets (authorities.json, suppliers.json) — tracked
-│   ├── uploads/                  ← Batch ingestion staging (gitignored)
-│   ├── files/                    ← Permanent uploaded files served statically at /files/ (gitignored)
-│   ├── ocr_cache/                ← OCR markdown cache for batch resume (gitignored)
-│   ├── model_cache/              ← Cached AI model weights (gitignored)
-│   └── postgres/                 ← PostgreSQL 16 data volume (gitignored)
+├── data/                          Consolidated runtime data & seed datasets
+│   ├── lookups/                   Master reference datasets (authorities.json, suppliers.json) — tracked
+│   ├── uploads/                   Batch ingestion staging (gitignored)
+│   ├── files/                     Permanent uploaded files served statically at /files/ (gitignored)
+│   ├── ocr_cache/                 OCR markdown cache for batch resume (gitignored)
+│   ├── model_cache/               Cached AI model weights (gitignored)
+│   └── postgres/                  PostgreSQL 16 data volume (gitignored)
 │
-├── handoff_report.md               ← Complete architectural handoff report (read first in new sessions)
+├── handoff_report.md                Complete architectural handoff report (read first in new sessions)
 │
-├── docker-compose.yaml           ← PostgreSQL 16 + pgvector container infrastructure
-├── requirements.txt              ← Python dependencies (includes sqlalchemy, pgvector, sentence-transformers, llama-cpp-python)
-├── Dockerfile                    ← CUDA image build (torch 2.6.0, llama-cpp-python 0.3.34-cu122, transformers 5.15.1)
-├── entrypoint.sh                 ← Container boot: DB wait → init_db → seed lookups → Streamlit + uvicorn
-└── .gitignore                    ← Runtime artifacts excluded from version control
+├── docker-compose.yaml            PostgreSQL 16 + pgvector container infrastructure
+├── requirements.txt               Python dependencies (includes sqlalchemy, pgvector, sentence-transformers, llama-cpp-python)
+├── Dockerfile                     CUDA image build (torch 2.6.0, llama-cpp-python 0.3.34-cu122, transformers 5.15.1)
+├── entrypoint.sh                  Container boot: DB wait  init_db  seed lookups  Streamlit + uvicorn
+└── .gitignore                     Runtime artifacts excluded from version control
 ```
 
 ---
@@ -172,8 +172,8 @@ In every mode, reasoning traces are scrubbed **unconditionally (mode-agnostic)**
 
 | Metric | Benchmark Result |
 |---|---|
-| **Router Accuracy Rate** | **100.0%** (99 out of 99 queries correctly classified) 🏆 |
-| **Average Latency per Query** | **1,231.6 ms (~1.23 seconds)** ⚡ |
+| **Router Accuracy Rate** | **100.0%** (99 out of 99 queries correctly classified)  |
+| **Average Latency per Query** | **1,231.6 ms (~1.23 seconds)**  |
 | **Total Evaluation Time** | **121.92 seconds** |
 | **Model Quantization** | `UD-IQ2_M` (9.33 GB file size) |
 | **Active VRAM Usage** | **~10.5 GB / 14.56 GB** (Tesla T4 GPU) |
@@ -208,7 +208,7 @@ A brand-new Colab runtime does **not** inherit the verified environment. The cur
 
 > **vLLM is no longer required.** GLM-OCR is a pure-HF backend (§13) — nothing imports vLLM anymore. The 2026-08-20 verified session kept the Colab default `torch 2.5.1+cu124`; note that **torch 2.5.1 blocks `bge-m3` `.bin` loading** (CVE-2025-32434 guard needs torch >= 2.6) so embedding vectors fall back to all-zero until torch is upgraded (§13.4). A fully-provisioned `colab/setup.sh` session installs `torch 2.6.0` (STEP 3), which resolves this automatically.
 
-Verified on 2026-08-20: `transformers 5.15.1` + `llama-cpp-python 0.3.34` (CUDA offload active) + `numpy 2.0.2` + `torch 2.5.1+cu124` + PostgreSQL 14/pgvector 0.8.6 → full end-to-end pipeline (OCR → Gemma extraction → pgvector persistence → SQL verification) ran successfully.
+Verified on 2026-08-20: `transformers 5.15.1` + `llama-cpp-python 0.3.34` (CUDA offload active) + `numpy 2.0.2` + `torch 2.5.1+cu124` + PostgreSQL 14/pgvector 0.8.6  full end-to-end pipeline (OCR  Gemma extraction  pgvector persistence  SQL verification) ran successfully.
 
 ---
 
@@ -224,8 +224,8 @@ Verified on 2026-08-20: `transformers 5.15.1` + `llama-cpp-python 0.3.34` (CUDA 
   - [x] Centralized context window management (`DEFAULT_CONTEXT_WINDOW = 8192` for T4-safe operation)
   - [x] **Phase 3 Step 1: Text-to-SQL engine (`core/rag/sql_engine.py`)** — `execute_metadata_query()` end-to-end validated against live Colab PostgreSQL (2026-08-09)
   - [x] Bulk ingestion + duplicate prevention (`GET /api/v1/certificates/exists` + Streamlit batch tab)
-  - [x] **Phase 3 Step 2: Sequential Two-Phase Batch Ingestion (2026-08-11)** — single-residency model lifecycle (`core/utils/model_lifecycle.py`), `POST /api/v1/batch/ingest` + status/certificates endpoints, deterministic resume via OCR markdown cache + manifest, Streamlit polling UI. Fixes the 2026-08-10 batch OOM (84 page OOMs → NULL supplier rows).
-  - [x] **Colab re-verify of the new batch architecture (2026-08-11)** — unpacked `project_sync.zip`, installed deps, booted Streamlit + cloudflared, and ran an end-to-end multi-file batch (OCR phase → extract phase → Q&A) with zero OOMs and no NULL supplier rows.
+  - [x] **Phase 3 Step 2: Sequential Two-Phase Batch Ingestion (2026-08-11)** — single-residency model lifecycle (`core/utils/model_lifecycle.py`), `POST /api/v1/batch/ingest` + status/certificates endpoints, deterministic resume via OCR markdown cache + manifest, Streamlit polling UI. Fixes the 2026-08-10 batch OOM (84 page OOMs  NULL supplier rows).
+  - [x] **Colab re-verify of the new batch architecture (2026-08-11)** — unpacked `project_sync.zip`, installed deps, booted Streamlit + cloudflared, and ran an end-to-end multi-file batch (OCR phase  extract phase  Q&A) with zero OOMs and no NULL supplier rows.
   - [x] **Phase 3 Step 3: Pure-HF GLM-OCR Backend Migration (2026-08-20)** — replaced the vLLM backend in `core/ocr/glm_ocr.py` with native `transformers>=5.0` (no vLLM, no config stubs, no weight-remap patches); reproduced the full benchmark end-to-end on the vLLM-era target document (`sandbox/benchmark_pure_HF.md`) and verified PostgreSQL/pgvector persistence via SQL. Known caveat: `bge-m3` vectors are all-zero until torch >= 2.6 (see §13.4).
   - [x] **Phase 3 Step 4: Folder/Subfolder Ingestion & ZIP Archive Unpacking (2026-08-21)** — extended `POST /api/v1/batch/ingest` and `ui/app.py` to accept `.zip` folder archives, automatically expanding nested directory structures and extracting all `.pdf`, `.png`, `.jpg`, `.jpeg` document files for batch ingestion.
   - [x] **Phase 3 Step 5: Comprehensive Case-Insensitive Duplicate Guardrails (2026-08-21)** — implemented universal case-insensitive `file_name` and `certif_number` + `country` pre-checks and in-place upsert logic across batch ingestion, single parse, and manual certificate creation endpoints.
@@ -293,13 +293,13 @@ The following constraints are **Colab-only** workarounds enforced inside `colab/
 
 | # | Colab Constraint | Root Cause | Fix Applied (Colab only) | Production Mapping |
 |---|---|---|---|---|
-| 1 | `llama-cpp-python` must be pinned | PyPI's unpinned build silently wins (CPU-only); default `gemma4-26b-gguf` uses the `gemma4` GGUF architecture that older llama.cpp builds reject (`0.3.19` → `unknown model architecture: 'gemma4'`); also loading a second model copy on the 16GB T4 causes `cudaMalloc: out of memory` | **`pip install` the prebuilt `v0.3.34-cu122` GitHub release wheel directly** (`llama_cpp_python-0.3.34-py3-none-manylinux_2_35_x86_64.whl`, glibc 2.35 = Colab) — installs in ~60s. **Do NOT** use `--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu122` for 0.3.34 — no cp312 binary exists there, pip falls back to ~15 min source compilation. **0.3.19 is forbidden** (rejects gemma4 arch). Kernel restart after any C-extension change | Pin the same version in the production image; serve via vLLM/Ollama for concurrency |
+| 1 | `llama-cpp-python` must be pinned | PyPI's unpinned build silently wins (CPU-only); default `gemma4-26b-gguf` uses the `gemma4` GGUF architecture that older llama.cpp builds reject (`0.3.19`  `unknown model architecture: 'gemma4'`); also loading a second model copy on the 16GB T4 causes `cudaMalloc: out of memory` | **`pip install` the prebuilt `v0.3.34-cu122` GitHub release wheel directly** (`llama_cpp_python-0.3.34-py3-none-manylinux_2_35_x86_64.whl`, glibc 2.35 = Colab) — installs in ~60s. **Do NOT** use `--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu122` for 0.3.34 — no cp312 binary exists there, pip falls back to ~15 min source compilation. **0.3.19 is forbidden** (rejects gemma4 arch). Kernel restart after any C-extension change | Pin the same version in the production image; serve via vLLM/Ollama for concurrency |
 | 2 | `numpy` must be pinned to 2.0.2 | Colab preinstalls numpy 2.5.2, which removes `_blas_supports_fpe`; breaks scikit-learn 1.6.1 and numba 0.60 at import time | `pip install numpy==2.0.2` | Pin `numpy>=2.0,<2.3` (or the tested 2.0.2) in requirements |
 | 3 | `torchcodec` must be removed | `sentence-transformers` 5.6.0 imports `torchcodec`; its libtorchcodec is ABI-incompatible with torch 2.6.0+cu118 (and FFmpeg libs are missing), raising `RuntimeError` at import | `pip uninstall -y torchcodec` (not needed; bge-m3 embeddings don't use it) | Not installed in production; pin a compatible torchcodec if audio/video decoding is ever needed |
 | 4 | Public ingress blocked | Colab firewall blocks ports 8000/8501 | `.streamlit/config.toml` with `headless=true`, `enableCORS=false`, `enableXsrfProtection=false` + `cloudflared tunnel --url http://localhost:8501` | Standard reverse proxy / container port mapping; no CORS overrides needed |
 | 5 | Single 16GB T4 GPU | Only one heavyweight model process can be resident at a time | Never run the Streamlit in-process TestClient and a separate model subprocess simultaneously; stop the app before running standalone engine tests | Unbounded multi-GPU inference in production |
 | 6 | `transformers` must be >= 5.0 for GLM-OCR | 4.49.0 rejects `glm_ocr` (unknown config); `AutoModelForConditionalGeneration` was removed in 5.x | `pip install transformers==5.15.1` (verified); use `AutoModelForImageTextToText` for `glm_ocr` | Pin `transformers>=5.0` in the image |
-| 7 | `torch` must be >= 2.6 to load `bge-m3` `.bin` | transformers 4.51+/5.x block `torch.load(weights_only=True)` of `.bin` on torch < 2.6 (CVE-2025-32434 guard); Colab ships torch 2.5.1 → `core/rag/embeddings.py` silently falls back to **zero vectors** | Upgrade torch to >= 2.6 (metadata/chunks unaffected); or convert the model to safetensors | Pin `torch>=2.6` in the image so embeddings are real |
+| 7 | `torch` must be >= 2.6 to load `bge-m3` `.bin` | transformers 4.51+/5.x block `torch.load(weights_only=True)` of `.bin` on torch < 2.6 (CVE-2025-32434 guard); Colab ships torch 2.5.1  `core/rag/embeddings.py` silently falls back to **zero vectors** | Upgrade torch to >= 2.6 (metadata/chunks unaffected); or convert the model to safetensors | Pin `torch>=2.6` in the image so embeddings are real |
 
 ## 11. T4 VRAM Fit Audit: OCR + LLM + Embeddings (2026-08-09)
 
@@ -310,7 +310,7 @@ Empirically verified on the Colab T4 (15,360 MiB) by loading all three models in
 | GLM-OCR 0.9B | FP16, `device_map="cuda"` (now pure-HF backend) | ~2.2 GB |
 | Gemma 4 26B (UD-IQ2_M) | `n_gpu_layers=-1`, `flash_attn=True`, KV q8_0 | ~11.9 GB @ 16K ctx |
 | bge-m3 | **FP16** (`torch_dtype`) | ~1.1 GB |
-| **Total (16K ctx, FP32 emb)** | | **~16.4 GB → CUDA OOM** |
+| **Total (16K ctx, FP32 emb)** | | **~16.4 GB  CUDA OOM** |
 | **Total (8K ctx, FP16 emb)** | | **~14.3 GB (524 MiB free)** |
 
 **Conclusion:** All three models fit only with `DEFAULT_CONTEXT_WINDOW=8192` **and** FP16 embeddings. 16K context or FP32 embeddings overflow the T4.
@@ -320,16 +320,16 @@ Empirically verified on the Colab T4 (15,360 MiB) by loading all three models in
 2. **`core/rag/embeddings.py`** loaded bge-m3 in FP32 (~2.3 GB), then FP16 (`SentenceTransformer(..., model_kwargs={"torch_dtype": torch.float16})`, ~1.1 GB). Both were later superseded by the CPU move below — bge-m3 now runs on CPU (`EMBEDDING_DEVICE="cpu"`, no dtype kwargs), keeping the T4 entirely for OCR + LLM.
 
 **Final design decision — bge-m3 moved to CPU (2026-08-09 PM):**
-Idle-fit alone was not enough. A live ingestion run (real image OCR → extraction → embeddings → SQL) with all three co-resident hit a **real CUDA OOM**: GLM-OCR's dynamic KV cache spiked free VRAM to ~350 MiB mid-generation, then Gemma crashed with `ggml_abort` on an unfourth 40 MiB allocation. Root cause: hardcoded `max_new_tokens=8192` in `glm_ocr.py` built a +1.5 GB transient KV cache on top of the loaded models (peak 14,811 MiB).
+Idle-fit alone was not enough. A live ingestion run (real image OCR  extraction  embeddings  SQL) with all three co-resident hit a **real CUDA OOM**: GLM-OCR's dynamic KV cache spiked free VRAM to ~350 MiB mid-generation, then Gemma crashed with `ggml_abort` on an unfourth 40 MiB allocation. Root cause: hardcoded `max_new_tokens=8192` in `glm_ocr.py` built a +1.5 GB transient KV cache on top of the loaded models (peak 14,811 MiB).
 
 Resolution (all code in `server/config.py` / `core/utils/vram.py` / engines):
 - **`EMBEDDING_DEVICE="cpu"`** — bge-m3 leaves the T4 entirely (~1.1 GB freed). Embeddings are per-chunk during ingestion, so CPU latency (~2-4 s/batch) is acceptable.
 - **GLM-OCR token cap (`min(OCR_MAX_NEW_TOKENS, 2048)`)** — `config.OCR_MAX_NEW_TOKENS` is `8192`; the engine caps generation at `2048` via `min()`, bounding GLM-OCR's dynamic KV cache.
 - **`MIN_FREE_VRAM_MB=1024` headroom guard** — `core/utils/vram.py` `ensure_headroom()` raises a **graceful `MemoryError`** (mapped to HTTP 507 in `server/main.py`) before OCR generation and LLM extraction instead of an uncatchable kernel OOM.
 - **`MAX_EXTRACTION_PROMPT_CHARS=20000`** — truncates long OCR text so extraction stays inside the 8K context.
-- Cache flush (`flush_gpu_cache()`) between OCR → extraction enables the +1 GB headroom check to pass.
+- Cache flush (`flush_gpu_cache()`) between OCR  extraction enables the +1 GB headroom check to pass.
 
-**Verified end-to-end after the final fixes** (real upload through `/api/v1/parse` → 10 chunks persisted → SQL Q&A): OCR headroom OK (1,644 MiB free), extraction OK (1,590 MiB free), embeddings on CPU, **PARSE status 200**, supplier correctly extracted, peak `14,841 MiB / 14,913 MiB` usable — OOM-free and graceful-guard-protected.
+**Verified end-to-end after the final fixes** (real upload through `/api/v1/parse`  10 chunks persisted  SQL Q&A): OCR headroom OK (1,644 MiB free), extraction OK (1,590 MiB free), embeddings on CPU, **PARSE status 200**, supplier correctly extracted, peak `14,841 MiB / 14,913 MiB` usable — OOM-free and graceful-guard-protected.
 
 **Production note:** On GPU-limited hardware keep `DEFAULT_CONTEXT_WINDOW <= 8192` when co-hosting OCR + 26B LLM on the same T4, and keep `EMBEDDING_DEVICE="cpu"`. On multi-GPU/4090-class hardware 16K ctx and GPU embeddings can be restored via `server/config.py`.
 
@@ -364,7 +364,7 @@ Sequential model load/unload calls (`load_ocr_only`, `unload_ocr`, `load_llm_onl
 |---|---|---|
 | GLM-OCR load | 18.25 s | 13.77 s |
 | OCR total (2 pages) | 2.45 s | 60.31 s |
-| Avg / page | **1.22 s/page ✅ MET** | **30.15 s/page ❌ EXCEEDED** |
+| Avg / page | **1.22 s/page  MET** | **30.15 s/page  EXCEEDED** |
 | OCR output | Truncated (~20–24 tok, `stop_token_ids`) | Complete legal document (~650 tok/page) |
 | Gemma 4 26B load | 209.25 s | 81.52 s (cached GGUF) |
 | Extraction | 9.26 s | 7.13 s |
@@ -505,6 +505,42 @@ The platform is officially live in production on a dedicated GCP NVIDIA L4 GPU i
 - **Centralized Public Host Config (`server/config.py`)**: Added `PUBLIC_HOST` (defaulting to GCP external IP `34.158.150.51`) and `PUBLIC_API_URL` (`http://34.158.150.51:8000`).
 - **Zero-Hardcoding Link Normalization (`ui/app.py`)**: Built a zero-hardcoding dynamic link transformer (`_normalize_link`). Any link containing `/files/` dynamically extracts the relative file path and prepends `PUBLIC_API_URL` to route requests directly to FastAPI's static file endpoint on port **8000** (bypassing Streamlit's port 8501). External authenticated links (e.g. Stellantis portal URLs) are passed through untouched.
 - **Database Storage Guardrails**: PostgreSQL container volume permissions (`/data/postgres` owned by `70:70` postgres UID) are explicitly preserved during host file syncs.
+
+
+## 19. Production UI/Architecture Refactor & Operational Fixes (2026-08-24 Update)
+
+### 19.1 Streamlit UI Overhaul (`ui/app.py`, `.streamlit/config.toml`)
+- **Blue Brand Theme:** Replaced Streamlit's default red primary color with the Stellantis logo blue (`#243881`). Centralized into CSS custom properties (`--brand-blue`, `--brand-blue-light`, `--brand-blue-dark`) and a `[theme]` block in `.streamlit/config.toml`. Applied to nav pills, buttons, alerts, trend text, and status dots.
+- **Top Navbar Rework:** Logo sized to its natural aspect ratio (wide banner) instead of a square box; nav row content vertically centered; fixed Streamlit 1.62 radio selector (`data-selected` instead of `data-checked`) and hid the default radio circles.
+- **Breadcrumb Header Bar Removed:** Deleted the "HOME > INGESTION DASHBOARD / HOME PAGE" bar above page content.
+- **Page Spacing:** Added bottom padding (`3rem`) to all pages; removed extraneous whitespace around the navbar.
+
+### 19.2 DATABASES Page: Full CRUD via Tables (`ui/app.py`, `server/main.py`)
+- **Interactive Tables:** RF Certificates uses `st.dataframe` with multi-row selection; Authorities/Suppliers tables display without internal `id`/`aliases` columns.
+- **Selected-Row Actions (sidebar):** "Export Excel" (openpyxl), "Delete Selected", and "Edit Selected" apply only to the selected row(s). Added REST endpoints: `PUT /api/v1/certificates/{id}`, `PUT /api/v1/lookups/authorities/{id}`, `PUT /api/v1/lookups/suppliers/{id}` (plus existing add/delete endpoints).
+- **In-Grid Add/Edit:** "+ Add Row" button opens a dynamic `data_editor` for entering new certificate rows; "Edit Selected" loads the selected row into a pre-filled editor. Both commit via the API.
+- **Column-Based Multi-Filter:** RF Certificates replaced the single search box with a per-column dropdown filter supporting multiple AND-ed conditions ("Add Filter" / remove).
+- **"Last Update" Column:** Added `last_update` (from `created_at`) to the certificates API response and table.
+
+### 19.3 Batch Ingestion: Single Per-File Pipeline (`server/main.py`, `ui/app.py`)
+- Removed the legacy two-phase batch (all-OCR then all-extract). Each file is now processed end-to-end (OCR -> extraction -> persist) before the next, with unified progress reporting. Both models stay resident, so no phase-based lifecycle is needed.
+- The "Select certificate documents" ingestion moved from HOME into DATABASES > Management Actions > "Ingest Certificate Documents".
+
+### 19.4 Eager Model Preload & VRAM Management (`server/main.py`, `server/config.py`)
+- Both GLM-OCR and Qwen3.8-27B GGUF now preload into VRAM at API startup (fail-fast, no lazy fallback). Embeddings (bge-m3) preload on CPU.
+- **Embeddings stay on CPU** (`EMBEDDING_DEVICE="cpu"`): moving them to CUDA reduced OCR headroom and caused a CUDA OOM during page generation. Measured steady state: ~9.2 GB used / ~13.3 GB free on the L4.
+
+### 19.5 OCR Failure Integrity Fix (`core/base.py`)
+- `process_document` previously swallowed per-page inference failures, returning `[ERROR: ...]` text as "successful" OCR. This caused error markdown to be cached and empty records persisted. It now raises `RuntimeError` on any page failure, so failed files are marked failed (no cache write, no DB record, no false manifest entries).
+
+### 19.6 UI-to-API Connectivity: Real HTTP over TestClient (`ui/app.py`, `server/main.py`)
+- Replaced the Colab-era in-process `fastapi.testclient.TestClient` with a persistent `httpx.Client` against the real uvicorn service on `http://localhost:8000`.
+- Eliminates the "Running get_api_client()" freeze (no in-process FastAPI lifespan / model load in the UI process) and halves VRAM (models now resident only in the uvicorn process).
+- The UI process no longer imports `server.main` or the heavy ML stack (only the standalone `core.rag.chunker.chunk_for_qa`), keeping it light.
+
+### 19.7 Repository Hygiene
+- Removed all emojis / decorative Unicode symbols from the codebase (log messages, comments, docs); arrows replaced with ASCII `->` where meaningful.
+- Added a "Code Style Directives - No Emojis" rule to `.agents/AGENTS.md`.
 
 
 

@@ -103,5 +103,5 @@ def init_db() -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"❌ Failed to initialize database: {e}")
+        logger.error(f" Failed to initialize database: {e}")
         return False

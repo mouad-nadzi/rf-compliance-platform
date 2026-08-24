@@ -204,7 +204,7 @@ def _install_transformers_compat():
     torch.Tensor.masked_scatter_ = _masked_scatter_same_dtype
 
     llama_mod._deepseek_ocr2_compat_installed = True
-    logger.info("🩹 Installed DeepSeek-OCR-2 ↔ transformers 5.x compatibility shim (LlamaAttention + import_utils).")
+    logger.info(" Installed DeepSeek-OCR-2  transformers 5.x compatibility shim (LlamaAttention + import_utils).")
     _patch_config_class_defaults()
 
 
@@ -233,7 +233,7 @@ class DeepSeekOCR2Engine(BaseOCREngine):
     def load(self, cache_dir: str) -> None:
         """Load the DeepSeek-OCR-2 model in full FP16 (no quantization)."""
         if self._model is not None:
-            logger.info("⚡ DeepSeek-OCR-2 is already loaded, skipping reload.")
+            logger.info(" DeepSeek-OCR-2 is already loaded, skipping reload.")
             return
 
         _install_transformers_compat()
@@ -264,10 +264,10 @@ class DeepSeekOCR2Engine(BaseOCREngine):
             ).eval()
 
         except Exception as e:
-            logger.error(f"❌ CRITICAL ERROR: Unexpected error loading DeepSeek-OCR-2. Details: {e}")
+            logger.error(f" CRITICAL ERROR: Unexpected error loading DeepSeek-OCR-2. Details: {e}")
             raise RuntimeError(f"DeepSeek-OCR-2 failed to load: {e}") from e
 
-        logger.info("✅ DeepSeek-OCR-2 loaded successfully (full FP16)!")
+        logger.info(" DeepSeek-OCR-2 loaded successfully (full FP16)!")
 
     # ── Private helpers ───────────────────────────────────────────────────
 

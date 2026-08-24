@@ -61,16 +61,16 @@ def export_database_to_sql(output_path: Optional[Path] = None) -> bool:
             timeout=60,
             env=env,
         )
-        logger.info(f"✅ Database successfully dumped to {target_path}")
+        logger.info(f" Database successfully dumped to {target_path}")
         return True
     except subprocess.CalledProcessError as e:
-        logger.error(f"❌ pg_dump execution failed (exit code {e.returncode}): {e.stderr}")
+        logger.error(f" pg_dump execution failed (exit code {e.returncode}): {e.stderr}")
         return False
     except FileNotFoundError:
-        logger.warning("⚠️ 'pg_dump' CLI utility not found in system PATH. Backup skipped.")
+        logger.warning(" 'pg_dump' CLI utility not found in system PATH. Backup skipped.")
         return False
     except Exception as e:
-        logger.error(f"❌ Unexpected error during database backup: {str(e)}")
+        logger.error(f" Unexpected error during database backup: {str(e)}")
         return False
 
 

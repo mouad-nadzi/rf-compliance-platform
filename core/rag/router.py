@@ -117,14 +117,14 @@ def classify_intent(user_query: str) -> Dict[str, str]:
         # 5. Validate intent token against QueryIntent Enum
         valid_intents = {e.value for e in QueryIntent}
         if raw_intent in valid_intents:
-            logger.info(f"🎯 Query intent classified as '{raw_intent}' for: '{clean_query[:50]}...'")
+            logger.info(f" Query intent classified as '{raw_intent}' for: '{clean_query[:50]}...'")
             return {
                 "intent": raw_intent,
                 "reasoning": reasoning
             }
 
         logger.warning(
-            f"⚠️ Unknown intent token '{raw_intent}' returned by LLM router. "
+            f" Unknown intent token '{raw_intent}' returned by LLM router. "
             f"Expected one of {valid_intents}. Defaulting to UNSTRUCTURED_RAG."
         )
         return {
@@ -133,7 +133,7 @@ def classify_intent(user_query: str) -> Dict[str, str]:
         }
 
     except Exception as e:
-        logger.warning(f"⚠️ Exception occurred during query intent classification: {e}")
+        logger.warning(f" Exception occurred during query intent classification: {e}")
         logger.info("    Falling back gracefully to UNSTRUCTURED_RAG.")
         return {
             "intent": QueryIntent.UNSTRUCTURED_RAG.value,

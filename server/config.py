@@ -58,10 +58,10 @@ MAX_EXTRACTION_PROMPT_CHARS: int = 20000
 # Embedding encode batch size (bounds transformer activations on shared VRAM).
 EMBEDDING_BATCH_SIZE: int = 16
 
-# Device for the embedding model. "cpu" keeps the T4's ~15 GB GPU entirely for
-# Gemma + OCR, giving real inference headroom (measured: GPU idle ~13.2 GB with
-# both loaded, leaving ~2 GB free for OCR's transient KV cache). Embeddings are
-# computed per-chunk during ingestion, so CPU latency (~2-4 s/batch) is acceptable.
+# Device for the embedding model. "cpu" is deliberate: the L4's 23 GB is fully
+# used by the co-resident GLM-OCR + Qwen engines, and OCR page generation has a
+# large transient VRAM spike. Keeping bge-m3 on CPU reserves that headroom and
+# avoids CUDA OOM during ingestion (embeddings only cost ~2-4 s/batch on CPU).
 EMBEDDING_DEVICE: str = "cpu"
 
 # Base project directory (project root — this file lives in the `app/` package)
@@ -71,8 +71,8 @@ BASE_DIR: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Caching directory for all heavy AI models (uses HF_HOME or CACHE_DIR env var if set)
 CACHE_DIR: str = os.getenv("HF_HOME", os.getenv("CACHE_DIR", os.path.join(BASE_DIR, "data", "model_cache")))
 
-# ── Batch Ingestion Artifacts (sequential OCR → extraction lifecycle) ──────
-# OCR markdown cache (survives app restarts → enables resume of interrupted batches).
+# ── Batch Ingestion Artifacts (sequential OCR  extraction lifecycle) ──────
+# OCR markdown cache (survives app restarts  enables resume of interrupted batches).
 OCR_CACHE_DIR: str = os.getenv("OCR_CACHE_DIR", os.path.join(BASE_DIR, "data", "ocr_cache"))
 # Staging directory for uploaded files during batch ingestion.
 BATCH_UPLOAD_DIR: str = os.getenv("BATCH_UPLOAD_DIR", os.path.join(BASE_DIR, "data", "uploads"))

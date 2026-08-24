@@ -69,12 +69,12 @@ def answer_compliance_query(
 
     try:
         # Step 1: Intent Classification via Router
-        logger.info(f"🧠 Classifying query intent for: '{clean_query[:60]}...'")
+        logger.info(f" Classifying query intent for: '{clean_query[:60]}...'")
         router_decision = classify_intent(clean_query)
         intent = router_decision.get("intent", QueryIntent.UNSTRUCTURED_RAG.value)
         reasoning = router_decision.get("reasoning", "Default routing classification.")
 
-        logger.info(f"🎯 Router decision: intent={intent} ({reasoning})")
+        logger.info(f" Router decision: intent={intent} ({reasoning})")
 
         answer_text = ""
         sources: List[Dict[str, Any]] = []
@@ -82,13 +82,13 @@ def answer_compliance_query(
         # Step 2: Route Execution
         if intent == QueryIntent.METADATA_QUERY.value:
             # Path A: Text-to-SQL
-            logger.info("⚡ Executing METADATA_QUERY path (Text-to-SQL)...")
+            logger.info(" Executing METADATA_QUERY path (Text-to-SQL)...")
             answer_text = execute_metadata_query(clean_query, db_session)
             sources = [{"type": "database", "table": "certificates", "query_type": "relational_sql"}]
 
         elif intent == QueryIntent.HYBRID_QUERY.value:
             # Path C: Dual-Path Hybrid (Structured SQL + Unstructured Vector RRF)
-            logger.info("🔗 Executing HYBRID_QUERY path (Dual-Path SQL + Vector RRF)...")
+            logger.info(" Executing HYBRID_QUERY path (Dual-Path SQL + Vector RRF)...")
             try:
                 # Structured facts from SQL engine
                 sql_answer = execute_metadata_query(clean_query, db_session)
@@ -134,12 +134,12 @@ def answer_compliance_query(
                     answer_text = sql_answer
 
             except Exception as exc:
-                logger.warning(f"⚠️ Dual-path hybrid execution failed: {exc}. Falling back to unstructured query.")
+                logger.warning(f" Dual-path hybrid execution failed: {exc}. Falling back to unstructured query.")
                 answer_text = execute_unstructured_query(clean_query, db_session)
 
         else:
             # Path B: Standard UNSTRUCTURED_RAG (Hybrid RRF + Parent Expansion)
-            logger.info("🔍 Executing UNSTRUCTURED_RAG path (Hybrid RRF + Parent Expansion)...")
+            logger.info(" Executing UNSTRUCTURED_RAG path (Hybrid RRF + Parent Expansion)...")
             hybrid_payload = retrieve_hybrid_context(clean_query, db_session, top_k=5)
             sources = hybrid_payload.get("sources", [])
             answer_text = execute_unstructured_query(clean_query, db_session)
@@ -156,7 +156,7 @@ def answer_compliance_query(
         }
 
     except Exception as exc:
-        logger.error(f"❌ Exception in answer_compliance_query: {exc}. Executing emergency fallback.")
+        logger.error(f" Exception in answer_compliance_query: {exc}. Executing emergency fallback.")
         t_end = time.perf_counter()
         latency_ms = (t_end - t_start) * 1000.0
 
@@ -180,4 +180,4 @@ def answer_compliance_query(
 
 if __name__ == "__main__":
     print("Testing Orchestrator imports and function signature...")
-    print("✓ orchestrator.py module compiled successfully.")
+    print(" orchestrator.py module compiled successfully.")

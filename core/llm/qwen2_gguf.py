@@ -47,7 +47,7 @@ class Qwen2GGUFEngine(BaseLLMEngine):
     def load(self, cache_dir: str) -> None:
         """Download (if needed) and load the GGUF model onto the GPU."""
         if self._llm is not None:
-            logger.info("⚡ Qwen GGUF model is already loaded, skipping reload.")
+            logger.info(" Qwen GGUF model is already loaded, skipping reload.")
             return
 
         try:
@@ -63,12 +63,12 @@ class Qwen2GGUFEngine(BaseLLMEngine):
         )
         if not gpu_ok:
             raise RuntimeError(
-                "❌ CUDA GPU acceleration is NOT active in installed llama-cpp-python! "
+                " CUDA GPU acceleration is NOT active in installed llama-cpp-python! "
                 "CPU fallback is strictly disabled to prevent slow inference. "
                 "Fix by running:\n"
                 "pip uninstall -y llama-cpp-python && pip install llama-cpp-python --force-reinstall --no-cache-dir --index-strategy unsafe-best-match --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu122"
             )
-        logger.info("⚡ Verified CUDA GPU acceleration active in llama-cpp-python.")
+        logger.info(" Verified CUDA GPU acceleration active in llama-cpp-python.")
 
         logger.info(f"Checking for local GGUF model: {self.FILENAME}")
         model_path = hf_hub_download(
@@ -81,7 +81,7 @@ class Qwen2GGUFEngine(BaseLLMEngine):
         # Check if downloaded file is corrupted or a tiny Git LFS pointer file (<100MB for GGUF model)
         if os.path.exists(model_path) and os.path.getsize(model_path) < 100_000_000:
             logger.error(
-                f"❌ Model file at '{model_path}' is invalid/corrupted "
+                f" Model file at '{model_path}' is invalid/corrupted "
                 f"({os.path.getsize(model_path)} bytes). Deleting invalid file to force fresh download..."
             )
             try:
@@ -89,7 +89,7 @@ class Qwen2GGUFEngine(BaseLLMEngine):
             except Exception:
                 pass
 
-            logger.info(f"🔄 Re-downloading {self.FILENAME} from Hugging Face hub...")
+            logger.info(f" Re-downloading {self.FILENAME} from Hugging Face hub...")
             model_path = hf_hub_download(
                 repo_id=self.REPO_ID,
                 filename=self.FILENAME,
@@ -117,7 +117,7 @@ class Qwen2GGUFEngine(BaseLLMEngine):
                     verbose=False,
                 )
             self.active_n_ctx = DEFAULT_CONTEXT_WINDOW
-            logger.info(f"✅ Qwen2 loaded successfully (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1).")
+            logger.info(f" Qwen2 loaded successfully (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1).")
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to load GGUF model from file '{model_path}': {exc}. "

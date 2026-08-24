@@ -62,14 +62,14 @@ def _retrieve_dense_chunks(
         )
         return dense_results
     except SQLAlchemyError as exc:
-        logger.warning(f"⚠️  pgvector cosine distance query failed: {exc}. Rolling back transaction.")
+        logger.warning(f"  pgvector cosine distance query failed: {exc}. Rolling back transaction.")
         try:
             db_session.rollback()
         except Exception:
             pass
         return []
     except Exception as exc:
-        logger.warning(f"⚠️  Unexpected error during dense vector retrieval: {exc}")
+        logger.warning(f"  Unexpected error during dense vector retrieval: {exc}")
         try:
             db_session.rollback()
         except Exception:
@@ -233,7 +233,7 @@ def retrieve_hybrid_context(
     if len(unique_cert_ids) <= PARENT_EXPANSION_THRESHOLD:
         retrieval_mode = "PARENT_EXPANSION"
         logger.info(
-            f"🔍 Parent-Document Expansion active ({len(unique_cert_ids)} unique certificates <= {PARENT_EXPANSION_THRESHOLD})"
+            f" Parent-Document Expansion active ({len(unique_cert_ids)} unique certificates <= {PARENT_EXPANSION_THRESHOLD})"
         )
 
         context_blocks = []
@@ -274,7 +274,7 @@ def retrieve_hybrid_context(
     else:
         retrieval_mode = "CHUNK_FALLBACK"
         logger.info(
-            f"🔍 Chunk Fallback active ({len(unique_cert_ids)} unique certificates > {PARENT_EXPANSION_THRESHOLD})"
+            f" Chunk Fallback active ({len(unique_cert_ids)} unique certificates > {PARENT_EXPANSION_THRESHOLD})"
         )
 
         context_blocks = []
@@ -380,7 +380,7 @@ def execute_unstructured_query(user_query: str, db_session=None) -> str:
         return clean_fallback if clean_fallback else FALLBACK_NOT_FOUND_MESSAGE
 
     except Exception as exc:
-        logger.warning(f"⚠️  Unstructured RAG execution failed: {exc}")
+        logger.warning(f"  Unstructured RAG execution failed: {exc}")
         return FALLBACK_NOT_FOUND_MESSAGE
 
     finally:
@@ -392,4 +392,4 @@ if __name__ == "__main__":
     print("Testing Hybrid Engine imports and structure...")
     print(f"RRF_K: {RRF_K}")
     print(f"PARENT_EXPANSION_THRESHOLD: {PARENT_EXPANSION_THRESHOLD}")
-    print("✅ hybrid_engine.py module defined successfully.")
+    print(" hybrid_engine.py module defined successfully.")

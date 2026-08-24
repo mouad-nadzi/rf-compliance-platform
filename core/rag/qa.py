@@ -93,7 +93,7 @@ def answer_query_with_citations(
         return parsed_response
 
     except Exception as e:
-        logger.error(f"⚠️  JSON/Pydantic validation failed for Q&A synthesis: {e}")
+        logger.error(f"  JSON/Pydantic validation failed for Q&A synthesis: {e}")
         logger.debug(f"Raw Output: {raw_json_response}")
         
         # Return fallback QAResponseSchema to prevent system crash

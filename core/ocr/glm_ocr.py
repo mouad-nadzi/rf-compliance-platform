@@ -45,7 +45,7 @@ class GLMOCREngine(BaseOCREngine):
     def load(self, cache_dir: str) -> None:
         """Load GLM-OCR model using the Hugging Face transformers pipeline."""
         if self._model is not None and self._processor is not None:
-            logger.info("⚡ GLM-OCR (HF) is already loaded, skipping reload.")
+            logger.info(" GLM-OCR (HF) is already loaded, skipping reload.")
             return
 
         logger.info(f"⏳ Loading '{self.MODEL_ID}' via transformers into GPU memory...")
@@ -62,9 +62,9 @@ class GLMOCREngine(BaseOCREngine):
                 trust_remote_code=True,
                 cache_dir=cache_dir,
             ).eval()
-            logger.info("🚀 GLM-OCR loaded successfully with Hugging Face execution core!")
+            logger.info(" GLM-OCR loaded successfully with Hugging Face execution core!")
         except Exception as e:
-            logger.error(f"❌ CRITICAL ERROR: Failed to load GLM-OCR via transformers. Details: {e}")
+            logger.error(f" CRITICAL ERROR: Failed to load GLM-OCR via transformers. Details: {e}")
             raise RuntimeError(f"Failed to load GLM-OCR via transformers: {e}") from e
 
     def _correct_orientation(self, image_path: str) -> Image.Image:
@@ -78,7 +78,7 @@ class GLMOCREngine(BaseOCREngine):
             corrected_img = ImageOps.exif_transpose(raw_img)
             return corrected_img.convert("RGB")
         except Exception as e:
-            logger.warning(f"⚠️ Orientation check warning for {image_path}: {e}")
+            logger.warning(f" Orientation check warning for {image_path}: {e}")
             return Image.open(image_path).convert("RGB")
 
     def _run_inference(self, image_path: str, output_folder: str = "") -> str:
@@ -110,6 +110,11 @@ class GLMOCREngine(BaseOCREngine):
             return_tensors="pt",
         ).to(self._model.device)
 
+        # Release stale cached torch blocks back to the driver so the OCR
+        # generation peak has maximum headroom alongside the resident Qwen model.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         with torch.inference_mode():
             generated_ids = self._model.generate(
                 **inputs,
@@ -129,10 +134,10 @@ class GLMOCREngine(BaseOCREngine):
 
     def close(self) -> None:
         """Releases GLM-OCR model and processor from GPU memory and flushes CUDA cache."""
-        logger.info("🗑️ Unloading GLM-OCR model and releasing GPU VRAM...")
+        logger.info(" Unloading GLM-OCR model and releasing GPU VRAM...")
         self._model = None
         self._processor = None
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        logger.info("✅ GLM-OCR unloaded successfully. VRAM reclaimed.")
+        logger.info(" GLM-OCR unloaded successfully. VRAM reclaimed.")

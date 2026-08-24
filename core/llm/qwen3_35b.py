@@ -54,7 +54,7 @@ class Qwen3_35BEngine(BaseLLMEngine):
     def load(self, cache_dir: str) -> None:
         """Download (if needed) and load Qwen3.6 35B GGUF onto GPU VRAM."""
         if self._llm is not None:
-            logger.info("⚡ Qwen3.6 35B engine is already loaded.")
+            logger.info(" Qwen3.6 35B engine is already loaded.")
             return
 
         try:
@@ -72,15 +72,15 @@ class Qwen3_35BEngine(BaseLLMEngine):
         )
         if not gpu_ok:
             raise RuntimeError(
-                "❌ CUDA GPU acceleration is NOT active in installed llama-cpp-python! "
+                " CUDA GPU acceleration is NOT active in installed llama-cpp-python! "
                 "CPU fallback is strictly disabled to prevent slow inference. "
                 "Fix by running:\n"
                 "pip uninstall -y llama-cpp-python && pip install llama-cpp-python==0.3.19 --force-reinstall --no-cache-dir --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu122"
             )
-        logger.info("⚡ Verified CUDA GPU acceleration active in llama-cpp-python.")
+        logger.info(" Verified CUDA GPU acceleration active in llama-cpp-python.")
 
         logger.info("=" * 70)
-        logger.info(f"🚀 Loading Qwen3.6-35B-A3B-UD-IQ2_M (LLM Engine)")
+        logger.info(f" Loading Qwen3.6-35B-A3B-UD-IQ2_M (LLM Engine)")
         logger.info(f"   Repository ID     : {self.REPO_ID}")
         logger.info(f"   Filename          : {self.FILENAME}")
         logger.info(f"   Context Window    : {DEFAULT_CONTEXT_WINDOW} tokens")
@@ -96,7 +96,7 @@ class Qwen3_35BEngine(BaseLLMEngine):
 
         for repo in candidate_repos:
             try:
-                logger.info(f"🔍 Checking HuggingFace repo '{repo}' for '{self.FILENAME}'...")
+                logger.info(f" Checking HuggingFace repo '{repo}' for '{self.FILENAME}'...")
                 path = hf_hub_download(
                     repo_id=repo,
                     filename=self.FILENAME,
@@ -104,13 +104,13 @@ class Qwen3_35BEngine(BaseLLMEngine):
                 )
                 if os.path.exists(path) and os.path.getsize(path) > 500_000_000:
                     size_gb = os.path.getsize(path) / (1024 ** 3)
-                    logger.info(f"✅ Resolved valid GGUF model from '{repo}' ({size_gb:.2f} GB)")
+                    logger.info(f" Resolved valid GGUF model from '{repo}' ({size_gb:.2f} GB)")
                     model_path = path
                     break
                 else:
                     invalid_bytes = os.path.getsize(path) if os.path.exists(path) else 0
                     logger.warning(
-                        f"⚠️ File in '{repo}' is truncated or Git LFS pointer ({invalid_bytes} bytes). Cleaning and trying next repo..."
+                        f" File in '{repo}' is truncated or Git LFS pointer ({invalid_bytes} bytes). Cleaning and trying next repo..."
                     )
                     if os.path.exists(path):
                         try:
@@ -127,7 +127,7 @@ class Qwen3_35BEngine(BaseLLMEngine):
             )
 
         logger.info(
-            f"⚙️ Initializing Llama instance (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1, flash_attn=True, KV=q8_0)..."
+            f" Initializing Llama instance (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1, flash_attn=True, KV=q8_0)..."
         )
         try:
             try:
@@ -149,7 +149,7 @@ class Qwen3_35BEngine(BaseLLMEngine):
                 )
             self.active_n_ctx = DEFAULT_CONTEXT_WINDOW
             logger.info(
-                f"✅ Qwen3.6 35B loaded successfully (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1)."
+                f" Qwen3.6 35B loaded successfully (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1)."
             )
         except Exception as exc:
             raise RuntimeError(f"Failed to load GGUF model from '{model_path}': {exc}")

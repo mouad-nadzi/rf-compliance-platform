@@ -43,7 +43,7 @@ LLM_REGISTRY: dict[str, str] = {
 def _import_class(dotted_path: str):
     """
     Dynamically import a class from a dotted module path.
-    Example: "core.ocr.glm_ocr.GLMOCREngine" → <class GLMOCREngine>
+    Example: "core.ocr.glm_ocr.GLMOCREngine"  <class GLMOCREngine>
     """
     module_path, class_name = dotted_path.rsplit(".", 1)
 

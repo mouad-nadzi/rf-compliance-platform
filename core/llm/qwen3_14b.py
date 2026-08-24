@@ -77,7 +77,7 @@ class Qwen3_14B_GGUFEngine(BaseLLMEngine):
     def load(self, cache_dir: str) -> None:
         """Download (if needed) and load the GGUF model onto the GPU."""
         if self._llm is not None:
-            logger.info("⚡ Qwen3 14B GGUF model is already loaded, skipping reload.")
+            logger.info(" Qwen3 14B GGUF model is already loaded, skipping reload.")
             return
 
         try:
@@ -93,12 +93,12 @@ class Qwen3_14B_GGUFEngine(BaseLLMEngine):
         )
         if not gpu_ok:
             raise RuntimeError(
-                "❌ CUDA GPU acceleration is NOT active in installed llama-cpp-python! "
+                " CUDA GPU acceleration is NOT active in installed llama-cpp-python! "
                 "CPU fallback is strictly disabled to prevent slow inference. "
                 "Fix by running:\n"
                 "pip uninstall -y llama-cpp-python && pip install llama-cpp-python --force-reinstall --no-cache-dir --index-strategy unsafe-best-match --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu122"
             )
-        logger.info("⚡ Verified CUDA GPU acceleration active in llama-cpp-python.")
+        logger.info(" Verified CUDA GPU acceleration active in llama-cpp-python.")
 
         # Multi-repository resolution: find a valid >500MB GGUF model file
         candidate_repos = list(dict.fromkeys([
@@ -120,12 +120,12 @@ class Qwen3_14B_GGUFEngine(BaseLLMEngine):
                 if os.path.exists(path) and os.path.getsize(path) > 500_000_000:
                     model_path = path
                     size_gb = os.path.getsize(path) / (1024 ** 3)
-                    logger.info(f"✅ Resolved valid GGUF model from '{repo}' ({size_gb:.2f} GB)")
+                    logger.info(f" Resolved valid GGUF model from '{repo}' ({size_gb:.2f} GB)")
                     break
                 else:
                     invalid_bytes = os.path.getsize(path) if os.path.exists(path) else 0
                     logger.warning(
-                        f"⚠️ File in '{repo}' is truncated or Git LFS pointer ({invalid_bytes} bytes). Cleaning and trying next repo..."
+                        f" File in '{repo}' is truncated or Git LFS pointer ({invalid_bytes} bytes). Cleaning and trying next repo..."
                     )
                     if os.path.exists(path):
                         try:
@@ -161,7 +161,7 @@ class Qwen3_14B_GGUFEngine(BaseLLMEngine):
                     verbose=False,
                 )
             self.active_n_ctx = DEFAULT_CONTEXT_WINDOW
-            logger.info(f"✅ Qwen3 14B loaded successfully (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1).")
+            logger.info(f" Qwen3 14B loaded successfully (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1).")
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to load GGUF model from '{model_path}': {exc}. "

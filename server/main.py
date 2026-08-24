@@ -66,13 +66,33 @@ async def lifespan(app: FastAPI):
     os.makedirs(BATCH_UPLOAD_DIR, exist_ok=True)
     os.makedirs(FILES_STORAGE_DIR, exist_ok=True)
 
-    logger.info("🗄️ Initializing database connection & pgvector tables...")
+    logger.info(" Initializing database connection & pgvector tables...")
     from storage import init_db
     init_db()
 
+    # Eagerly load both engines into VRAM so the first user action is fast.
+    global _ocr_engine
+    from server.config import OCR_ENGINE, LLM_ENGINE, CACHE_DIR
+    from core.registry import get_ocr_engine
+    from core.llm import load_llm_engine
+
+    logger.info(f" Preloading OCR engine '{OCR_ENGINE}' into VRAM...")
+    if _ocr_engine is None:
+        _ocr_engine = get_ocr_engine(OCR_ENGINE)
+        _ocr_engine.load(CACHE_DIR)
+
+    logger.info(f" Preloading LLM engine '{LLM_ENGINE}' into VRAM...")
+    load_llm_engine()
+
+    logger.info("Preloading embedding model into memory...")
+    from core.rag.embeddings import get_embedding_model
+    get_embedding_model()
+
+    logger.info("OCR and LLM engines resident in VRAM; embedding model in RAM.")
+
     yield  # This tells FastAPI it's ready to accept requests
 
-    logger.info("🛑 Shutting down API...")
+    logger.info(" Shutting down API...")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -129,10 +149,10 @@ async def system_init():
 async def parse_document(file: UploadFile = File(...)):
     """
     Accepts a single document file (PDF or image), runs it through the full pipeline:
-    OCR → Boundary Detection → Split → Per-Certificate Extraction.
+    OCR  Boundary Detection  Split  Per-Certificate Extraction.
 
-    Uses the sequential lifecycle: loads OCR only → OCRs → unloads OCR → loads
-    LLM only → extracts. Guarantees a single GPU model resident at a time.
+    Uses the sequential lifecycle: loads OCR only  OCRs  unloads OCR  loads
+    LLM only  extracts. Guarantees a single GPU model resident at a time.
     """
     global _ocr_engine
 
@@ -159,7 +179,7 @@ async def parse_document(file: UploadFile = File(...)):
         shutil.copy2(temp_file_path, persistent_path)
         file_public_url = f"{PUBLIC_API_URL}/files/parse/{safe_fname}"
 
-        logger.info(f"📄  Processing uploaded file: {file.filename}")
+        logger.info(f"  Processing uploaded file: {file.filename}")
 
         # 2. Ensure OCR Engine is initialized and resident
         from server.config import CACHE_DIR, OCR_ENGINE
@@ -184,7 +204,7 @@ async def parse_document(file: UploadFile = File(...)):
                 metadata_record = save_certificate_to_db(cert, extracted_text, file.filename)
                 db_certificate_ids.append(metadata_record.certificate_id)
             except Exception as db_err:
-                logger.warning(f"⚠️  Could not persist certificate to PostgreSQL: {db_err}")
+                logger.warning(f"  Could not persist certificate to PostgreSQL: {db_err}")
 
         # 7. Return a clean JSON response with certificate objects, DB IDs, and raw markdown
         return {
@@ -198,12 +218,12 @@ async def parse_document(file: UploadFile = File(...)):
 
     except MemoryError as e:
         error_msg = f"GPU memory exhausted while processing document: {str(e)}"
-        logger.error(f"❌  {error_msg}")
+        logger.error(f"  {error_msg}")
         raise HTTPException(status_code=507, detail=error_msg)
 
     except Exception as e:
         error_msg = f"Failed to process document: {str(e)}"
-        logger.error(f"❌  {error_msg}")
+        logger.error(f"  {error_msg}")
         raise HTTPException(status_code=500, detail=error_msg)
 
     finally:
@@ -212,7 +232,7 @@ async def parse_document(file: UploadFile = File(...)):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Sequential Two-Phase Batch Ingestion (OCR → Extraction, single model resident)
+# Sequential Two-Phase Batch Ingestion (OCR  Extraction, single model resident)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _file_hash(file_name: str) -> str:
@@ -232,7 +252,7 @@ def _load_manifest(batch_id: str) -> dict:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            logger.warning(f"⚠️  Could not load manifest '{batch_id}': {e}")
+            logger.warning(f"  Could not load manifest '{batch_id}': {e}")
     return {}
 
 
@@ -245,14 +265,16 @@ def _save_manifest(batch_id: str, manifest: dict) -> None:
 def _resume_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> bool:
     """Scans OCR cache + manifest; returns True if a previous run exists to resume."""
     manifest = _load_manifest(batch_id)
-    return bool(manifest and manifest.get("phase") in ("ocr", "extract", "done"))
+    return bool(manifest and manifest.get("phase") in ("processing", "ocr", "extract", "done"))
 
 
 def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
     """
-    Background worker for two-phase batch ingestion:
-      Phase A (OCR):        Load GLM-OCR → OCR every file → cache markdown to OCR_CACHE_DIR.
-      Phase B (Extraction): Co-exist GLM-OCR + Qwen3.8-27B in VRAM → extract + persist to PostgreSQL.
+    Background worker for per-file batch ingestion:
+      For each file: OCR (GLM-OCR)  extract (Qwen3.8-27B)  persist  next file.
+
+    Both OCR and LLM engines are loaded once and kept resident in VRAM (they
+    co-exist), so there is no need for a separate all-OCR / all-extract phase.
 
     Progress/resume is tracked in the manifest JSON (written after every file).
     """
@@ -262,7 +284,7 @@ def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
     if not manifest:
         manifest = {
             "batch_id": batch_id,
-            "phase": "ocr",
+            "phase": "processing",
             "total": len(file_names),
             "ocr_done": 0,
             "extract_done": 0,
@@ -274,13 +296,13 @@ def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
 
     from server.config import CACHE_DIR, OCR_CACHE_DIR, OCR_ENGINE
     from core.registry import get_ocr_engine
+    from core.extractor import extract_certificate_data, save_certificate_to_db
 
     def _save():
         _save_manifest(batch_id, manifest)
 
     try:
-        # ── Phase A: OCR (GLM-OCR Engine) ──────────────────────────────────
-        manifest["phase"] = "ocr"
+        manifest["phase"] = "processing"
         _save()
         if _ocr_engine is None:
             _ocr_engine = get_ocr_engine(OCR_ENGINE)
@@ -295,9 +317,9 @@ def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
             _save()
 
             md_path = os.path.join(OCR_CACHE_DIR, f"{_file_hash(name)}.md")
-            if entry.get("ocr_ok"):
-                logger.info(f"⏭️  Resuming OCR (cached): {name}")
-            else:
+
+            # ── Step 1: OCR (cached markdown is reused when resuming) ────────
+            if not entry.get("ocr_ok"):
                 try:
                     src_path = os.path.join(upload_dir, name)
                     text = _ocr_engine.process_document(src_path, OUTPUT_FOLDER)
@@ -310,54 +332,39 @@ def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
                     shutil.copy2(src_path, dest_storage)
                     entry["file_url"] = f"{PUBLIC_API_URL}/files/{batch_id}/{name}"
                     entry["ocr_ok"] = True
-                    manifest["ocr_done"] += 1
                 except Exception as e:
                     entry["status"] = "failed"
                     entry["error"] = str(e)
                     manifest["failed"] += 1
-                    logger.error(f"❌  OCR failed for '{name}': {e}")
-            _save()
+                    logger.error(f"  OCR failed for '{name}': {e}")
+                    _save()
+                    continue
 
-        # ── Phase B: Extraction (LLM Engine co-exists in VRAM) ──────────────
-        manifest["phase"] = "extract"
-        _save()
-
-        from core.extractor import extract_certificate_data, save_certificate_to_db
-
-        for name in file_names:
-            entry = manifest["files"].get(name, {})
-            if entry.get("status") == "extracted":
-                continue
-            if not entry.get("ocr_ok"):
-                continue  # cannot extract from a failed OCR
-            manifest["current_file"] = name
-            _save()
-
-            md_path = os.path.join(OCR_CACHE_DIR, f"{_file_hash(name)}.md")
+            # ── Step 2: Extraction + persistence (LLM co-resident) ──────────
             try:
                 with open(md_path, "r", encoding="utf-8") as f:
                     extracted_text = f.read()
                 cert = extract_certificate_data(extracted_text, name)
-                # Attach the static file URL as cert_link (set by Phase A or fallback)
                 file_url = entry.get("file_url") or f"/files/{batch_id}/{name}"
                 cert.cert_link = file_url
                 rec = save_certificate_to_db(cert, extracted_text, name)
                 entry["status"] = "extracted"
                 entry["certificate_id"] = rec.certificate_id
+                manifest["ocr_done"] += 1
                 manifest["extract_done"] += 1
-                logger.info(f"✅  Extracted + persisted: {name} -> {rec.certificate_id}")
+                logger.info(f"  Extracted + persisted: {name} -> {rec.certificate_id}")
             except Exception as e:
                 entry["status"] = "failed"
                 entry["error"] = str(e)
                 manifest["failed"] += 1
-                logger.error(f"❌  Extraction failed for '{name}': {e}")
+                logger.error(f"  Extraction failed for '{name}': {e}")
             _save()
 
         manifest["phase"] = "done"
         manifest["current_file"] = None
         _save()
     except Exception as e:
-        logger.error(f"❌  Batch '{batch_id}' crashed: {e}")
+        logger.error(f"  Batch '{batch_id}' crashed: {e}")
         manifest["phase"] = "error"
         manifest["error"] = str(e)
         _save()
@@ -366,12 +373,11 @@ def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
 @app.post("/api/v1/batch/ingest")
 async def batch_ingest(files: list[UploadFile] = File(...)):
     """
-    Starts a two-phase sequential batch ingestion.
+    Starts per-file batch ingestion.
 
-    Phase 1: Loads GLM-OCR → OCRs all uploaded files → caches markdown to
-             OCR_CACHE_DIR (survives restarts → enables resume).
-    Phase 2: Co-exists GLM-OCR + Qwen3.8-27B in VRAM → extracts + persists each
-             cached document to PostgreSQL.
+    Each file is processed end-to-end (OCR  extraction  persist) before the
+    next file begins. Both the OCR and LLM engines are loaded once and kept
+    resident in VRAM, so no separate all-OCR / all-extract phases are needed.
 
     Returns immediately with a batch_id; poll GET /api/v1/batch/status/{batch_id}.
     """
@@ -388,7 +394,7 @@ async def batch_ingest(files: list[UploadFile] = File(...)):
         from core.utils.system_check import ensure_ready
         ensure_ready()
 
-        # Deterministic batch id from the file set → enables resume across app restarts.
+        # Deterministic batch id from the file set  enables resume across app restarts.
         name_set = sorted(os.path.basename(f.filename or f"file_{i}") for i, f in enumerate(files))
         batch_id = hashlib.sha256("|".join(name_set).encode("utf-8")).hexdigest()[:12]
 
@@ -401,11 +407,11 @@ async def batch_ingest(files: list[UploadFile] = File(...)):
             with open(dest, "wb") as out:
                 out.write(await f.read())
 
-        logger.info(f"🚀 Starting batch '{batch_id}' with {len(files)} file(s).")
+        logger.info(f" Starting batch '{batch_id}' with {len(files)} file(s).")
         # Save initial manifest synchronously so status endpoint finds it immediately
         initial_manifest = {
             "batch_id": batch_id,
-            "phase": "ocr",
+            "phase": "processing",
             "total": len(name_set),
             "ocr_done": 0,
             "extract_done": 0,
@@ -506,6 +512,7 @@ async def list_certificates(
             "exp_date": str(r.exp_date) if r.exp_date else None,
             "cert_link": r.cert_link,
             "file_name": r.file_name,
+            "last_update": r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else None,
         })
 
     raw_markdown = ""
@@ -549,10 +556,10 @@ async def check_certificate_exists(
             is not None
         )
     except SQLAlchemyError as e:
-        logger.error(f"❌ Error checking certificate existence for '{clean_file_name}': {e}")
+        logger.error(f" Error checking certificate existence for '{clean_file_name}': {e}")
         raise HTTPException(status_code=500, detail=f"Database error while checking file: {str(e)}")
 
-    logger.info(f"🔍 Duplicate check for '{clean_file_name}': exists={exists}")
+    logger.info(f" Duplicate check for '{clean_file_name}': exists={exists}")
     return exists
 
 
@@ -574,6 +581,53 @@ async def list_authorities(db: Session = Depends(get_db)):
     return {"authorities": authorities}
 
 
+@app.post("/api/v1/lookups/authorities")
+async def add_authority(payload: dict, db: Session = Depends(get_db)):
+    """Adds a new authority lookup reference entry."""
+    from storage.models import AuthorityLookup
+    try:
+        record = AuthorityLookup(
+            canonical_authority=payload.get("canonical_authority"),
+            abbreviation=payload.get("abbreviation"),
+            country=payload.get("country"),
+            standard_validity_years=payload.get("standard_validity_years"),
+            aliases=payload.get("aliases") or [],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        from storage.backup import export_database_to_sql
+        export_database_to_sql()
+        logger.info(f" Added authority lookup id={record.id}")
+        return {"status": "success", "id": record.id}
+    except Exception as e:
+        db.rollback()
+        logger.error(f" Error adding authority: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/lookups/suppliers")
+async def add_supplier(payload: dict, db: Session = Depends(get_db)):
+    """Adds a new supplier lookup reference entry."""
+    from storage.models import SupplierLookup
+    try:
+        record = SupplierLookup(
+            canonical_supplier=payload.get("canonical_supplier"),
+            aliases=payload.get("aliases") or [],
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        from storage.backup import export_database_to_sql
+        export_database_to_sql()
+        logger.info(f" Added supplier lookup id={record.id}")
+        return {"status": "success", "id": record.id}
+    except Exception as e:
+        db.rollback()
+        logger.error(f" Error adding supplier: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/v1/lookups/suppliers")
 async def list_suppliers(db: Session = Depends(get_db)):
     """Lists supplier lookup reference table entries."""
@@ -589,9 +643,130 @@ async def list_suppliers(db: Session = Depends(get_db)):
     return {"suppliers": suppliers}
 
 
+@app.put("/api/v1/lookups/authorities/{auth_id}")
+async def update_authority(auth_id: int, payload: dict, db: Session = Depends(get_db)):
+    """Updates an authority lookup reference entry."""
+    from storage.models import AuthorityLookup
+    try:
+        record = db.query(AuthorityLookup).filter(AuthorityLookup.id == auth_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="Authority not found")
+        if "canonical_authority" in payload:
+            record.canonical_authority = payload["canonical_authority"]
+        if "abbreviation" in payload:
+            record.abbreviation = payload["abbreviation"] or None
+        if "country" in payload:
+            record.country = payload["country"]
+        if "standard_validity_years" in payload:
+            record.standard_validity_years = payload["standard_validity_years"]
+        if "aliases" in payload:
+            record.aliases = payload["aliases"] or []
+        db.commit()
+        from storage.backup import export_database_to_sql
+        export_database_to_sql()
+        logger.info(f"Updated authority lookup id={auth_id}")
+        return {"status": "success", "id": auth_id}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error updating authority {auth_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/v1/lookups/suppliers/{supp_id}")
+async def update_supplier(supp_id: int, payload: dict, db: Session = Depends(get_db)):
+    """Updates a supplier lookup reference entry."""
+    from storage.models import SupplierLookup
+    try:
+        record = db.query(SupplierLookup).filter(SupplierLookup.id == supp_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="Supplier not found")
+        if "canonical_supplier" in payload:
+            record.canonical_supplier = payload["canonical_supplier"]
+        if "aliases" in payload:
+            record.aliases = payload["aliases"] or []
+        db.commit()
+        from storage.backup import export_database_to_sql
+        export_database_to_sql()
+        logger.info(f"Updated supplier lookup id={supp_id}")
+        return {"status": "success", "id": supp_id}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error updating supplier {supp_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/v1/lookups/authorities/{auth_id}")
+async def delete_authority(auth_id: int, db: Session = Depends(get_db)):
+    """Deletes an authority lookup reference entry."""
+    from storage.models import AuthorityLookup
+    try:
+        record = db.query(AuthorityLookup).filter(AuthorityLookup.id == auth_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="Authority not found")
+        db.delete(record)
+        db.commit()
+        from storage.backup import export_database_to_sql
+        export_database_to_sql()
+        logger.info(f" Deleted authority lookup id={auth_id}")
+        return {"status": "success", "deleted_id": auth_id}
+    except Exception as e:
+        db.rollback()
+        logger.error(f" Error deleting authority {auth_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/v1/lookups/suppliers/{supp_id}")
+async def delete_supplier(supp_id: int, db: Session = Depends(get_db)):
+    """Deletes a supplier lookup reference entry."""
+    from storage.models import SupplierLookup
+    try:
+        record = db.query(SupplierLookup).filter(SupplierLookup.id == supp_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="Supplier not found")
+        db.delete(record)
+        db.commit()
+        from storage.backup import export_database_to_sql
+        export_database_to_sql()
+        logger.info(f" Deleted supplier lookup id={supp_id}")
+        return {"status": "success", "deleted_id": supp_id}
+    except Exception as e:
+        db.rollback()
+        logger.error(f" Error deleting supplier {supp_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Database CRUD Operations for UI
 # ──────────────────────────────────────────────────────────────────────────────
+
+@app.put("/api/v1/certificates/{cert_id}")
+async def update_certificate(cert_id: str, payload: dict, db: Session = Depends(get_db)):
+    """Updates editable fields of an existing certificate."""
+    from schemas.extraction import CertificateMetadata
+    from datetime import date
+    try:
+        record = db.query(CertificateMetadata).filter(CertificateMetadata.certificate_id == cert_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="Certificate not found")
+        for field in ("component", "supplier", "country", "certif_number", "authority"):
+            if field in payload and payload[field] is not None:
+                setattr(record, field, payload[field])
+        for field in ("issue_date", "exp_date"):
+            if field in payload:
+                val = payload[field]
+                setattr(record, field, date.fromisoformat(str(val)) if val else None)
+        if "cert_link" in payload:
+            record.cert_link = payload["cert_link"] or None
+        db.commit()
+        from storage.backup import export_database_to_sql
+        export_database_to_sql()
+        logger.info(f"Updated certificate: {cert_id}")
+        return {"status": "success", "certificate_id": cert_id}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error updating certificate {cert_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/api/v1/certificates/{cert_id}")
 async def delete_certificate(cert_id: str, db: Session = Depends(get_db)):
@@ -609,11 +784,11 @@ async def delete_certificate(cert_id: str, db: Session = Depends(get_db)):
         from storage.backup import export_database_to_sql
         export_database_to_sql()
         
-        logger.info(f"🗑️ Deleted certificate: {cert_id}")
+        logger.info(f" Deleted certificate: {cert_id}")
         return {"status": "success", "deleted_id": cert_id}
     except Exception as e:
         db.rollback()
-        logger.error(f"❌ Error deleting certificate {cert_id}: {e}")
+        logger.error(f" Error deleting certificate {cert_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 from fastapi.responses import Response
@@ -629,7 +804,7 @@ async def add_certificate_manual(cert_data: CertificateExtractionSchema, db: Ses
         record = save_certificate_to_db(cert_data, raw_markdown="Manual Entry", file_name="Manual Entry", db=db)
         return {"status": "success", "certificate_id": record.certificate_id}
     except Exception as e:
-        logger.error(f"❌ Error adding manual certificate: {e}")
+        logger.error(f" Error adding manual certificate: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -672,7 +847,7 @@ async def export_certificates_csv(db: Session = Depends(get_db)):
             headers={"Content-Disposition": "attachment; filename=certificates_export.csv"}
         )
     except Exception as e:
-        logger.error(f"❌ Error exporting CSV: {e}")
+        logger.error(f" Error exporting CSV: {e}")
         raise HTTPException(status_code=500, detail=f"CSV Export failed: {str(e)}")
 
 
@@ -715,7 +890,7 @@ async def export_certificates_excel(db: Session = Depends(get_db)):
             headers={"Content-Disposition": "attachment; filename=certificates_export.xlsx"}
         )
     except Exception as e:
-        logger.error(f"❌ Error exporting Excel: {e}")
+        logger.error(f" Error exporting Excel: {e}")
         raise HTTPException(status_code=500, detail=f"Excel Export failed: {str(e)}")
 
 
@@ -785,7 +960,7 @@ Return ONLY a JSON object like:
   "file_name": "<column name or null>"
 }}"""
 
-        logger.info(f"🤖 Asking LLM to map columns for '{file.filename}': {columns}")
+        logger.info(f" Asking LLM to map columns for '{file.filename}': {columns}")
         raw_mapping = generate_json(
             system_prompt="You are a precise data schema mapper. Return only valid JSON.",
             user_prompt=mapping_prompt,
@@ -799,7 +974,7 @@ Return ONLY a JSON object like:
             m = _re.search(r"\{.*\}", raw_mapping, _re.DOTALL)
             col_map = _json.loads(m.group(0)) if m else {}
 
-        logger.info(f"📋 LLM column mapping: {col_map}")
+        logger.info(f" LLM column mapping: {col_map}")
 
         # Helper to extract value by mapped column name
         def get_val(row_dict, field):
@@ -845,7 +1020,7 @@ Return ONLY a JSON object like:
             save_certificate_to_db(cert_schema, raw_markdown=raw_mk, file_name=fname, db=db)
             imported_count += 1
 
-        logger.info(f"✅ File Import successful: {imported_count}/{total_rows} records processed from '{file.filename}'")
+        logger.info(f" File Import successful: {imported_count}/{total_rows} records processed from '{file.filename}'")
         return {
             "status": "success",
             "imported_count": imported_count,
@@ -855,7 +1030,7 @@ Return ONLY a JSON object like:
         }
     except Exception as e:
         db.rollback()
-        logger.error(f"❌ Error importing file '{file.filename}': {e}")
+        logger.error(f" Error importing file '{file.filename}': {e}")
         raise HTTPException(status_code=500, detail=f"File Import failed: {str(e)}")
 
 
@@ -892,7 +1067,7 @@ async def chat_compliance_query(
         response = answer_compliance_query(user_query=clean_query, db_session=db)
         return response
     except Exception as exc:
-        logger.error(f"❌ Error during /api/v1/chat processing: {exc}")
+        logger.error(f" Error during /api/v1/chat processing: {exc}")
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(exc)}")
 
 
@@ -903,5 +1078,5 @@ async def chat_compliance_query(
 if __name__ == "__main__":
     import uvicorn
 
-    logger.info("🚀 Starting FastAPI server on port 8000...")
+    logger.info(" Starting FastAPI server on port 8000...")
     uvicorn.run("server.main:app", host="0.0.0.0", port=8000)

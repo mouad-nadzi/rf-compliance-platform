@@ -3,9 +3,9 @@ core/utils/system_check.py — System readiness verification & initialization ga
 
 Single source of truth for "is this deployment ready to ingest documents?".
 Used by:
-  - GET /api/v1/system/check        → full report (Streamlit sidebar + debugging)
-  - POST /api/v1/system/init        → idempotent init event (dirs + DB tables)
-  - batch/parse guards              → hard-fail before any heavy GPU action if
+  - GET /api/v1/system/check         full report (Streamlit sidebar + debugging)
+  - POST /api/v1/system/init         idempotent init event (dirs + DB tables)
+  - batch/parse guards               hard-fail before any heavy GPU action if
                                      required pieces (Postgres, tables) are down.
 
 Checks (each returns a dict with `ok` and `detail`):
@@ -237,8 +237,8 @@ def run_system_check() -> Dict[str, Any]:
     return {
         "ready": all_ok,
         "summary": (
-            "✅ All systems ready." if all_ok
-            else "⚠️ Not fully ready — review the details below before processing documents."
+            " All systems ready." if all_ok
+            else " Not fully ready — review the details below before processing documents."
         ),
         "checks": checks,
     }

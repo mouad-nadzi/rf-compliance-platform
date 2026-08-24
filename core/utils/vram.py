@@ -38,7 +38,7 @@ def _smi_numbers() -> list[int]:
         )
         return [int(x.strip()) for x in out.stdout.strip().split(",")]
     except Exception as e:  # noqa: BLE001 - never crash the caller on a probe failure
-        logger.warning(f"⚠️  VRAM probe failed: {e}")
+        logger.warning(f"  VRAM probe failed: {e}")
         return []
 
 
@@ -64,9 +64,9 @@ def flush_gpu_cache() -> None:
 
         gc.collect()
         torch.cuda.empty_cache()
-        logger.info(f"🧹 GPU cache flushed (free VRAM now ~{free_vram_mb()} MiB).")
+        logger.info(f" GPU cache flushed (free VRAM now ~{free_vram_mb()} MiB).")
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"⚠️  GPU cache flush skipped: {e}")
+        logger.warning(f"  GPU cache flush skipped: {e}")
 
 
 def ensure_headroom(min_free_mb: int, op: str = "pipeline stage") -> None:
@@ -78,14 +78,14 @@ def ensure_headroom(min_free_mb: int, op: str = "pipeline stage") -> None:
     """
     free = free_vram_mb()
     if free == -1:
-        logger.warning("⚠️  Cannot probe VRAM; proceeding without headroom guard.")
+        logger.warning("  Cannot probe VRAM; proceeding without headroom guard.")
         return
     if free < min_free_mb:
         raise MemoryError(
             f"Insufficient free VRAM ({free} MiB) for {op}; "
             f"need >= {min_free_mb} MiB headroom. Close other heavy processes."
         )
-    logger.info(f"🛡️  VRAM headroom OK: {free} MiB free (threshold {min_free_mb} MiB) for {op}.")
+    logger.info(f"  VRAM headroom OK: {free} MiB free (threshold {min_free_mb} MiB) for {op}.")
 
 
 def monitor_peak(interval_seconds: float = 0.1) -> "PeakMonitor":

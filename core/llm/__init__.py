@@ -63,12 +63,12 @@ def unload_llm_engine():
     """Unloads the active LLM engine from GPU memory to free VRAM."""
     global _engine_instance
     if _engine_instance is not None:
-        logger.info("🗑️ Unloading LLM engine to free VRAM...")
+        logger.info(" Unloading LLM engine to free VRAM...")
         try:
             if hasattr(_engine_instance, "close"):
                 _engine_instance.close()
         except Exception as e:
-            logger.warning(f"⚠️ Warning closing LLM engine: {e}")
+            logger.warning(f" Warning closing LLM engine: {e}")
         _engine_instance = None
 
 

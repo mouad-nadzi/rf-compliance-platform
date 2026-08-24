@@ -11,7 +11,7 @@ Key design decisions:
   - Free-form JSON generation (no grammar constraint) with unconditional
     reasoning-trace scrubbing + regex extraction in core.base.
   - Full GPU offload (n_gpu_layers=-1) with a graceful multi-tier fallback
-    to partial offload → CPU-only so the load never hard-crashes the kernel.
+    to partial offload  CPU-only so the load never hard-crashes the kernel.
 
 Production note: see handoff_report.md §9 for removal / deployment guidance.
 """
@@ -90,7 +90,7 @@ class QwenAgentWorld35BEngine(BaseLLMEngine):
         """
         if self._llm is not None:
             logger.info(
-                "⚡ Qwen-AgentWorld 35B engine is already loaded — skipping reload."
+                " Qwen-AgentWorld 35B engine is already loaded — skipping reload."
             )
             return
 
@@ -110,16 +110,16 @@ class QwenAgentWorld35BEngine(BaseLLMEngine):
         )
         if not gpu_ok:
             raise RuntimeError(
-                "❌ CUDA GPU acceleration is NOT active in installed llama-cpp-python! "
+                " CUDA GPU acceleration is NOT active in installed llama-cpp-python! "
                 "CPU fallback is strictly disabled to prevent slow inference. "
                 "Fix by running:\n"
                 "pip uninstall -y llama-cpp-python && pip install llama-cpp-python --force-reinstall --no-cache-dir --index-strategy unsafe-best-match --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu122"
             )
-        logger.info("⚡ Verified CUDA GPU acceleration active in llama-cpp-python.")
+        logger.info(" Verified CUDA GPU acceleration active in llama-cpp-python.")
 
         # ── 2. Announce model identity ────────────────────────────────────────
         logger.info("=" * 70)
-        logger.info("🚀 Loading Qwen-AgentWorld-35B-A3B-UD-IQ2_M")
+        logger.info(" Loading Qwen-AgentWorld-35B-A3B-UD-IQ2_M")
         logger.info("   Total parameters  : 35B")
         logger.info("   Active per token  : 3B  (MoE selective routing)")
         logger.info("   Quantisation      : IQ2_M (dynamic integer quant)")
@@ -136,7 +136,7 @@ class QwenAgentWorld35BEngine(BaseLLMEngine):
         for repo in candidate_repos:
             try:
                 logger.info(
-                    f"🔍 Checking HuggingFace repo '{repo}' for '{self.FILENAME}' ..."
+                    f" Checking HuggingFace repo '{repo}' for '{self.FILENAME}' ..."
                 )
                 path = hf_hub_download(
                     repo_id=repo,
@@ -146,7 +146,7 @@ class QwenAgentWorld35BEngine(BaseLLMEngine):
                 if os.path.exists(path) and os.path.getsize(path) > 500_000_000:
                     size_gb = os.path.getsize(path) / (1024 ** 3)
                     logger.info(
-                        f"✅ Resolved valid GGUF from '{repo}' ({size_gb:.2f} GB)"
+                        f" Resolved valid GGUF from '{repo}' ({size_gb:.2f} GB)"
                     )
                     model_path = path
                     break
@@ -155,7 +155,7 @@ class QwenAgentWorld35BEngine(BaseLLMEngine):
                         os.path.getsize(path) if os.path.exists(path) else 0
                     )
                     logger.warning(
-                        f"⚠️  File in '{repo}' appears to be a Git-LFS pointer "
+                        f"  File in '{repo}' appears to be a Git-LFS pointer "
                         f"({invalid_bytes} bytes). Cleaning and trying next repo ..."
                     )
                     try:
@@ -174,7 +174,7 @@ class QwenAgentWorld35BEngine(BaseLLMEngine):
 
         # ── 4. Initialise llama.cpp with Centralized Context Window ────
         logger.info(
-            f"⚙️  Initializing Llama instance (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1, flash_attn=True, KV=q8_0)..."
+            f"  Initializing Llama instance (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1, flash_attn=True, KV=q8_0)..."
         )
         try:
             try:
@@ -196,7 +196,7 @@ class QwenAgentWorld35BEngine(BaseLLMEngine):
                 )
             self.active_n_ctx = DEFAULT_CONTEXT_WINDOW
             logger.info(
-                f"✅ Qwen-AgentWorld 35B loaded successfully (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1)."
+                f" Qwen-AgentWorld 35B loaded successfully (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1)."
             )
         except Exception as exc:
             raise RuntimeError(f"Failed to load GGUF model from '{model_path}': {exc}")
