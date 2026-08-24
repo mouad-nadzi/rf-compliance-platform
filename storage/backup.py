@@ -8,12 +8,12 @@ import subprocess
 import threading
 from pathlib import Path
 from typing import Optional
-from config import BASE_DIR, POSTGRES_DB, POSTGRES_USER, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_PASSWORD
+from server.config import BASE_DIR, POSTGRES_DB, POSTGRES_USER, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_PASSWORD
 
 logger = logging.getLogger(__name__)
 
-# Portable backup path relative to project root
-DEFAULT_BACKUP_PATH = Path(BASE_DIR) / "storage" / "db_backup.sql"
+# Portable backup path relative to project root (consolidated under data/)
+DEFAULT_BACKUP_PATH = Path(BASE_DIR) / "data" / "db_backup.sql"
 
 
 def export_database_to_sql(output_path: Optional[Path] = None) -> bool:

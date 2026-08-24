@@ -36,9 +36,10 @@ services:
     volumes:
       - .:/app
       - ./data/lookups:/app/data/lookups
-      - ./data/uploads:/app/batch_uploads
-      - ./data/ocr_cache:/app/ocr_cache
-      - ./data/model_cache:/app/model_cache
+      - ./data/uploads:/app/data/uploads
+      - ./data/ocr_cache:/app/data/ocr_cache
+      - ./data/model_cache:/app/data/model_cache
+      - ./data/files:/app/data/files
     deploy:
       resources:
         reservations:

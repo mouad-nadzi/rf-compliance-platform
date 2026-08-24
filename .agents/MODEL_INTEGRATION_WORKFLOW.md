@@ -71,12 +71,12 @@ You must use your web search capabilities to visit the official Hugging Face mod
    - Reserve `os.getenv` for environment-varying secrets (e.g., `DATABASE_URL`, `POSTGRES_*`) and cache paths (`CACHE_DIR`).
 
 2. **Maintain Colab vs. Production Decoupling:** 
-   - Keep environment-specific hacks (like downloading to Google Drive and copying to local disk) **out** of the production engine files (`engines/`). 
+   - Keep environment-specific hacks (like downloading to Google Drive and copying to local disk) **out** of the production engine files (`core/`). 
    - Handle environment adaptations in `colab/setup.sh`, Jupyter notebook setups, or generic local-caching logic driven by externally configured variables (like `CACHE_DIR`).
    - **Mandatory Handoff Report Update:** Whenever Colab-specific code, scripts, or sandbox dependencies are added or modified, update `handoff_report.md` with explicit instructions on how to remove them for production deployment.
 
 3. **Fail Gracefully (Singleton State):** 
-   - In the engine initialization code (`engines/llm/__init__.py`), ensure the singleton instance is only cached **AFTER** `engine.load()` successfully completes. This prevents a failed load from caching a broken instance in memory, which would otherwise require a kernel restart to clear.
+   - In the engine initialization code (`core/llm/__init__.py`), ensure the singleton instance is only cached **AFTER** `engine.load()` successfully completes. This prevents a failed load from caching a broken instance in memory, which would otherwise require a kernel restart to clear.
 
 ---
 
@@ -98,14 +98,14 @@ You must use your web search capabilities to visit the official Hugging Face mod
 
 ## Phase 5: Thinking / No-Thinking Mode Handling (Per-Model, Streamlined Single-Hook Template Method)
 
-**Applies to:** Every LLM engine that returns a JSON answer (`engines/llm/`). Per-model reasoning-mode switching is managed inside each engine's `_generate_raw()` hook, coordinated by `BaseLLMEngine.generate_json()`.
+**Applies to:** Every LLM engine that returns a JSON answer (`core/llm/`). Per-model reasoning-mode switching is managed inside each engine's `_generate_raw()` hook, coordinated by `BaseLLMEngine.generate_json()`.
 
-**Single Source of Truth:** `BaseLLMEngine.generate_json(system_prompt, user_prompt, disable_thinking, max_tokens)` (`engines/base.py`) is a **concrete template method**. It executes the per-model `_generate_raw` hook and automatically runs `extract_json`:
+**Single Source of Truth:** `BaseLLMEngine.generate_json(system_prompt, user_prompt, disable_thinking, max_tokens)` (`core/base.py`) is a **concrete template method**. It executes the per-model `_generate_raw` hook and automatically runs `extract_json`:
 
 1. **`_generate_raw(system_prompt, user_prompt, disable_thinking, max_tokens)`** — single abstract hook implemented by each model to format its NATIVE prompt template, apply its own think/no-think switch, select sampling parameters, and execute raw completion.
-2. **`extract_json(raw_content)`** — consolidated helper function in `engines/base.py` (`extract_json` / `strip_reasoning_traces`) that unconditionally scrubs reasoning traces and parses strict JSON.
+2. **`extract_json(raw_content)`** — consolidated helper function in `core/base.py` (`extract_json` / `strip_reasoning_traces`) that unconditionally scrubs reasoning traces and parses strict JSON.
 
-Engines MUST implement `_generate_raw()` and MUST NOT re-implement JSON extraction inline or override `generate_json()` itself. JSON extraction is shared and lives in `engines/base.py`. Callers pass `(system_prompt, user_prompt)` — never pre-formatted ChatML.
+Engines MUST implement `_generate_raw()` and MUST NOT re-implement JSON extraction inline or override `generate_json()` itself. JSON extraction is shared and lives in `core/base.py`. Callers pass `(system_prompt, user_prompt)` — never pre-formatted ChatML.
 
 ### Known per-model switches (as deployed)
 - **Qwen3 (8B / 14B):** ChatML; soft ` /no_think` / ` /think` tag injected INSIDE the user block (never after `<|im_start|>assistant\n`). Sampling = base default.

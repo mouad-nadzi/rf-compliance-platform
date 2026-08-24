@@ -21,4 +21,4 @@ echo "Starting Streamlit..."
 python3 -m streamlit run ui/app.py --server.headless true --server.port 8501 --server.address 0.0.0.0 &
 
 echo "Starting FastAPI app..."
-exec python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+exec python3 -m uvicorn server.main:app --host 0.0.0.0 --port 8000

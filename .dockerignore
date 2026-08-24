@@ -1,6 +1,15 @@
 data/postgres/
+data/model_cache/
+data/ocr_cache/
+data/uploads/
+data/files/
 __pycache__/
 *.pyc
 .git/
 .venv/
 venv/
+*.ipynb
+.codex/
+docs/
+.agents/
+storage/db_backup.sql

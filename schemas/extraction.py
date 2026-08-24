@@ -46,6 +46,10 @@ class CertificateExtractionSchema(BaseModel):
         None,
         description="Date of expiration in YYYY-MM-DD format (explicit or computed).",
     )
+    cert_link: Optional[str] = Field(
+        None,
+        description="URL or hyperlink to the official certificate document or regulatory authority page.",
+    )
 
 
 class CertificateMetadata(Base):
@@ -65,6 +69,7 @@ class CertificateMetadata(Base):
     authority = Column(String(255), nullable=True, index=True, comment="Normalized Authority / certification body")
     issue_date = Column(Date, nullable=True, comment="Certificate Issue Date")
     exp_date = Column(Date, nullable=True, comment="Certificate Exp Date")
+    cert_link = Column(Text, nullable=True, comment="URL link to the official certificate or regulatory page")
     file_name = Column(String(255), nullable=True, comment="Source document file name")
     created_at = Column(DateTime, default=datetime.utcnow, comment="Timestamp of database record insertion")
 
