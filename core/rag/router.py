@@ -58,13 +58,29 @@ else:
             return {"intent": str(self.intent), "reasoning": self.reasoning}
 
 
-def classify_intent(user_query: str) -> Dict[str, str]:
+def _format_history(history) -> str:
+    """Formats conversation turns into a compact history block for the router."""
+    if not history:
+        return ""
+    lines = ["--- PRIOR CONVERSATION HISTORY ---"]
+    for turn in history:
+        role = "User" if turn.get("role") == "user" else "Assistant"
+        content = str(turn.get("content", "")).strip()
+        if content:
+            lines.append(f"{role}: {content}")
+    lines.append("--- END CONVERSATION HISTORY ---")
+    return "\n".join(lines)
+
+
+def classify_intent(user_query: str, history=None) -> Dict[str, str]:
     """
     Evaluates a user query using the local LLM facade and classifies it strictly
     into one of three routing intents: METADATA_QUERY, UNSTRUCTURED_RAG, or HYBRID_QUERY.
 
     Args:
         user_query (str): The natural language query submitted by the user.
+        history (Optional[List[Dict]]): Prior conversation turns ({role, content})
+            used to resolve anaphoric follow-up queries (e.g., "the others", "these").
 
     Returns:
         Dict[str, str]: A dictionary containing:
@@ -80,14 +96,18 @@ def classify_intent(user_query: str) -> Dict[str, str]:
         }
 
     clean_query = str(user_query).strip()
+    history_block = _format_history(history)
 
     # 2. Call local LLM engine facade with DEFAULT_MAX_TOKENS & disable_thinking=True
     #    The engine formats (system_prompt, user_prompt) into its own native template.
     try:
         from core.llm import generate_json
+        user_prompt = (
+            f"{history_block}\n\n" if history_block else ""
+        ) + f"USER QUERY: {clean_query}\n\nReturn ONLY the raw JSON output matching the schema."
         raw_json_response = generate_json(
             system_prompt=ROUTER_SYSTEM_PROMPT,
-            user_prompt=f"USER QUERY: {clean_query}\n\nReturn ONLY the raw JSON output matching the schema.",
+            user_prompt=user_prompt,
             disable_thinking=True,
         )
 

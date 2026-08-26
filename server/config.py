@@ -38,7 +38,10 @@ DATABASE_URL: str = os.getenv(
 SUPPORTED_EXTENSIONS: tuple = ('.png', '.jpg', '.jpeg', '.webp', '.pdf')
 
 # Centralized context window limit (tokens) for LLM initialization.
-DEFAULT_CONTEXT_WINDOW: int = 8192
+# Scaled to 32K for the GCP NVIDIA L4 (24 GB) with the IQ3_XXS 27B engine.
+# 64K would add ~4 GB of q8_0 KV cache on top of the ~11 GB model + OCR, which is
+# too tight; 32K keeps enough headroom for co-resident GLM-OCR + KV cache.
+DEFAULT_CONTEXT_WINDOW: int = 32768
 
 # Maximum token budget for LLM completions
 DEFAULT_MAX_TOKENS: int = 8192

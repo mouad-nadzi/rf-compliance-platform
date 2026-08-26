@@ -1,6 +1,6 @@
 # Project Handoff Report — Automotive Certificate Compliance & Q&A Platform
-**Date:** 2026-08-24 (updated Production Deployment on GCP NVIDIA L4 Instance, LLM Schema Mapping, Multi-Lingual Date Normalization & Direct Link Access)
-**Status:** **LIVE IN PRODUCTION on GCP NVIDIA L4 Host**. Primary LLM Engine: **Qwen3.8-27B GGUF** (`qwen3.8-27b-gguf`), Pure-HF GLM-OCR (`glm-ocr`), LLM-Based Automated File Column Mapping, Multi-Lingual French Date Normalization (`_parse_iso_date`), Streamlit `LinkColumn` Direct Access, Zero-Hardcoding Dynamic Link Resolution (`PUBLIC_API_URL`), Docker Compose Infrastructure (`rf_app` + `rf_postgres_db`), Deterministic 7-Field Compliance Pipeline (`CertificateExtractionSchema`), SQL Lookup Tables & Ingestion (`AuthorityLookup`, `SupplierLookup`), GPU VRAM Coexistence (NVIDIA L4 24GB), End-to-End Hybrid RAG, SQL Hydration, CPU Embeddings, Model Registry, Intelligent Router, & Production Decoupled Architecture.
+**Date:** 2026-08-26 (updated Chat Session Persistence, RAG Accuracy Hardening, and LLM Upgrade to Qwen3.8-27B-UD-IQ3_XXS)
+**Status:** **LIVE IN PRODUCTION on GCP NVIDIA L4 Host**. Primary LLM Engine: **Qwen3.8-27B GGUF UD-IQ3_XXS** (`qwen3.8-27b-gguf`, 3-bit, 32k context), Pure-HF GLM-OCR (`glm-ocr`), LLM-Based Automated File Column Mapping, Multi-Lingual French Date Normalization (`_parse_iso_date`), Streamlit `LinkColumn` Direct Access, Zero-Hardcoding Dynamic Link Resolution (`PUBLIC_API_URL`), Docker Compose Infrastructure (`rf_app` + `rf_postgres_db`), Deterministic 7-Field Compliance Pipeline (`CertificateExtractionSchema`), SQL Lookup Tables & Ingestion (`AuthorityLookup`, `SupplierLookup`), PostgreSQL-Persisted Chat Sessions, GPU VRAM Coexistence (NVIDIA L4 24GB), End-to-End Hybrid RAG, SQL Hydration, CPU Embeddings, Model Registry, Intelligent Router, & Production Decoupled Architecture.
 
 ---
 
@@ -125,6 +125,7 @@ Project/
 
 | Key | File | Model Weights | Params / Quant | Primary Purpose |
 |---|---|---|---|---|
+| `qwen3.8-27b-gguf` (Default) | `core/llm/qwen3_8_27b.py` | `unsloth/Qwen3.8-27B-GGUF` | 27B / `UD-IQ3_XXS` (3-bit) | Production reasoning / RAG & SQL engine (32k ctx, q8_0 KV) |
 | `gemma4-26b-gguf` | `core/llm/gemma4_26b.py` | `unsloth/gemma-4-26B-A4B-it-GGUF` | 26B / `UD-IQ2_M` | High-precision instruction model (**100% benchmark accuracy**) |
 | `qwen3.6-35b-gguf` / `qwen3-35b` | `core/llm/qwen3_35b.py` | `unsloth/Qwen3.6-35B-A3B-GGUF` | 35B / `UD-IQ2_M` (MoE) | Cutting-edge MoE model with fast 3B active params |
 | `qwen3-8b` | `core/llm/qwen3_8b.py` | `Qwen/Qwen3-8B-GGUF` | 8B / `Q8_0` | High-speed dense instruction model |
@@ -145,11 +146,12 @@ Project/
 ## 5. Architectural & System Rules
 
 ### 5.1 Centralized Context Management
-All LLM engines use `DEFAULT_CONTEXT_WINDOW = 8192` from `server/config.py` in the current T4-safe configuration. Context window fallback loops have been completely removed in favor of single-pass initialization, ensuring deterministic VRAM footprint and execution. The earlier 16K setting is documented in §11 as an historical fit limit; it should only be restored on larger GPU hardware or multi-GPU deployments.
+The default engine (`qwen3.8-27b-gguf`, IQ3_XXS) uses `DEFAULT_CONTEXT_WINDOW = 32768` from `server/config.py` on the GCP NVIDIA L4 (24 GB). This was scaled up from the T4-era `8192` cap (and the historical 16K setting in §11) to leverage the L4's VRAM headroom (measured ~8.2 GB free at 32k). Context window fallback loops have been completely removed in favor of single-pass initialization, ensuring deterministic VRAM footprint and execution.
 
 ### 5.2 Strict Quantization Floor (Anti-OOM Directive)
 - **Forbidden Upward Swaps:** The system must never change or upgrade a model's quantization level (e.g. from `IQ2_M`/`Q4_K_M` to 8-bit or FP16) during debugging, as this triggers uncatchable OOM kernel crashes on Tesla T4 GPUs.
 - **Allowed Last-Resort Exception:** If a model download fails or corrupts, the agent is permitted to swap to an equivalent repository from a different publisher (e.g. `unsloth`, `bartowski`, `google`), provided the model file size and quantization precision remain strictly identical.
+- **Production L4 note (2026-08-26):** The above floor is a **T4-sandbox debugging guard**. Deliberate, VRAM-verified production upgrades are permitted on the GCP L4 — e.g., the default engine moved `UD-IQ1_M` (1-bit, T4 compromise) to `UD-IQ3_XXS` (3-bit), scaling quantization quality up since the L4 has ample headroom (§20.4).
 
 ### 5.3 Dynamic Thinking Modes (`disable_thinking`)
 Mode handling is configured **per model**, not centrally. `BaseLLMEngine.generate_json(system_prompt, user_prompt, disable_thinking, max_tokens)` (in `core/base.py`) is a **concrete template method** that executes each model's single abstract hook:
@@ -541,6 +543,37 @@ The platform is officially live in production on a dedicated GCP NVIDIA L4 GPU i
 ### 19.7 Repository Hygiene
 - Removed all emojis / decorative Unicode symbols from the codebase (log messages, comments, docs); arrows replaced with ASCII `->` where meaningful.
 - Added a "Code Style Directives - No Emojis" rule to `.agents/AGENTS.md`.
+
+
+## 20. Chat Session Persistence, RAG Accuracy Hardening & LLM Model Upgrade (2026-08-26 Update)
+
+### 20.1 PostgreSQL-Persisted Chat Sessions (`server/main.py`, `schemas/extraction.py`)
+- **ORM models:** Added `ChatSession` (`chat_sessions`) and `ChatMessage` (`chat_messages`) tables to `schemas/extraction.py` (auto-created by `init_db`).
+- **DB-backed store:** The chat session store in `server/main.py` now mirrors every mutation to PostgreSQL (session create, message turns, title, freeze state) and re-hydrates the in-memory cache from the DB at startup, so sessions and their history **survive backend/container restarts**.
+- **Endpoints:** `GET/POST /api/v1/chat/sessions`, `GET /api/v1/chat/sessions/{id}/messages`, `DELETE /api/v1/chat/sessions/{id}` all read/write PostgreSQL directly.
+
+### 20.2 Chat Context-Window Freeze Guard (`server/config.py`, `server/main.py`)
+- `CHAT_CONTEXT_WINDOW` / `CHAT_CONTEXT_FULL_THRESHOLD` (85% of the context window) / `CHAT_PROMPT_OVERHEAD_TOKENS` (700) budget each session's cumulative prompt.
+- A session **freezes** once its projected budget exceeds the threshold and returns `"Context window full, open a new session."` with `frozen: true` until a new session is opened.
+
+### 20.3 RAG Accuracy Hardening — Anti-Hallucination Fixes (`core/rag/*`, `core/prompts.py`)
+Investigation of an off-topic answer ("what about the others" returning Dominican Republic/Brazil/Peru docs) traced the failure to anaphoric follow-up queries + weak retrieval. Fixes:
+1. **History-aware query reformulation** (`core/rag/orchestrator.py` `_reformulate_query` + `QUERY_REWRITE_SYSTEM_PROMPT`): rewrites follow-ups into standalone queries carrying entities from history (`"what about the others" -> "list the other certificates from Argentina and whether they have missing values"`), with a deterministic anaphora fallback when the LLM returns the query unchanged.
+2. **Router history** (`core/rag/router.py`): `classify_intent(query, history=...)` injects prior turns so follow-ups inherit the previous metadata context.
+3. **Resolved query drives retrieval**: RAG/SQL now embed/generate against the resolved query, not the raw anaphoric string.
+4. **Stopword filtering** (`core/rag/hybrid_engine.py`): `_tokenize_query` drops English stopwords so "what/about/others" no longer trigger broad ILIKE/FTS matches.
+5. **Relevance gate + SQL fallback**: stopword-only queries return empty context (`LOW_SIGNAL_QUERY`); a dense cosine-distance threshold rejects unrelated retrievals; the orchestrator falls back to the metadata (SQL) path when RAG context is empty.
+6. **Generic schema-driven "missing values" SQL fix** (`core/rag/sql_engine.py`, `core/prompts.py`): `build_schema_description()` now annotates every nullable column as `NULLABLE`, and the SQL prompt instructs the generator to check ALL `NULLABLE` columns for missing/empty/incomplete-value questions. This is ORM-derived (auto-scales with schema changes) and replaced an earlier rigid `cert_link`-specific wording.
+
+### 20.4 LLM Model Upgrade: Qwen3.8-27B IQ1_M -> UD-IQ3_XXS (`core/llm/qwen3_8_27b.py`, `server/config.py`)
+- **Model:** `Qwen3.8-27B-UD-IQ1_M.gguf` (6.73 GB, 1-bit) -> `Qwen3.8-27B-UD-IQ3_XXS.gguf` (10.93 GB, 3-bit) from `unsloth/Qwen3.8-27B-GGUF`.
+- **Rationale:** IQ1_M was a T4 (16 GB) VRAM-coexistence compromise that degraded reasoning (incomplete SQL field enumeration, non-deterministic routing). On the GCP L4 (24 GB) the 3-bit model fits comfortably.
+- **VRAM measured on L4:** ~14.3 GB used / ~8.2 GB free at 32k context (OCR + LLM + KV). No GPU-layer reduction needed; `QWEN3_8_27B_N_GPU_LAYERS` (env, default `-1`) allows offloading 4-8 layers to CPU if VRAM ever tight.
+- **Context window:** `DEFAULT_CONTEXT_WINDOW` scaled 8192 -> **32768** (32k). 64k would add ~4 GB q8_0 KV on top of the 11 GB model + OCR and is too tight on the L4. KV cache stays `q8_0` (`type_k/type_v = GGML_TYPE_Q8_0`, flash_attn on).
+- **MTP speculative decoding (NOT applied):** The IQ3_XXS main model has no embedded MTP heads; the repo ships a separate draft head `MTP/mtp-Qwen3.8-27B-Q4_0.gguf`. llama.cpp exposes MTP (`--spec-type draft-mtp`) only through llama-server/CLI; language bindings (llama-cpp-python, any version) do NOT expose it (llama.cpp issue #27469). Enabling MTP would require a llama-server sidecar migration, which was evaluated and deferred — the pipeline is latency-bound by multiple short serial LLM calls per query, not single-sequence decode throughput, so MTP's payoff is limited here.
+
+### 20.5 AGENTS.md Update (`/home/mouadnadzi3/rf-compliance-platform/.agents/AGENTS.md`)
+- The hard `llama-cpp-python v0.3.34-cu122` wheel pin is now documented as a **Google Colab / Tesla T4 sandbox constraint**, superseded on production (GCP NVIDIA L4). Production may use a current CUDA build, or serve the LLM via a recent `llama-server` sidecar for speculative decoding. Integer GGML enums for `type_k`/`type_v` and GGUF-architecture compatibility requirements remain.
 
 
 

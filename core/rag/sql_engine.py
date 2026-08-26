@@ -61,6 +61,10 @@ def build_schema_description() -> str:
     `certificates` ORM table definition, keeping prompt schema always in sync
     with the actual database model.
 
+    Nullable columns are explicitly annotated as "NULLABLE" so the SQL generator
+    can generalize "missing values" questions to every field that can be NULL
+    (schema-driven, no hardcoded column names).
+
     Returns:
         str: Multi-line schema description (table name, columns, types, comments).
     """
@@ -72,7 +76,9 @@ def build_schema_description() -> str:
         extras = []
         if column.primary_key:
             extras.append("PRIMARY KEY")
-        if getattr(column, "nullable", True) is False:
+        elif getattr(column, "nullable", True):
+            extras.append("NULLABLE")
+        else:
             extras.append("NOT NULL")
 
         description = f"  - {column.name} {col_type}"

@@ -6,7 +6,7 @@ using pre-compiled llama-cpp-python CUDA acceleration.
 
 Model Weights:
   Repository: unsloth/Qwen3.8-27B-GGUF
-  Filename  : Qwen3.8-27B-UD-IQ1_M.gguf (~9.8 GB file size)
+  Filename  : Qwen3.8-27B-UD-IQ3_XXS.gguf (~10.93 GB file size, 3-bit)
 """
 
 import logging
@@ -24,21 +24,28 @@ logger = logging.getLogger(__name__)
 
 class Qwen3_8_27BEngine(BaseLLMEngine):
     """
-    LLM Engine for Qwen3.8 27B Instruction GGUF (UD-IQ1_M).
+    LLM Engine for Qwen3.8 27B Instruction GGUF (UD-IQ3_XXS).
 
     Features:
-      - Fits inside ~9.8 GB VRAM budget on Tesla T4 GPUs.
-      - Full GPU layer offloading (n_gpu_layers=-1).
-      - Context window set via DEFAULT_CONTEXT_WINDOW (16,384 tokens).
-      - Hybrid reasoning mode with empty <think> trace suppression for JSON schemas.
+      - Fits inside ~11 GB VRAM budget with headroom on the GCP NVIDIA L4 (24 GB),
+        co-resident with GLM-OCR. Leave ~8 GB for the runtime KV cache.
+      - Full GPU layer offloading (n_gpu_layers=-1). If VRAM is tight, offload a few
+        layers to CPU via QWEN3_8_27B_N_GPU_LAYERS (e.g., reduce by 4-8 layers).
+      - Context window set via DEFAULT_CONTEXT_WINDOW (32768 tokens on the L4).
+      - q8_0 KV cache (type_k/type_v = GGML_TYPE_Q8_0) for stable hybrid-attention caching.
+      - NOTE: Multi-Token Prediction (MTP) speculative decoding requires the llama-server
+        CLI's `--spec-type draft-mtp` flag; llama-cpp-python v0.3.34 (pinned by AGENTS.md)
+        does NOT expose MTP speculative decoding. No MTP flags are applied here.
     """
 
     REPO_ID: str = os.getenv(
         "QWEN3_8_27B_REPO_ID", "unsloth/Qwen3.8-27B-GGUF"
     )
     FILENAME: str = os.getenv(
-        "QWEN3_8_27B_FILENAME", "Qwen3.8-27B-UD-IQ1_M.gguf"
+        "QWEN3_8_27B_FILENAME", "Qwen3.8-27B-UD-IQ3_XXS.gguf"
     )
+    # Full GPU offload by default; lower this (e.g., 32) to free VRAM for KV cache.
+    N_GPU_LAYERS: int = int(os.getenv("QWEN3_8_27B_N_GPU_LAYERS", "-1"))
 
     _CANDIDATE_REPOS: list[str] = [
         "unsloth/Qwen3.8-27B-GGUF",
@@ -86,10 +93,11 @@ class Qwen3_8_27BEngine(BaseLLMEngine):
         logger.info(" Verified CUDA GPU acceleration active in llama-cpp-python.")
 
         logger.info("=" * 70)
-        logger.info(f" Loading Qwen3.8-27B-UD-IQ1_M (LLM Engine)")
+        logger.info(f" Loading Qwen3.8-27B-UD-IQ3_XXS (LLM Engine)")
         logger.info(f"   Repository ID     : {self.REPO_ID}")
         logger.info(f"   Filename          : {self.FILENAME}")
         logger.info(f"   Context Window    : {DEFAULT_CONTEXT_WINDOW} tokens")
+        logger.info(f"   GPU Layers        : {self.N_GPU_LAYERS} (-1 = all)")
         logger.info("=" * 70)
 
         try:
@@ -133,13 +141,13 @@ class Qwen3_8_27BEngine(BaseLLMEngine):
             )
 
         logger.info(
-            f" Initializing Llama instance (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1, flash_attn=True, KV=q8_0)..."
+            f" Initializing Llama instance (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers={self.N_GPU_LAYERS}, flash_attn=True, KV=q8_0)..."
         )
         try:
             try:
                 self._llm = _Llama(
                     model_path=model_path,
-                    n_gpu_layers=-1,
+                    n_gpu_layers=self.N_GPU_LAYERS,
                     n_ctx=DEFAULT_CONTEXT_WINDOW,
                     flash_attn=True,
                     type_k=llama_cpp.GGML_TYPE_Q8_0,
@@ -149,13 +157,13 @@ class Qwen3_8_27BEngine(BaseLLMEngine):
             except TypeError:
                 self._llm = _Llama(
                     model_path=model_path,
-                    n_gpu_layers=-1,
+                    n_gpu_layers=self.N_GPU_LAYERS,
                     n_ctx=DEFAULT_CONTEXT_WINDOW,
                     verbose=False,
                 )
             self.active_n_ctx = DEFAULT_CONTEXT_WINDOW
             logger.info(
-                f" Qwen3.8 27B loaded successfully (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers=-1)."
+                f" Qwen3.8 27B loaded successfully (n_ctx={DEFAULT_CONTEXT_WINDOW}, n_gpu_layers={self.N_GPU_LAYERS})."
             )
         except Exception as exc:
             raise RuntimeError(f"Failed to load GGUF model from '{model_path}': {exc}")

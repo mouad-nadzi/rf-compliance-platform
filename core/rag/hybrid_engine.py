@@ -29,15 +29,34 @@ RRF_K: int = 60
 #: Threshold for parent-document expansion vs chunk fallback
 PARENT_EXPANSION_THRESHOLD: int = 3
 
+#: Dense relevance gate: if even the best-matching chunk in the corpus has a
+#: cosine distance above this value, the query has no meaningful match.
+DENSE_RELEVANCE_THRESHOLD: float = 1.1
+
 #: Fallback message when document context is unavailable
 FALLBACK_NOT_FOUND_MESSAGE: str = "Information not found in provided document context."
 
+#: English stopwords excluded from sparse tokenization (avoid broad ILIKE/FTS noise).
+STOPWORDS: Set[str] = {
+    "what", "which", "who", "where", "when", "why", "how", "about", "others",
+    "other", "the", "a", "an", "and", "or", "but", "for", "with", "from",
+    "are", "is", "was", "were", "be", "been", "being", "has", "have", "had",
+    "do", "does", "did", "will", "would", "shall", "should", "can", "could",
+    "may", "might", "must", "of", "to", "in", "on", "at", "by", "as", "it",
+    "its", "them", "their", "they", "we", "you", "your", "this", "that",
+    "these", "those", "there", "here", "not", "no", "so", "if", "then",
+    "than", "too", "very", "just", "please", "tell", "list", "show", "give",
+}
+
 
 def _tokenize_query(query: str) -> List[str]:
-    """Extracts clean alphanumeric tokens from query string (min length 2)."""
+    """Extracts clean alphanumeric tokens from query string (min length 2), excluding stopwords."""
     if not query:
         return []
-    return [w for w in re.findall(r"\w+", query.lower()) if len(w) >= 2]
+    return [
+        w for w in re.findall(r"\w+", query.lower())
+        if len(w) >= 2 and w not in STOPWORDS
+    ]
 
 
 def _retrieve_dense_chunks(
@@ -177,6 +196,33 @@ def compute_rrf_rankings(
     return sorted_candidates
 
 
+def _dense_similarity_top(
+    query_vector: List[float],
+    db_session,
+) -> Optional[float]:
+    """Returns the best (lowest) pgvector cosine distance in the corpus for a query vector."""
+    if not query_vector or all(v == 0.0 for v in query_vector):
+        return None
+    try:
+        row = (
+            db_session.query(
+                CertificateChunk.embedding.cosine_distance(query_vector)
+            )
+            .filter(CertificateChunk.embedding.isnot(None))
+            .order_by(CertificateChunk.embedding.cosine_distance(query_vector))
+            .first()
+        )
+        return float(row[0]) if row is not None else None
+    except Exception as exc:
+        logger.debug(f"  Dense similarity probe failed: {exc}")
+        return None
+
+
+def _has_query_signal(query: str) -> bool:
+    """A query with no meaningful tokens (stopwords/empty) carries no retrieval signal."""
+    return len(_tokenize_query(query)) > 0
+
+
 def retrieve_hybrid_context(
     user_query: str,
     db_session,
@@ -192,7 +238,7 @@ def retrieve_hybrid_context(
 
     Returns:
         Dict payload containing:
-          - retrieval_mode: "PARENT_EXPANSION" or "CHUNK_FALLBACK"
+          - retrieval_mode: "PARENT_EXPANSION", "CHUNK_FALLBACK", or "LOW_SIGNAL_QUERY"
           - context_text: Formatted markdown string preserving <Page X> tags
           - sources: List of source certificate dicts (file_name, certificate_id, pages)
           - top_chunks: List of top retrieved chunk objects
@@ -206,12 +252,29 @@ def retrieve_hybrid_context(
             "top_chunks": [],
         }
 
+    # Relevance gate: a stopword-only / empty-token query has no retrieval signal.
+    if not _has_query_signal(clean_query):
+        logger.info(f" Query '{clean_query!r}' carries no retrieval signal (stopword-only). Skipping RAG retrieval.")
+        return {
+            "retrieval_mode": "LOW_SIGNAL_QUERY",
+            "context_text": "",
+            "sources": [],
+            "top_chunks": [],
+        }
+
     # 1. Compute Dense Query Vector
     query_vector = get_embedding(clean_query)
 
     # 2. Dual Retrieval (Dense + Sparse)
     candidate_limit = max(top_k * 4, 20)
     dense_chunks = _retrieve_dense_chunks(query_vector, db_session, candidate_limit=candidate_limit)
+
+    # Dense relevance gate: reject when even the best corpus match is unrelated.
+    best_dist = _dense_similarity_top(query_vector, db_session)
+    if best_dist is not None and best_dist > DENSE_RELEVANCE_THRESHOLD:
+        logger.info(f" Dense relevance gate rejected retrieval (best cosine distance {best_dist:.3f}).")
+        dense_chunks = []
+
     sparse_chunks = _retrieve_sparse_chunks(clean_query, db_session, candidate_limit=candidate_limit)
 
     # 3. Reciprocal Rank Fusion (RRF)

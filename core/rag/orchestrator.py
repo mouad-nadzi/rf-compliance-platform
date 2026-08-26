@@ -46,6 +46,68 @@ def _format_history(history) -> str:
     return "\n".join(lines)
 
 
+_ANAPHORA_RE = re.compile(
+    r"\b(the others|the other|these|those|them|this|that|it|they|"
+    r"what about|how about|and the rest|the rest|also|ones)\b",
+    re.IGNORECASE,
+)
+
+
+def _reformulate_query(user_query: str, history) -> str:
+    """
+    Rewrites the latest query into a standalone, self-contained query that carries
+    forward entities from prior turns (resolves "the others", "these", "them", etc.).
+
+    Falls back to the original query unchanged if no history exists or the LLM rewrite fails.
+    A deterministic anaphora fallback reconstructs the query from the last user turn
+    when the LLM returned the query unchanged despite clear references to prior context.
+    """
+    if not history:
+        return user_query
+
+    history_text = _format_history(history)
+    rewritten = user_query
+    try:
+        from core.prompts import QUERY_REWRITE_SYSTEM_PROMPT
+        from core.llm import generate_json
+
+        raw_response = generate_json(
+            system_prompt=QUERY_REWRITE_SYSTEM_PROMPT,
+            user_prompt=(
+                f"{history_text}\n\n"
+                f"USER'S LATEST QUERY: {user_query}\n\n"
+                f"Return ONLY the raw JSON output matching the schema."
+            ),
+            disable_thinking=True,
+        )
+
+        parsed = json.loads(raw_response)
+        if isinstance(parsed, dict):
+            candidate = str(parsed.get("rewritten_query", "")).strip()
+            if candidate:
+                rewritten = candidate
+    except Exception as exc:
+        logger.warning(f" Query reformulation failed ({exc}); using original query.")
+
+    # Deterministic fallback: if the LLM left an anaphoric query unchanged, rebuild
+    # it from the last user turn so downstream routing/SQL still has the context.
+    if rewritten.strip().lower() == user_query.strip().lower() and _ANAPHORA_RE.search(user_query):
+        last_user = ""
+        for turn in reversed(history or []):
+            if turn.get("role") == "user":
+                last_user = str(turn.get("content", "")).strip()
+                if last_user:
+                    break
+        if last_user:
+            fallback = f"{user_query.strip()} - referring to the certificates from the previous question: {last_user}"
+            logger.info(f" Anaphora fallback rewrite: '{user_query[:50]}' -> '{fallback[:90]}'")
+            return fallback
+
+    if rewritten.strip() != user_query.strip():
+        logger.info(f" Query rewritten: '{user_query[:50]}' -> '{rewritten[:80]}'")
+    return rewritten
+
+
 def answer_compliance_query(
     user_query: str,
     db_session=None,
@@ -81,6 +143,10 @@ def answer_compliance_query(
             "latency_ms": 0.0,
         }
 
+    # Resolve anaphoric follow-ups ("the others", "these", "them") into a
+    # standalone query carrying entities from the conversation history.
+    resolved_query = _reformulate_query(clean_query, history)
+
     close_session_on_exit = False
     if db_session is None:
         from storage.database import SessionLocal
@@ -89,9 +155,9 @@ def answer_compliance_query(
         close_session_on_exit = True
 
     try:
-        # Step 1: Intent Classification via Router
+        # Step 1: Intent Classification via Router (history-aware, on the resolved query)
         logger.info(f" Classifying query intent for: '{clean_query[:60]}...'")
-        router_decision = classify_intent(clean_query)
+        router_decision = classify_intent(resolved_query, history=history)
         intent = router_decision.get("intent", QueryIntent.UNSTRUCTURED_RAG.value)
         reasoning = router_decision.get("reasoning", "Default routing classification.")
 
@@ -104,7 +170,7 @@ def answer_compliance_query(
         if intent == QueryIntent.METADATA_QUERY.value:
             # Path A: Text-to-SQL
             logger.info(" Executing METADATA_QUERY path (Text-to-SQL)...")
-            answer_text = execute_metadata_query(clean_query, db_session, history_text=history_text)
+            answer_text = execute_metadata_query(resolved_query, db_session, history_text=history_text)
             sources = [{"type": "database", "table": "certificates", "query_type": "relational_sql"}]
 
         elif intent == QueryIntent.HYBRID_QUERY.value:
@@ -112,10 +178,10 @@ def answer_compliance_query(
             logger.info(" Executing HYBRID_QUERY path (Dual-Path SQL + Vector RRF)...")
             try:
                 # Structured facts from SQL engine
-                sql_answer = execute_metadata_query(clean_query, db_session, history_text=history_text)
+                sql_answer = execute_metadata_query(resolved_query, db_session, history_text=history_text)
 
                 # Unstructured context from Hybrid RRF
-                hybrid_payload = retrieve_hybrid_context(clean_query, db_session, top_k=5)
+                hybrid_payload = retrieve_hybrid_context(resolved_query, db_session, top_k=5)
                 context_text = hybrid_payload.get("context_text", "").strip()
                 sources = hybrid_payload.get("sources", [])
 
@@ -127,7 +193,7 @@ def answer_compliance_query(
                         f"{sql_answer}\n\n"
                         f"--- UNSTRUCTURED DOCUMENT CONTEXT ---\n"
                         f"{context_text}\n\n"
-                        f"USER QUESTION: {clean_query}\n\n"
+                        f"USER QUESTION: {resolved_query}\n\n"
                         f"Synthesize a unified, comprehensive answer combining both the structured metadata facts "
                         f"and unstructured document details above. Preserve citation markers (e.g. <Page X>)."
                     )
@@ -152,20 +218,32 @@ def answer_compliance_query(
                         answer_text = re.sub(r"```(?:json)?\s*|\s*```", "", raw_response).strip()
 
                 elif context_text:
-                    answer_text = execute_unstructured_query(clean_query, db_session, history_text=history_text)
+                    answer_text = execute_unstructured_query(resolved_query, db_session, history_text=history_text)
                 else:
                     answer_text = sql_answer
+                    if not answer_text or answer_text == SQL_FALLBACK:
+                        answer_text = FALLBACK_NOT_FOUND_MESSAGE
 
             except Exception as exc:
                 logger.warning(f" Dual-path hybrid execution failed: {exc}. Falling back to unstructured query.")
-                answer_text = execute_unstructured_query(clean_query, db_session, history_text=history_text)
+                answer_text = execute_unstructured_query(resolved_query, db_session, history_text=history_text)
 
         else:
             # Path B: Standard UNSTRUCTURED_RAG (Hybrid RRF + Parent Expansion)
             logger.info(" Executing UNSTRUCTURED_RAG path (Hybrid RRF + Parent Expansion)...")
-            hybrid_payload = retrieve_hybrid_context(clean_query, db_session, top_k=5)
+            hybrid_payload = retrieve_hybrid_context(resolved_query, db_session, top_k=5)
             sources = hybrid_payload.get("sources", [])
-            answer_text = execute_unstructured_query(clean_query, db_session, history_text=history_text)
+            context_text = hybrid_payload.get("context_text", "").strip()
+
+            if context_text:
+                answer_text = execute_unstructured_query(resolved_query, db_session, history_text=history_text)
+            else:
+                # Relevance gate / low-signal query: the vector store had no usable
+                # context, so fall back to the structured metadata (SQL) path.
+                logger.info(" RAG retrieval yielded no usable context; falling back to metadata (SQL).")
+                answer_text = execute_metadata_query(resolved_query, db_session, history_text=history_text)
+                if not answer_text or answer_text == SQL_FALLBACK:
+                    answer_text = FALLBACK_NOT_FOUND_MESSAGE
 
         t_end = time.perf_counter()
         latency_ms = (t_end - t_start) * 1000.0
@@ -184,7 +262,7 @@ def answer_compliance_query(
         latency_ms = (t_end - t_start) * 1000.0
 
         try:
-            fallback_answer = execute_unstructured_query(clean_query, db_session, history_text=history_text)
+            fallback_answer = execute_unstructured_query(resolved_query, db_session, history_text=history_text)
         except Exception:
             fallback_answer = FALLBACK_NOT_FOUND_MESSAGE
 
