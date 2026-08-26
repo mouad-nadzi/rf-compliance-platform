@@ -23,7 +23,10 @@ import logging
 import os
 import tempfile
 import threading
+import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Depends
 from fastapi.staticfiles import StaticFiles
@@ -31,10 +34,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 import shutil
 
-from storage.database import get_db
+from storage.database import get_db, SessionLocal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+from server import config
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Global State & Config
@@ -46,6 +51,149 @@ OUTPUT_FOLDER = os.path.join(tempfile.gettempdir(), "ocr_outputs")
 
 _batch_thread: threading.Thread | None = None
 _batch_lock = threading.Lock()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Chat Session Store (PostgreSQL-persisted history + context budgeting)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_CHAT_SESSIONS: Dict[str, Dict[str, Any]] = {}
+_CHAT_SESSIONS_LOCK = threading.Lock()
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimator (~4 chars per token)."""
+    return max(1, len(str(text or "")) // 4)
+
+
+def _session_usage_tokens(session: Dict[str, Any], extra_text: str = "") -> int:
+    """Cumulative estimated prompt budget for a session (history + overhead)."""
+    base = sum(_estimate_tokens(m.get("content", "")) for m in session.get("messages", []))
+    return base + config.CHAT_PROMPT_OVERHEAD_TOKENS + _estimate_tokens(extra_text)
+
+
+def _load_chat_sessions_from_db() -> None:
+    """Hydrates the in-memory session cache from PostgreSQL (survives restarts)."""
+    from schemas.extraction import ChatMessage, ChatSession
+
+    try:
+        db = SessionLocal()
+        try:
+            rows = db.query(ChatSession).order_by(ChatSession.created_at).all()
+            for row in rows:
+                session = {
+                    "id": row.id,
+                    "title": row.title or "",
+                    "messages": [],
+                    "created_at": row.created_at.isoformat() if row.created_at else "",
+                    "frozen": bool(row.frozen),
+                }
+                for msg in row.messages:
+                    session["messages"].append(
+                        {"role": msg.role, "content": msg.content}
+                    )
+                _CHAT_SESSIONS[session["id"]] = session
+            if rows:
+                logger.info(f" Loaded {len(rows)} chat session(s) from PostgreSQL.")
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning(f" Could not load chat sessions from PostgreSQL: {exc}")
+
+
+def _create_chat_session(title: str = "") -> Dict[str, Any]:
+    from schemas.extraction import ChatSession
+
+    session_id = f"sess_{uuid.uuid4().hex[:12]}"
+    session = {
+        "id": session_id,
+        "title": (title or "").strip()[:60],
+        "messages": [],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "frozen": False,
+    }
+    with _CHAT_SESSIONS_LOCK:
+        _CHAT_SESSIONS[session_id] = session
+
+    try:
+        db = SessionLocal()
+        try:
+            db.add(ChatSession(id=session_id, title=session["title"]))
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning(f" Could not persist new chat session: {exc}")
+
+    return session
+
+
+def _get_chat_session(session_id: str) -> Dict[str, Any] | None:
+    with _CHAT_SESSIONS_LOCK:
+        cached = _CHAT_SESSIONS.get(session_id)
+    if cached is not None:
+        return cached
+
+    from schemas.extraction import ChatSession
+
+    try:
+        db = SessionLocal()
+        try:
+            row = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+            if row is None:
+                return None
+            session = {
+                "id": row.id,
+                "title": row.title or "",
+                "messages": [
+                    {"role": m.role, "content": m.content} for m in row.messages
+                ],
+                "created_at": row.created_at.isoformat() if row.created_at else "",
+                "frozen": bool(row.frozen),
+            }
+            with _CHAT_SESSIONS_LOCK:
+                _CHAT_SESSIONS[session_id] = session
+            return session
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning(f" Could not load chat session {session_id}: {exc}")
+        return None
+
+
+def _get_or_create_chat_session(session_id: str | None) -> Dict[str, Any]:
+    if session_id:
+        existing = _get_chat_session(session_id)
+        if existing:
+            return existing
+    return _create_chat_session()
+
+
+def _persist_chat_turn(session_id: str, role: str, content: str, title: str | None = None, frozen: bool | None = None) -> None:
+    """Persists a message turn (and optional title/frozen updates) to PostgreSQL."""
+    from schemas.extraction import ChatMessage, ChatSession
+
+    try:
+        db = SessionLocal()
+        try:
+            row = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+            if row is None:
+                db.close()
+                return
+            db.add(ChatMessage(session_id=session_id, role=role, content=content))
+            if title is not None:
+                row.title = title
+            if frozen is not None:
+                row.frozen = frozen
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning(f" Could not persist chat turn: {exc}")
+
+
+def _persist_chat_session_frozen(session_id: str, frozen: bool) -> None:
+    _persist_chat_turn(session_id, role="", content="", frozen=frozen)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -69,6 +217,9 @@ async def lifespan(app: FastAPI):
     logger.info(" Initializing database connection & pgvector tables...")
     from storage import init_db
     init_db()
+
+    # Restore persisted chat sessions from PostgreSQL (survives restarts).
+    _load_chat_sessions_from_db()
 
     # Eagerly load both engines into VRAM so the first user action is fast.
     global _ocr_engine
@@ -1122,6 +1273,86 @@ from pydantic import BaseModel, Field
 
 class ChatRequest(BaseModel):
     query: str = Field(..., description="Natural language compliance or certificate question.")
+    session_id: str | None = Field(
+        default=None,
+        description="Existing chat session id. If omitted or unknown, a new session is created.",
+    )
+
+
+@app.get("/api/v1/chat/sessions")
+def list_chat_sessions():
+    """Lists all chat sessions (newest first) with title, message count, and freeze status."""
+    from schemas.extraction import ChatMessage, ChatSession
+
+    try:
+        db = SessionLocal()
+        try:
+            rows = db.query(ChatSession).order_by(ChatSession.created_at.desc()).all()
+            result = []
+            for row in rows:
+                count = db.query(ChatMessage).filter(ChatMessage.session_id == row.id).count()
+                result.append({
+                    "id": row.id,
+                    "title": row.title or "New chat",
+                    "message_count": count,
+                    "frozen": bool(row.frozen),
+                    "created_at": row.created_at.isoformat() if row.created_at else "",
+                })
+            return result
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning(f" Could not list chat sessions: {exc}")
+        return []
+
+
+@app.post("/api/v1/chat/sessions")
+def create_chat_session():
+    """Creates a new empty chat session."""
+    return _create_chat_session()
+
+
+@app.delete("/api/v1/chat/sessions/{session_id}")
+def delete_chat_session(session_id: str):
+    """Deletes a chat session and its history (from PostgreSQL and cache)."""
+    from schemas.extraction import ChatSession
+
+    with _CHAT_SESSIONS_LOCK:
+        cached = _CHAT_SESSIONS.pop(session_id, None)
+    try:
+        db = SessionLocal()
+        try:
+            row = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+            if row is None and cached is None:
+                raise HTTPException(status_code=404, detail="Session not found.")
+            if row is not None:
+                db.delete(row)
+                db.commit()
+        finally:
+            db.close()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(f" Could not delete chat session {session_id}: {exc}")
+        if cached is None:
+            raise HTTPException(status_code=404, detail="Session not found.")
+    return {"deleted": session_id}
+
+
+@app.get("/api/v1/chat/sessions/{session_id}/messages")
+def get_chat_session_messages(session_id: str):
+    """Returns the full message history, context usage, and freeze status for a session."""
+    session = _get_chat_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return {
+        "id": session["id"],
+        "title": session.get("title") or "New chat",
+        "frozen": session.get("frozen", False),
+        "usage_tokens": _session_usage_tokens(session),
+        "context_threshold": config.CHAT_CONTEXT_FULL_THRESHOLD,
+        "messages": session.get("messages", []),
+    }
 
 
 @app.post("/api/v1/chat")
@@ -1130,20 +1361,88 @@ async def chat_compliance_query(
     db: Session = Depends(get_db),
 ):
     """
-    Unified compliance Q&A chat endpoint.
+    Unified compliance Q&A chat endpoint with persistent multi-session history.
 
     Routes queries through the central RAG orchestrator:
       1. Intent classification (METADATA_QUERY, UNSTRUCTURED_RAG, HYBRID_QUERY).
       2. Optimal execution path (Text-to-SQL, Hybrid Vector RRF, or Dual-Path).
       3. Returns citation-backed answer, router decision, sources, and latency.
+
+    Context-window guard: a session freezes once its cumulative estimated prompt
+    budget crosses `config.CHAT_CONTEXT_FULL_THRESHOLD`; further turns return the
+    freeze message until the user opens a new session.
     """
     clean_query = (request.query or "").strip()
     if not clean_query:
         raise HTTPException(status_code=422, detail="query field cannot be blank.")
 
+    session = _get_or_create_chat_session(request.session_id)
+
+    # Frozen-session guard: no new turns accepted.
+    if session.get("frozen", False):
+        return {
+            "answer": config.CHAT_CONTEXT_FULL_MESSAGE,
+            "intent": "SESSION_FROZEN",
+            "reasoning": "Context window budget exhausted; open a new session.",
+            "sources": [],
+            "latency_ms": 0.0,
+            "session_id": session["id"],
+            "frozen": True,
+            "usage_tokens": _session_usage_tokens(session),
+            "context_threshold": config.CHAT_CONTEXT_FULL_THRESHOLD,
+        }
+
+    # Context-window budget guard: freeze the session if the new turn would overflow.
+    projected_usage = _session_usage_tokens(session, clean_query)
+    if projected_usage > config.CHAT_CONTEXT_FULL_THRESHOLD:
+        with _CHAT_SESSIONS_LOCK:
+            session["frozen"] = True
+        _persist_chat_session_frozen(session["id"], True)
+        return {
+            "answer": config.CHAT_CONTEXT_FULL_MESSAGE,
+            "intent": "SESSION_FROZEN",
+            "reasoning": "Context window budget exhausted; open a new session.",
+            "sources": [],
+            "latency_ms": 0.0,
+            "session_id": session["id"],
+            "frozen": True,
+            "usage_tokens": _session_usage_tokens(session),
+            "context_threshold": config.CHAT_CONTEXT_FULL_THRESHOLD,
+        }
+
     try:
         from core.rag import answer_compliance_query
-        response = answer_compliance_query(user_query=clean_query, db_session=db)
+        response = answer_compliance_query(
+            user_query=clean_query,
+            db_session=db,
+            history=list(session.get("messages", [])),
+        )
+
+        # Persist the turn into the session history.
+        with _CHAT_SESSIONS_LOCK:
+            session.setdefault("messages", []).append(
+                {"role": "user", "content": clean_query}
+            )
+            session["messages"].append(
+                {"role": "assistant", "content": response.get("answer", "")}
+            )
+            if not session.get("title"):
+                session["title"] = clean_query[:60]
+
+        # Mirror the turn to PostgreSQL so it survives backend restarts.
+        is_first_turn = len(session["messages"]) == 2
+        _persist_chat_turn(
+            session["id"],
+            "user",
+            clean_query,
+            title=session["title"] if is_first_turn else None,
+        )
+        _persist_chat_turn(session["id"], "assistant", response.get("answer", ""))
+
+        response["session_id"] = session["id"]
+        response["frozen"] = False
+        response["usage_tokens"] = _session_usage_tokens(session)
+        response["context_threshold"] = config.CHAT_CONTEXT_FULL_THRESHOLD
         return response
     except Exception as exc:
         logger.error(f" Error during /api/v1/chat processing: {exc}")

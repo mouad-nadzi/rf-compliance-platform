@@ -29,9 +29,27 @@ from core.rag.hybrid_engine import (
 logger = logging.getLogger(__name__)
 
 
+def _format_history(history) -> str:
+    """
+    Formats a list of {role, content} turns into a compact conversation-history
+    block for prompt injection. Empty input yields an empty string.
+    """
+    if not history:
+        return ""
+    lines = ["--- CONVERSATION HISTORY ---"]
+    for turn in history:
+        role = "User" if turn.get("role") == "user" else "Assistant"
+        content = str(turn.get("content", "")).strip()
+        if content:
+            lines.append(f"{role}: {content}")
+    lines.append("--- END CONVERSATION HISTORY ---")
+    return "\n".join(lines)
+
+
 def answer_compliance_query(
     user_query: str,
     db_session=None,
+    history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """
     Unified entry point for query processing across all three routing paths.
@@ -39,6 +57,8 @@ def answer_compliance_query(
     Args:
         user_query (str): Natural language user question.
         db_session: SQLAlchemy session (or None to auto-manage a local session).
+        history (Optional[List[Dict]]): Prior conversation turns ({role, content})
+            injected into LLM prompts so follow-up questions keep context.
 
     Returns:
         Dict[str, Any] standardized payload:
@@ -50,6 +70,7 @@ def answer_compliance_query(
     """
     t_start = time.perf_counter()
     clean_query = str(user_query or "").strip()
+    history_text = _format_history(history)
 
     if not clean_query:
         return {
@@ -83,7 +104,7 @@ def answer_compliance_query(
         if intent == QueryIntent.METADATA_QUERY.value:
             # Path A: Text-to-SQL
             logger.info(" Executing METADATA_QUERY path (Text-to-SQL)...")
-            answer_text = execute_metadata_query(clean_query, db_session)
+            answer_text = execute_metadata_query(clean_query, db_session, history_text=history_text)
             sources = [{"type": "database", "table": "certificates", "query_type": "relational_sql"}]
 
         elif intent == QueryIntent.HYBRID_QUERY.value:
@@ -91,7 +112,7 @@ def answer_compliance_query(
             logger.info(" Executing HYBRID_QUERY path (Dual-Path SQL + Vector RRF)...")
             try:
                 # Structured facts from SQL engine
-                sql_answer = execute_metadata_query(clean_query, db_session)
+                sql_answer = execute_metadata_query(clean_query, db_session, history_text=history_text)
 
                 # Unstructured context from Hybrid RRF
                 hybrid_payload = retrieve_hybrid_context(clean_query, db_session, top_k=5)
@@ -100,6 +121,8 @@ def answer_compliance_query(
 
                 if context_text and sql_answer and sql_answer != SQL_FALLBACK:
                     dual_prompt = (
+                        f"{history_text}\n\n" if history_text else ""
+                    ) + (
                         f"--- STRUCTURED METADATA FACTS (POSTGRESQL) ---\n"
                         f"{sql_answer}\n\n"
                         f"--- UNSTRUCTURED DOCUMENT CONTEXT ---\n"
@@ -129,20 +152,20 @@ def answer_compliance_query(
                         answer_text = re.sub(r"```(?:json)?\s*|\s*```", "", raw_response).strip()
 
                 elif context_text:
-                    answer_text = execute_unstructured_query(clean_query, db_session)
+                    answer_text = execute_unstructured_query(clean_query, db_session, history_text=history_text)
                 else:
                     answer_text = sql_answer
 
             except Exception as exc:
                 logger.warning(f" Dual-path hybrid execution failed: {exc}. Falling back to unstructured query.")
-                answer_text = execute_unstructured_query(clean_query, db_session)
+                answer_text = execute_unstructured_query(clean_query, db_session, history_text=history_text)
 
         else:
             # Path B: Standard UNSTRUCTURED_RAG (Hybrid RRF + Parent Expansion)
             logger.info(" Executing UNSTRUCTURED_RAG path (Hybrid RRF + Parent Expansion)...")
             hybrid_payload = retrieve_hybrid_context(clean_query, db_session, top_k=5)
             sources = hybrid_payload.get("sources", [])
-            answer_text = execute_unstructured_query(clean_query, db_session)
+            answer_text = execute_unstructured_query(clean_query, db_session, history_text=history_text)
 
         t_end = time.perf_counter()
         latency_ms = (t_end - t_start) * 1000.0
@@ -161,7 +184,7 @@ def answer_compliance_query(
         latency_ms = (t_end - t_start) * 1000.0
 
         try:
-            fallback_answer = execute_unstructured_query(clean_query, db_session)
+            fallback_answer = execute_unstructured_query(clean_query, db_session, history_text=history_text)
         except Exception:
             fallback_answer = FALLBACK_NOT_FOUND_MESSAGE
 

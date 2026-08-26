@@ -28,6 +28,9 @@ def get_api_client():
 
 api_client = get_api_client()
 
+# Fixed height (px) of the chat window's scrollable message area.
+CHAT_MESSAGES_HEIGHT = 340
+
 st.set_page_config(
     page_title="Automotive Compliance Platform",
     page_icon=None,
@@ -78,6 +81,12 @@ st.markdown(
         background-color: #f4f6f9 !important;
     }
 
+    /* Disable overall page scroll (experiment: only the chat card scrolls) */
+    [data-testid="stMain"], [data-testid="stAppViewContainer"] {
+        height: 100vh !important;
+        overflow: hidden !important;
+    }
+
     .main .block-container, [data-testid="stMainBlockContainer"], div.block-container {
         padding-top: 0 !important;
         margin-top: 0rem !important;
@@ -90,7 +99,7 @@ st.markdown(
         margin-top: 0rem !important;
     }
 
-    /* Completely Hide Streamlit Left Sidebar */
+/* Completely Hide Streamlit Native Sidebar (session panel is a HOME-page column) */
     [data-testid="stSidebar"], section[data-testid="stSidebar"], [data-testid="collapsedControl"] {
         display: none !important;
     }
@@ -125,11 +134,30 @@ st.markdown(
         width: auto;
         max-width: 100%;
         object-fit: contain;
+        margin-left: -24px;
     }
 
     /* Vertically center nav row content so the larger logo stays aligned */
     div[data-testid="stHorizontalBlock"]:has(div[role="radiogroup"]) {
         align-items: center;
+        position: fixed;
+        top: 0;
+        left: 50%;
+        transform: translateX(-50%);
+        width: min(1280px, 94%);
+        z-index: 1000;
+        padding: 10px 24px;
+        background: #ffffff;
+    }
+    div[data-testid="stHorizontalBlock"]:has(div[role="radiogroup"])::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: -100vmax;
+        right: -100vmax;
+        background: #ffffff;
+        z-index: -1;
     }
 
     .top-nav-text {
@@ -320,6 +348,171 @@ st.markdown(
         box-shadow: 0 4px 14px rgba(0,0,0,0.02);
         margin-bottom: 20px;
     }
+
+    /* Chat input: transparent background with brand-blue stroke */
+    [data-testid="stChatInput"] {
+        background-color: transparent !important;
+    }
+    [data-testid="stChatInput"] > div,
+    [data-testid="stChatInput"] div[data-testid="stChatInputTextArea"],
+    [data-testid="stChatInput"] textarea {
+        background-color: transparent !important;
+        box-shadow: none !important;
+    }
+    [data-testid="stChatInput"],
+    [data-testid="stChatInput"] div,
+    [data-testid="stChatInput"] textarea {
+        border-color: var(--brand-blue) !important;
+    }
+    [data-testid="stChatInput"] {
+        border: 1px solid var(--brand-blue) !important;
+        border-radius: 12px !important;
+    }
+    [data-testid="stChatInput"]:focus-within,
+    [data-testid="stChatInput"]:focus-within div,
+    [data-testid="stChatInput"]:focus-within textarea {
+        border-color: var(--brand-blue) !important;
+        outline: none !important;
+        box-shadow: none !important;
+    }
+
+    /* Chat messages: user bubble on the right, assistant plain on the left */
+    [data-testid="stChatMessage"] {
+        max-width: 760px;
+        margin-left: auto;
+        margin-right: auto;
+        width: 100%;
+    }
+    [data-testid="stChatMessageAvatar"],
+    [data-testid="stChatMessageAvatarUser"],
+    [data-testid="stChatMessageAvatarAssistant"],
+    [data-testid="stChatMessageAvatarCustom"] {
+        display: none !important;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+        justify-content: flex-end;
+        padding-right: 0 !important;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {
+        background: var(--brand-blue);
+        color: #ffffff;
+        border-radius: 18px 18px 4px 18px;
+        padding: 10px 16px;
+        margin-left: auto;
+        width: fit-content;
+        max-width: 90%;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] p {
+        color: #ffffff;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) [data-testid="stChatMessageContent"] {
+        background: transparent;
+        border: none;
+        box-shadow: none;
+        padding: 4px 2px;
+    }
+
+    /* Thinking dots animation */
+    .thinking-dots {
+        display: flex;
+        gap: 6px;
+        padding: 10px 4px;
+    }
+    .thinking-dots span {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--brand-blue);
+        animation: dot-bounce 1.2s infinite ease-in-out;
+    }
+    .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes dot-bounce {
+        0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+        40% { transform: scale(1); opacity: 1; }
+    }
+
+    /* Context usage bar: sits directly under the typing box inside the chat window */
+    .context-usage-bar {
+        background: transparent;
+        border: none;
+        padding: 4px 2px 2px;
+        margin: 4px 2px 2px;
+        font-size: 0.75rem;
+        color: #334155;
+        text-align: center;
+    }
+    .context-usage-label {
+        display: block;
+        font-weight: 600;
+        font-size: 0.72rem;
+        color: #64748b;
+        margin-top: 4px;
+    }
+    .context-usage-track {
+        height: 6px;
+        background: #e2e8f0;
+        border-radius: 4px;
+        overflow: hidden;
+    }
+    .context-usage-fill {
+        height: 100%;
+        background: var(--brand-blue);
+        border-radius: 4px;
+    }
+
+    /* Chat window card: native border container; messages scroll in an st.container(height=...) */
+    .chat-scroll-marker { display: none; }
+    /* Active chat session: blue overlay row (rendered directly as HTML, no :has) */
+    .sess-item {
+        width: 100%;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #334155;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .sess-item-active {
+        background-color: var(--brand-blue);
+        color: #ffffff;
+    }
+    /* Hide the scroll container's own border/stroke and zero its inner padding */
+    div:has(> [data-testid="stVerticalBlock"]:has(.chat-scroll-marker):not(:has([data-testid="stVerticalBlock"]:has(.chat-scroll-marker)))) {
+        border: none !important;
+        padding: 0 !important;
+        background: transparent !important;
+    }
+    .chat-window-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 0;
+        border-bottom: 1px solid #eef2f7;
+        margin-bottom: 4px;
+    }
+    .chat-window-title {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 700;
+        font-size: 0.9rem;
+        color: #0f172a;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        padding: 6px 0;
+    }
+    .chat-window-full {
+        font-size: 0.72rem;
+        font-weight: 600;
+        color: #b45309;
+        background: #fef3c7;
+        border-radius: 10px;
+        padding: 2px 10px;
+        white-space: nowrap;
+    }
     </style>
     """,
     unsafe_allow_html=True
@@ -334,6 +527,216 @@ if "certificates" not in st.session_state:
     st.session_state.certificates = []
 if "raw_markdown" not in st.session_state:
     st.session_state.raw_markdown = ""
+if "current_session_id" not in st.session_state:
+    st.session_state.current_session_id = None
+if "optimistic_messages" not in st.session_state:
+    st.session_state.optimistic_messages = []
+
+if "show_wrapper" not in st.session_state:
+    st.session_state.show_wrapper = False
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CHAT SESSION SIDEBAR (multi-session history access)
+# ──────────────────────────────────────────────────────────────────────────────
+def _fetch_sessions():
+    try:
+        resp = api_client.get("/api/v1/chat/sessions")
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return []
+
+
+def _create_new_session():
+    try:
+        resp = api_client.post("/api/v1/chat/sessions")
+        if resp.status_code == 200:
+            return resp.json().get("id")
+    except Exception:
+        pass
+    return None
+
+
+def _render_session_panel():
+    """Renders the chat-session list in the native Streamlit sidebar."""
+    st.markdown(
+        """
+        <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 1px; margin-bottom: 10px; text-transform: uppercase;">
+            CHAT SESSIONS
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if st.button("+ New Chat", key="new_chat_btn", use_container_width=True):
+        new_id = _create_new_session()
+        if new_id:
+            st.session_state.current_session_id = new_id
+            st.session_state.show_wrapper = True
+            st.rerun()
+
+    sessions = _fetch_sessions()
+    st.session_state.chat_sessions = sessions
+
+    st.markdown(
+        "<div style='height: 10px;'></div>",
+        unsafe_allow_html=True,
+    )
+
+    if not sessions:
+        st.caption("No sessions yet. Start a new chat.")
+        return
+
+    for s in sessions:
+        sid = s["id"]
+        title = s["title"] or "New chat"
+        is_active = sid == st.session_state.current_session_id
+        if s.get("frozen"):
+            title = f"{title}  [full]"
+        row = st.columns([5, 1])
+        with row[0]:
+            if is_active:
+                st.markdown(
+                    f'<div class="sess-item sess-item-active">{title}</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                if st.button(title, key=f"sess_btn_{sid}", use_container_width=True):
+                    st.session_state.current_session_id = sid
+                    st.session_state.show_wrapper = True
+                    st.rerun()
+        with row[1]:
+            if st.button("x", key=f"sess_del_{sid}", help="Delete session", use_container_width=True):
+                try:
+                    api_client.delete(f"/api/v1/chat/sessions/{sid}")
+                except Exception:
+                    pass
+                if st.session_state.current_session_id == sid:
+                    st.session_state.current_session_id = None
+                    st.session_state.show_wrapper = False
+                st.rerun()
+
+
+def _render_chat_window(
+    session_id,
+    server_messages,
+    optimistic,
+    session_title,
+    session_frozen,
+    usage_tokens,
+    context_threshold,
+    pending_query=None,
+):
+    """Renders the Gemini-style chat window. Returns the active query if any turn was submitted."""
+    with st.container(border=True):
+        st.markdown(
+            f"""
+            <div class="chat-window-header">
+                <span class="chat-window-title">{session_title}</span>
+                {("<span class='chat-window-full'>context full</span>" if session_frozen else "")}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if session_frozen:
+            st.warning("Context window full, open a new session.")
+
+        # Fixed-height, internally scrollable message area (never grows the card).
+        with st.container(height=CHAT_MESSAGES_HEIGHT, border=False):
+            st.markdown('<div class="chat-scroll-marker"></div>', unsafe_allow_html=True)
+            for msg in server_messages + optimistic:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+            progress_ph = st.empty()
+
+        # Inline typing box (always visible; disabled while a turn is in progress).
+        conv_query = st.chat_input(
+            "Ask anything",
+            disabled=session_frozen or bool(optimistic),
+            key="chat_input_conv",
+        )
+
+        if conv_query:
+            optimistic.append({"role": "user", "content": conv_query})
+            st.session_state.optimistic_messages = optimistic
+            active_query = conv_query
+            with progress_ph.container():
+                with st.chat_message("user"):
+                    st.markdown(conv_query)
+                with st.chat_message("assistant"):
+                    st.markdown(
+                        '<div class="thinking-dots"><span></span><span></span><span></span></div>',
+                        unsafe_allow_html=True,
+                    )
+        else:
+            active_query = pending_query
+            if active_query:
+                with progress_ph.container():
+                    with st.chat_message("assistant"):
+                        st.markdown(
+                            '<div class="thinking-dots"><span></span><span></span><span></span></div>',
+                            unsafe_allow_html=True,
+                        )
+
+        # Context usage line under the typing box.
+        if (server_messages or optimistic) and usage_tokens and context_threshold:
+            pct = min(100.0, (usage_tokens / context_threshold) * 100.0)
+            st.markdown(
+                f"""
+                <div class="context-usage-bar">
+                    <div class="context-usage-track">
+                        <div class="context-usage-fill" style="width:{pct:.1f}%"></div>
+                    </div>
+                    <span class="context-usage-label">Context usage: {usage_tokens} / {context_threshold} tokens</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    components.html(
+        """
+        <script>
+        const marker = parent.document.querySelector('.chat-scroll-marker');
+        if (marker) {
+            const block = marker.closest('[data-testid="stVerticalBlock"]');
+            const scroller = block ? block.parentElement : null;
+            if (scroller) {
+                scroller.style.border = 'none';
+                scroller.style.padding = '0';
+                scroller.style.background = 'transparent';
+                scroller.scrollTo({top: scroller.scrollHeight, behavior: 'smooth'});
+            }
+        }
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+    if active_query:
+        try:
+            chat_resp = api_client.post(
+                "/api/v1/chat",
+                json={"query": active_query, "session_id": session_id},
+            )
+            if chat_resp.status_code == 200:
+                data = chat_resp.json()
+                if data.get("session_id"):
+                    st.session_state.current_session_id = data["session_id"]
+                    st.session_state.show_wrapper = True
+                st.session_state.optimistic_messages = []
+                st.rerun()
+            else:
+                st.error(f"Chat request failed: {chat_resp.text[:300]}")
+                st.session_state.optimistic_messages = []
+        except Exception as e:
+            st.error(f"Error during Q&A: {str(e)}")
+            st.session_state.optimistic_messages = []
+        finally:
+            progress_ph.empty()
+    return active_query
 
 # ──────────────────────────────────────────────────────────────────────────────
 # TOP NAVIGATION BAR (Replaces Sidebar)
@@ -372,10 +775,6 @@ with nav_col3:
     st.markdown(
         f"""
         <div class="top-nav-right">
-            <div class="engine-status-badge">
-                <span class="{status_class}"></span>
-                <span>Engine: <strong>{conn_status}</strong></span>
-            </div>
             <div class="user-profile-badge">
                 <span>System Administrator</span>
             </div>
@@ -384,7 +783,7 @@ with nav_col3:
         unsafe_allow_html=True
     )
 
-st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+st.markdown("<div style='height: 88px;'></div>", unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PAGE 1: HOME (Document Ingestion & Overview)
@@ -521,72 +920,84 @@ def _index_document_chunks(data: dict, file_name: str) -> list:
 
 
 if selected_nav == "HOME":
-    st.markdown("---")
-    st.subheader("Compliance Assistant (Chat)")
+    # No auto-selection on load: the app starts on the default landing view.
+    # A session is only opened by clicking it in the sidebar or via a new chat.
 
-    user_query = st.chat_input("Enter your compliance query (e.g., 'How many certificates expire in 2026?' or 'List all Valeo certificates')")
+    session_id = st.session_state.current_session_id
 
-    if user_query:
-        with st.spinner("Analyzing query intent & retrieving context..."):
-            try:
-                chat_resp = api_client.post("/api/v1/chat", json={"query": user_query})
-                if chat_resp.status_code == 200:
-                    data = chat_resp.json()
-                    answer_text = data.get("answer", "No answer generated.")
-                    intent = data.get("intent", "UNSTRUCTURED_RAG")
-                    reasoning = data.get("reasoning", "")
-                    sources = data.get("sources", [])
-                    latency_ms = data.get("latency_ms", 0.0)
+    # Fetch server-side session messages + freeze/usage state.
+    session_payload = None
+    if session_id:
+        try:
+            resp = api_client.get(f"/api/v1/chat/sessions/{session_id}/messages")
+            if resp.status_code == 200:
+                session_payload = resp.json()
+        except Exception:
+            session_payload = None
 
-                    st.session_state.chat_history.insert(0, {
-                        "role": "assistant",
-                        "content": answer_text,
-                        "intent": intent,
-                        "reasoning": reasoning,
-                        "sources": sources,
-                        "latency_ms": latency_ms,
-                    })
-                    st.session_state.chat_history.insert(0, {
-                        "role": "user",
-                        "content": user_query,
-                    })
-                else:
-                    st.error(f"Chat request failed: {chat_resp.text[:300]}")
-            except Exception as e:
-                st.error(f"Error during Q&A: {str(e)}")
+    server_messages = (session_payload or {}).get("messages", [])
+    session_title = (session_payload or {}).get("title") or "New chat"
+    session_frozen = bool((session_payload or {}).get("frozen", False))
+    usage_tokens = int((session_payload or {}).get("usage_tokens", 0))
+    context_threshold = int((session_payload or {}).get("context_threshold", 0))
 
-    st.markdown("---")
-    
-    # Render Chat History
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            if msg["role"] == "assistant":
-                intent = msg.get("intent", "UNSTRUCTURED_RAG")
-                reasoning = msg.get("reasoning", "")
-                latency = msg.get("latency_ms", 0.0)
+    optimistic = st.session_state.optimistic_messages
+    in_conversation = (
+        bool(server_messages)
+        or bool(optimistic)
+        or st.session_state.get("show_wrapper", False)
+    )
 
-                if intent == "METADATA_QUERY":
-                    st.markdown(f"`SQL Path (Relational Database)` | `{latency:.1f} ms`")
-                elif intent == "HYBRID_QUERY":
-                    st.markdown(f"`Dual-Path Hybrid (SQL + Vector RRF)` | `{latency:.1f} ms`")
-                else:
-                    st.markdown(f"`Hybrid Vector RAG (Dense + Sparse RRF)` | `{latency:.1f} ms`")
+    # Consume any deferred query from the landing box (submitted on a prior run).
+    pending_query = st.session_state.pop("pending_query", None)
 
-                if reasoning:
-                    st.caption(f"**Router Decision:** {reasoning}")
+    chat_nav_col, chat_main_col = st.columns([1.2, 3.8])
 
-                st.markdown(msg["content"])
+    with chat_nav_col:
+        _render_session_panel()
 
-                sources = msg.get("sources", [])
-                if sources:
-                    with st.expander(f"Retrieved Context Sources ({len(sources)})", expanded=False):
-                        for idx, src in enumerate(sources, start=1):
-                            fname = src.get("file_name") or src.get("certificate_id") or "Unknown"
-                            pages = src.get("pages") or src.get("page_number") or "N/A"
-                            supplier = src.get("supplier", "N/A")
-                            st.markdown(f"**{idx}. File:** `{fname}` | **Supplier:** `{supplier}` | **Pages:** `{pages}`")
-            else:
-                st.markdown(msg["content"])
+    with chat_main_col:
+        if in_conversation:
+            # ── Chat window (Gemini/DeepSeek-style surrounding container) ──
+            _render_chat_window(
+                session_id,
+                server_messages,
+                optimistic,
+                session_title,
+                session_frozen,
+                usage_tokens,
+                context_threshold,
+                pending_query=pending_query,
+            )
+        else:
+            # ── Default view: welcome + centered typing box (mid-page, like Gemini) ──
+            st.markdown(
+                """
+                <div style="text-align: center; margin-top: 10vh; margin-bottom: 24px;">
+                    <div style="font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 2.2rem; color: #0f172a;">
+                        Compliance Assistant
+                    </div>
+                    <div style="font-family: 'Inter', sans-serif; font-size: 1rem; color: #64748b; margin-top: 8px;">
+                        Ask anything about certificates, suppliers, authorities and expirations.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            user_query = st.chat_input(
+                "Ask anything",
+                disabled=session_frozen,
+                key="chat_input_landing",
+            )
+
+            if user_query:
+                # Defer processing to the next run so the default elements vanish
+                # and the chat window renders immediately with the submitted query.
+                optimistic.append({"role": "user", "content": user_query})
+                st.session_state.optimistic_messages = optimistic
+                st.session_state.pending_query = user_query
+                st.rerun()
 
 
 

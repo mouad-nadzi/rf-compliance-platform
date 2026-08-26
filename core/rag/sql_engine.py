@@ -186,22 +186,27 @@ def _parse_json_object(raw_json: str) -> Dict[str, Any]:
     return {}
 
 
-def generate_sql_query(user_query: str) -> str:
+def generate_sql_query(user_query: str, history_text: str = "") -> str:
     """
     Translates a natural language question into a PostgreSQL SELECT statement
     using the local LLM facade with schema-injection prompting.
 
     Args:
         user_query (str): The user's natural language question.
+        history_text (str): Optional prior conversation history block.
 
     Returns:
         str: The generated SQL statement, or an empty string if generation failed.
     """
     from core.llm import generate_json
 
+    history_block = f"{history_text}\n\n" if history_text else ""
     raw_json_response = generate_json(
         system_prompt=build_sql_system_prompt(),
-        user_prompt=f"USER QUESTION: {user_query}\n\nReturn ONLY the raw JSON output matching the schema.",
+        user_prompt=(
+            f"{history_block}USER QUESTION: {user_query}\n\n"
+            f"Return ONLY the raw JSON output matching the schema."
+        ),
         disable_thinking=True,
     )
 
@@ -258,14 +263,16 @@ def _format_results(rows: List[Dict[str, Any]], columns: List[str]) -> str:
     return "\n".join(lines)
 
 
-def _synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, Any]], columns: List[str]) -> str:
+def _synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, Any]], columns: List[str], history_text: str = "") -> str:
     """
     Feeds the raw query results back to the local LLM to synthesize a natural
     language answer. Falls back to a deterministic Python-formatted summary if
     the LLM call or JSON parsing fails.
     """
     formatted_results = _format_results(rows, columns)
+    history_block = f"{history_text}\n\n" if history_text else ""
     user_prompt = (
+        f"{history_block}"
         f"USER QUESTION: {user_query}\n\n"
         f"EXECUTED SQL:\n{sql}\n\n"
         f"QUERY RESULTS:\n{formatted_results}\n\n"
@@ -309,7 +316,7 @@ def _format_python_answer(user_query: str, rows: List[Dict[str, Any]], columns: 
     return "\n".join(lines)
 
 
-def execute_metadata_query(user_query: str, db_session) -> str:
+def execute_metadata_query(user_query: str, db_session, history_text: str = "") -> str:
     """
     Full METADATA_QUERY execution pipeline:
 
@@ -323,6 +330,7 @@ def execute_metadata_query(user_query: str, db_session) -> str:
         user_query (str): The natural language question asked by the user.
         db_session: A SQLAlchemy session (or the storage.database scoped session).
             If None, a fresh session is opened and closed automatically.
+        history_text (str): Optional prior conversation history block.
 
     Returns:
         str: A natural language answer, or a graceful fallback message on failure.
@@ -334,7 +342,7 @@ def execute_metadata_query(user_query: str, db_session) -> str:
 
     # 1. LLM  SQL translation
     try:
-        sql = generate_sql_query(clean_query)
+        sql = generate_sql_query(clean_query, history_text=history_text)
     except Exception as e:
         logger.warning(f"  Text-to-SQL generation failed: {e}")
         return FALLBACK_MESSAGE
@@ -379,7 +387,7 @@ def execute_metadata_query(user_query: str, db_session) -> str:
             db_session.close()
 
     # 4. Synthesize a natural-language answer from the raw results
-    return _synthesize_answer(clean_query, sql, rows, columns)
+    return _synthesize_answer(clean_query, sql, rows, columns, history_text=history_text)
 
 
 if __name__ == "__main__":

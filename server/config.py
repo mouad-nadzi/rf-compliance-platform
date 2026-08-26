@@ -43,6 +43,20 @@ DEFAULT_CONTEXT_WINDOW: int = 8192
 # Maximum token budget for LLM completions
 DEFAULT_MAX_TOKENS: int = 8192
 
+# ── Chat Session Context Budgeting ────────────────────────────────────────────
+# Chat sessions freeze (stop accepting new turns) once the estimated cumulative
+# prompt budget crosses this threshold. The threshold is intentionally below the
+# hard context window so system prompts, retrieval context, and completions still
+# fit without rejecting the llama_context.
+CHAT_CONTEXT_WINDOW: int = DEFAULT_CONTEXT_WINDOW
+CHAT_CONTEXT_FULL_THRESHOLD: int = int(DEFAULT_CONTEXT_WINDOW * 0.85)
+
+# Fixed token overhead attributed to system prompts + retrieved context per turn.
+CHAT_PROMPT_OVERHEAD_TOKENS: int = 700
+
+# Message returned to the user once a session is frozen.
+CHAT_CONTEXT_FULL_MESSAGE: str = "Context window full, open a new session."
+
 # ── GPU VRAM Guardrails (T4: 15,360 MiB total; keep combined peak < 15 GB) ─────
 # Minimum free VRAM required before starting a heavy inference stage. Below this,
 # a graceful MemoryError is raised instead of an uncatchable kernel OOM.

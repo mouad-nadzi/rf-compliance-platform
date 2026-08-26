@@ -310,7 +310,7 @@ def retrieve_hybrid_context(
     }
 
 
-def execute_unstructured_query(user_query: str, db_session=None) -> str:
+def execute_unstructured_query(user_query: str, db_session=None, history_text: str = "") -> str:
     """
     Full UNSTRUCTURED_RAG execution pipeline:
       1. Hybrid retrieval (Dense + Sparse + RRF + Parent Expansion).
@@ -320,6 +320,7 @@ def execute_unstructured_query(user_query: str, db_session=None) -> str:
     Args:
         user_query (str): Natural language user question.
         db_session: SQLAlchemy session (or None to open/close local session).
+        history_text (str): Optional prior conversation history block.
 
     Returns:
         str: Synthesized natural-language answer with inline citations.
@@ -344,7 +345,9 @@ def execute_unstructured_query(user_query: str, db_session=None) -> str:
             return FALLBACK_NOT_FOUND_MESSAGE
 
         # 2. Build QA Synthesis Prompt Payload
+        history_block = f"{history_text}\n\n" if history_text else ""
         user_prompt = (
+            f"{history_block}"
             f"--- BEGIN RETRIEVED DOCUMENT CONTEXT ---\n"
             f"{context_text}\n"
             f"--- END RETRIEVED DOCUMENT CONTEXT ---\n\n"
