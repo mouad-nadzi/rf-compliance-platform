@@ -8,6 +8,7 @@ and returns a validated QAResponseSchema object with citations.
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from core.prompts import QA_SYNTHESIS_SYSTEM_PROMPT
@@ -16,6 +17,34 @@ from schemas.qa import Citation, QAResponseSchema
 logger = logging.getLogger(__name__)
 
 FALLBACK_NOT_FOUND_MESSAGE = "Information not found in provided document context."
+
+#: Matches the start of the JSON `"answer": "` field (value begins right after).
+_ANSWER_FIELD_START_RE = re.compile(r'"answer"\s*:\s*"')
+
+
+def _find_unescaped_quote(s: str) -> int:
+    """Index of the first unescaped double-quote in a JSON string value, or -1."""
+    escaped = False
+    for i, ch in enumerate(s):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == '"':
+            return i
+    return -1
+
+
+def _trim_incomplete_escape(s: str) -> str:
+    """Remove a trailing incomplete JSON escape (lone backslash or partial \\uXXXX)."""
+    if s.endswith("\\"):
+        return s[:-1]
+    m = re.search(r"\\u([0-9a-fA-F]{0,3})$", s)
+    if m and len(m.group(1)) < 4:
+        return s[:m.start()]
+    return s
 
 
 def _build_qa_prompt(query: str, retrieved_chunks: List[Dict[str, Any]]) -> tuple:
@@ -102,6 +131,108 @@ def answer_query_with_citations(
             answer=FALLBACK_NOT_FOUND_MESSAGE,
             citations=[]
         )
+
+
+def extract_answer_value(buffer: str) -> Optional[str]:
+    """
+    Incrementally extracts the decoded text of the JSON 'answer' field from a
+    partial streamed buffer.
+
+    Unlike a full-value regex, this latches as soon as `"answer": "` begins and
+    returns everything decoded so far (including incomplete values), so callers
+    can emit deltas token-by-token without waiting for the closing quote.
+    """
+    if not buffer:
+        return None
+    brace = buffer.rfind("{")
+    region = buffer[brace:] if brace != -1 else buffer
+    m = _ANSWER_FIELD_START_RE.search(region)
+    if not m:
+        return None
+    raw = region[m.end():]
+    end = _find_unescaped_quote(raw)
+    if end != -1:
+        raw = raw[:end]
+    cleaned = _trim_incomplete_escape(raw)
+    try:
+        return json.loads('"' + cleaned + '"')
+    except Exception:
+        return None
+
+
+def parse_qa_response(buffer: str, query: str) -> tuple:
+    """
+    Final-parse of a complete streamed buffer into (answer_text, citations_list).
+
+    Uses the strict JSON ladder (extract_json) so reasoning traces and trailing
+    tokens are scrubbed before QAResponseSchema validation.
+    """
+    from core.base import extract_json
+
+    if not buffer or not buffer.strip():
+        return "", []
+    try:
+        raw_json = extract_json(buffer)
+        parsed = QAResponseSchema.model_validate_json(raw_json)
+        answer = str(getattr(parsed, "answer", "") or "").strip()
+        citations = [c.model_dump() for c in (parsed.citations or [])]
+        return answer, citations
+    except Exception as exc:
+        logger.error(f"  Final Q&A parse failed for streamed buffer: {exc}")
+        return "", []
+
+
+def stream_synthesize_answer(system_prompt: str, user_prompt: str, query: str):
+    """
+    Streams a citation-backed answer generation token-by-token.
+
+    The raw model output (a JSON QAResponseSchema payload, usually preceded by a
+    long reasoning/thinking block in deep-thinking mode) is buffered. Only the
+    growing JSON 'answer' field is surfaced to the caller so the UI renders clean
+    progressive text; the pre-answer reasoning text is emitted separately so the
+    UI can show live progress during the (often lengthy) thinking phase.
+
+    Yields event dicts:
+      {"type": "thinking", "text": <raw reasoning tokens>}
+      {"type": "token", "text": <incremental answer text>}
+      {"type": "synthesis_done", "answer": ..., "citations": [...]}
+    """
+    from core.llm import generate_stream
+
+    buffer = ""
+    last_answer = ""
+    answer_started = False
+    for token in generate_stream(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        disable_thinking=False,
+    ):
+        buffer += token
+        if not answer_started:
+            brace = buffer.rfind("{")
+            region = buffer[brace:] if brace != -1 else buffer
+            if _ANSWER_FIELD_START_RE.search(region) is None:
+                if token.strip():
+                    yield {"type": "thinking", "text": token}
+                continue
+            answer_started = True
+        current = extract_answer_value(buffer)
+        if current and len(current) > len(last_answer):
+            delta = current[len(last_answer):]
+            last_answer = current
+            if delta:
+                yield {"type": "token", "text": delta}
+
+    answer, citations = parse_qa_response(buffer, query)
+    if not last_answer and answer:
+        # Progressive extraction never latched (e.g. malformed partial JSON);
+        # surface the final parsed answer in one shot.
+        yield {"type": "token", "text": answer}
+    yield {
+        "type": "synthesis_done",
+        "answer": answer or last_answer,
+        "citations": citations,
+    }
 
 
 if __name__ == "__main__":

@@ -59,6 +59,28 @@ def generate_json(
     )
 
 
+def generate_stream(
+    system_prompt: str,
+    user_prompt: str,
+    disable_thinking: bool = False,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+):
+    """
+    Streams raw model output token-by-token against the active LLM.
+
+    Yields incremental text chunks. Each engine formats the system/user prompts
+    into its own native chat template and (where supported) decodes tokens
+    incrementally; engines without streaming support fall back to a single chunk.
+    """
+    engine = _get_engine()
+    yield from engine.generate_stream(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        disable_thinking=disable_thinking,
+        max_tokens=max_tokens,
+    )
+
+
 def unload_llm_engine():
     """Unloads the active LLM engine from GPU memory to free VRAM."""
     global _engine_instance
@@ -72,5 +94,5 @@ def unload_llm_engine():
         _engine_instance = None
 
 
-__all__ = ["generate_json", "load_llm_engine", "unload_llm_engine"]
+__all__ = ["generate_json", "generate_stream", "load_llm_engine", "unload_llm_engine"]
 

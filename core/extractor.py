@@ -28,11 +28,65 @@ from core.rag.embeddings import get_embeddings_batch
 
 logger = logging.getLogger(__name__)
 
+# Sentinel date for non-expiring ("infinite"/"Perpetual") certificates. Matches the
+# Excel "no expiry" convention already preserved by _parse_iso_date, so the value is
+# both storable in the relational Date column and distinguishable from NULL (which is
+# reserved for variable/context-dependent terms where no exp date was extracted).
+NO_EXPIRY_DATE = date(9999, 1, 1)
+NO_EXPIRY_DISPLAY = "infinite"
+
+NO_EXPIRY_MARKERS = ("perpetual", "infinite", "no expiry", "no expiration")
+
+
+def is_no_expiry_marker(value) -> bool:
+    """True when a raw exp_date value explicitly denotes a non-expiring certificate."""
+    if not value:
+        return False
+    return str(value).strip().lower() in NO_EXPIRY_MARKERS
+
+
+def format_exp_date(value) -> Optional[str]:
+    """Render an exp_date for user-facing display.
+
+    Maps the no-expiry sentinel (9999-01-01) to "infinite"; real dates are rendered
+    as YYYY-MM-DD; NULL/empty stays None.
+    """
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        if value.date() == NO_EXPIRY_DATE:
+            return NO_EXPIRY_DISPLAY
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, date):
+        if value == NO_EXPIRY_DATE:
+            return NO_EXPIRY_DISPLAY
+        return value.strftime("%Y-%m-%d")
+    return str(value)
+
 
 def _normalize_text(text: str) -> str:
     if not text:
         return ""
     return re.sub(r"[^A-Z0-9]", "", text.upper())
+
+
+def find_matching_authority(db: Session, authority_text: Optional[str]):
+    """Resolves a raw authority string to a matched AuthorityLookup row (or None)."""
+    from storage.models import AuthorityLookup
+    raw_auth_norm = _normalize_text(authority_text)
+    if not raw_auth_norm:
+        return None
+    authorities = db.query(AuthorityLookup).all()
+    for auth in authorities:
+        canon_norm = _normalize_text(auth.canonical_authority)
+        alias_norms = [_normalize_text(a) for a in (auth.aliases or [])]
+        if raw_auth_norm == canon_norm or raw_auth_norm in alias_norms:
+            return auth
+        elif any(
+            a in raw_auth_norm for a in alias_norms if len(a) >= 3
+        ) or (len(raw_auth_norm) >= 3 and raw_auth_norm in canon_norm):
+            return auth
+    return None
 
 
 def enrich_certificate_metadata(
@@ -43,50 +97,45 @@ def enrich_certificate_metadata(
         return data
 
     # 1. Authority, Country & Standard Expiration Date Resolution
-    raw_auth_norm = _normalize_text(data.authority)
-    if raw_auth_norm:
-        authorities = db.query(AuthorityLookup).all()
-        matched_auth = None
+    matched_auth = find_matching_authority(db, data.authority)
+    if matched_auth:
+        # Deterministically assign Country if missing or null
+        if not data.country or data.country.strip().lower() in [
+            "none",
+            "null",
+            "",
+            "not found",
+        ]:
+            data.country = matched_auth.country
 
-        for auth in authorities:
-            canon_norm = _normalize_text(auth.canonical_authority)
-            alias_norms = [_normalize_text(a) for a in (auth.aliases or [])]
-
-            if raw_auth_norm == canon_norm or raw_auth_norm in alias_norms:
-                matched_auth = auth
-                break
-            elif any(
-                a in raw_auth_norm for a in alias_norms if len(a) >= 3
-            ) or (len(raw_auth_norm) >= 3 and raw_auth_norm in canon_norm):
-                matched_auth = auth
-                break
-
-        if matched_auth:
-            # Deterministically assign Country if missing or null
-            if not data.country or data.country.strip().lower() in [
-                "none",
-                "null",
-                "",
-                "not found",
-            ]:
-                data.country = matched_auth.country
-
-            # If exp_date is missing and authority has standard validity years, calculate it
-            if not data.exp_date and matched_auth.standard_validity_years:
-                if data.issue_date:
-                    try:
-                        dt = datetime.strptime(data.issue_date, "%Y-%m-%d")
-                        if relativedelta is not None:
-                            dt_exp = dt + relativedelta(
-                                years=matched_auth.standard_validity_years
-                            )
-                        else:
-                            dt_exp = dt.replace(
-                                year=dt.year + matched_auth.standard_validity_years
-                            )
-                        data.exp_date = dt_exp.strftime("%Y-%m-%d")
-                    except Exception:
-                        pass
+        # Expiration date resolution driven by the authority's validity tier.
+        #   - "infinite"  -> non-expiring certificate ("Perpetual")
+        #   - numeric     -> issue_date + validity_years
+        #   - null        -> leave the raw extracted exp_date untouched
+        if not data.exp_date and matched_auth.standard_validity_years:
+            validity_str = str(matched_auth.standard_validity_years).strip().lower()
+            if validity_str == "infinite":
+                data.exp_date = "Perpetual"
+            else:
+                try:
+                    validity_years = int(float(validity_str))
+                except (ValueError, TypeError):
+                    validity_years = None
+                if validity_years is not None and data.issue_date:
+                    issue_dt = _parse_iso_date(data.issue_date)
+                    if issue_dt is not None:
+                        try:
+                            if relativedelta is not None:
+                                dt_exp = issue_dt + relativedelta(
+                                    years=validity_years
+                                )
+                            else:
+                                dt_exp = issue_dt.replace(
+                                    year=issue_dt.year + validity_years
+                                )
+                            data.exp_date = dt_exp.strftime("%Y-%m-%d")
+                        except Exception:
+                            pass
 
     # 2. Supplier / Foreign OEM Canonicalization
     raw_supp_norm = _normalize_text(data.supplier)
@@ -130,12 +179,17 @@ def _parse_iso_date(date_str: Optional[str]) -> Optional[date]:
 
     Notes:
     - 9999-01-01 (Excel "no expiry" sentinel) is stored as-is — do NOT treat it as None.
+    - "Perpetual" / "infinite" / "no expiry" markers normalize to the 9999-01-01 no-expiry
+      sentinel (NO_EXPIRY_DATE), keeping non-expiring certificates distinct from NULL.
     - 2-digit years in regex fallback are mapped to 20xx (certificates are modern documents).
     """
     if not date_str or str(date_str).strip() in ("Not Found", "null", "None", ""):
         return None
 
     s = str(date_str).strip()
+
+    if is_no_expiry_marker(s):
+        return NO_EXPIRY_DATE
 
     # Handle "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD 00:00:00"
     if " " in s:
@@ -248,22 +302,87 @@ def extract_certificate_data(
     return parsed_data
 
 
+def find_existing_certificate(
+    db: Session,
+    file_name: Optional[str] = None,
+    certif_number: Optional[str] = None,
+    country: Optional[str] = None,
+):
+    """
+    Locates an existing certificate record that a new ingestion should supersede.
+
+    Anti-duplicate identity, evaluated in priority order:
+      1. `certif_number` + `country` (case-insensitive) -- the strongest identity,
+         used whenever both are known. Handles the same certificate re-ingested
+         under a different filename, and multi-record CSV/Excel imports where many
+         distinct certificates share the source `file_name`.
+      2. `file_name` (case-insensitive) -- fallback identity used only when the
+         certificate number is unavailable (e.g. a batch re-upload whose
+         extraction produced no certif number).
+
+    Returns the matching `CertificateMetadata` row or None.
+    """
+    from sqlalchemy import func
+    from schemas.extraction import CertificateMetadata
+
+    if certif_number and country:
+        cn = str(certif_number).strip().lower()
+        co = str(country).strip().lower()
+        if cn and co:
+            rec = (
+                db.query(CertificateMetadata)
+                .filter(
+                    func.lower(CertificateMetadata.certif_number) == cn,
+                    func.lower(CertificateMetadata.country) == co,
+                )
+                .first()
+            )
+            if rec is not None:
+                return rec
+
+    if file_name and str(file_name).strip():
+        norm = str(file_name).strip().lower()
+        rec = (
+            db.query(CertificateMetadata)
+            .filter(func.lower(CertificateMetadata.file_name) == norm)
+            .first()
+        )
+        if rec is not None:
+            return rec
+
+    return None
+
+
 def save_certificate_to_db(
     cert_data: CertificateExtractionSchema,
     raw_markdown: str,
     file_name: str,
-    db: Optional[Session] = None
+    db: Optional[Session] = None,
+    dedup_file_name: bool = True,
 ) -> CertificateMetadata:
     """
     Persists structured certificate metadata and vector-embedded chunks into PostgreSQL.
 
+    Anti-duplicate behavior: if an existing record matches the incoming data
+    (case-insensitive `file_name`, or `certif_number` + `country`), the existing
+    record is updated in place and its vector chunks are replaced instead of
+    inserting a duplicate row.
+
     Operation Steps:
       1. Performs lookup table enrichment on Pydantic certificate schema.
-      2. Converts Pydantic fields to normalized CertificateMetadata ORM record.
-      3. Chunks layout-aware markdown text via chunk_for_qa().
-      4. Computes 1024-dimensional BAAI/bge-m3 embeddings for every chunk.
-      5. Binds chunks to metadata record via certificate_id FK.
-      6. Wraps insertion in a single atomic transaction block (db.commit()) with db.rollback().
+      2. Normalizes Pydantic fields to CertificateMetadata ORM values.
+      3. Detects an existing duplicate and updates it, or creates a new record.
+      4. Chunks layout-aware markdown text via chunk_for_qa().
+      5. Computes 1024-dimensional BAAI/bge-m3 embeddings for every chunk.
+      6. Binds chunks to the metadata record via certificate_id FK and commits.
+
+    Args:
+        cert_data: Validated extraction schema.
+        raw_markdown: OCR markdown text.
+        file_name: Source document file name.
+        db: Optional session (auto-managed when None).
+        dedup_file_name: When False, the case-insensitive file_name identity is
+            skipped (used for manual entries that share a synthetic file name).
 
     Returns:
         CertificateMetadata: Persisted ORM metadata object.
@@ -278,8 +397,6 @@ def save_certificate_to_db(
         # Perform lookup table enrichment before converting to ORM record
         cert_data = enrich_certificate_metadata(cert_data, db)
 
-        cert_id = f"cert_{uuid.uuid4().hex[:12]}"
-
         # Normalize fields from Pydantic schema
         component = cert_data.component if cert_data.component != "Not Found" else None
         supplier = cert_data.supplier if cert_data.supplier != "Not Found" else None
@@ -290,19 +407,44 @@ def save_certificate_to_db(
         exp_dt = _parse_iso_date(cert_data.exp_date)
         cert_link = getattr(cert_data, "cert_link", None) or None
 
-        # 1. Create CertificateMetadata ORM instance
-        metadata_record = CertificateMetadata(
-            certificate_id=cert_id,
-            component=component,
-            supplier=supplier,
-            country=country,
+        # ── Anti-duplicate: supersede an existing record if one matches ──
+        existing = find_existing_certificate(
+            db,
+            file_name=file_name if dedup_file_name else None,
             certif_number=certif_number,
-            authority=authority,
-            issue_date=issue_dt,
-            exp_date=exp_dt,
-            cert_link=cert_link,
-            file_name=file_name
+            country=country,
         )
+        updated = False
+        if existing is not None:
+            cert_id = existing.certificate_id
+            existing.component = component
+            existing.supplier = supplier
+            existing.country = country
+            existing.certif_number = certif_number
+            existing.authority = authority
+            existing.issue_date = issue_dt
+            existing.exp_date = exp_dt
+            existing.cert_link = cert_link
+            existing.file_name = file_name
+            # Replace the old vector chunks so retrieval reflects the new content.
+            db.query(CertificateChunk).filter(CertificateChunk.certificate_id == cert_id).delete()
+            metadata_record = existing
+            updated = True
+        else:
+            cert_id = f"cert_{uuid.uuid4().hex[:12]}"
+            metadata_record = CertificateMetadata(
+                certificate_id=cert_id,
+                component=component,
+                supplier=supplier,
+                country=country,
+                certif_number=certif_number,
+                authority=authority,
+                issue_date=issue_dt,
+                exp_date=exp_dt,
+                cert_link=cert_link,
+                file_name=file_name
+            )
+            db.add(metadata_record)
 
         # 2. Chunk markdown text
         raw_chunks = chunk_for_qa(raw_markdown, file_name, document_id=cert_id)
@@ -329,11 +471,11 @@ def save_certificate_to_db(
             )
             chunk_records.append(chunk_orm)
 
-        db.add(metadata_record)
         db.add_all(chunk_records)
         db.commit()
         db.refresh(metadata_record)
-        logger.info(f" Successfully persisted Certificate '{cert_id}' with {len(chunk_records)} chunks to PostgreSQL.")
+        action = "Updated" if updated else "Successfully persisted"
+        logger.info(f" {action} Certificate '{cert_id}' with {len(chunk_records)} chunks to PostgreSQL.")
         
         # Trigger automated backup
         from storage.backup import export_database_to_sql

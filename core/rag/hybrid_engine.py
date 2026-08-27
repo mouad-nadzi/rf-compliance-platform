@@ -373,6 +373,19 @@ def retrieve_hybrid_context(
     }
 
 
+def build_unstructured_qa_prompt(user_query: str, context_text: str, history_text: str = "") -> str:
+    """Builds the QA synthesis user prompt from retrieved context (shared by sync + streaming paths)."""
+    history_block = f"{history_text}\n\n" if history_text else ""
+    return (
+        f"{history_block}"
+        f"--- BEGIN RETRIEVED DOCUMENT CONTEXT ---\n"
+        f"{context_text}\n"
+        f"--- END RETRIEVED DOCUMENT CONTEXT ---\n\n"
+        f"USER QUESTION: {user_query}\n\n"
+        f"Return ONLY the raw JSON output matching the QAResponseSchema schema."
+    )
+
+
 def execute_unstructured_query(user_query: str, db_session=None, history_text: str = "") -> str:
     """
     Full UNSTRUCTURED_RAG execution pipeline:
@@ -408,20 +421,11 @@ def execute_unstructured_query(user_query: str, db_session=None, history_text: s
             return FALLBACK_NOT_FOUND_MESSAGE
 
         # 2. Build QA Synthesis Prompt Payload
-        history_block = f"{history_text}\n\n" if history_text else ""
-        user_prompt = (
-            f"{history_block}"
-            f"--- BEGIN RETRIEVED DOCUMENT CONTEXT ---\n"
-            f"{context_text}\n"
-            f"--- END RETRIEVED DOCUMENT CONTEXT ---\n\n"
-            f"USER QUESTION: {clean_query}\n\n"
-            f"Return ONLY the raw JSON output matching the QAResponseSchema schema."
-        )
-
         from core.prompts import QA_SYNTHESIS_SYSTEM_PROMPT
-        from core.llm import generate_json
+        user_prompt = build_unstructured_qa_prompt(clean_query, context_text, history_text)
 
         # 3. LLM Answer Synthesis
+        from core.llm import generate_json
         raw_json_response = generate_json(
             system_prompt=QA_SYNTHESIS_SYSTEM_PROMPT,
             user_prompt=user_prompt,

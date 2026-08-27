@@ -15,7 +15,7 @@
   {
     "canonical_authority": "Autoridad de Regulación y Fiscalización de Telecomunicaciones y Transportes",
     "country": "Bolivia",
-    "standard_validity_years": 5,
+    "standard_validity_years": null,
     "aliases": [
       "ATT",
       "AUTORIDAD DE REGULACION Y FISCALIZACION DE TELECOMUNICACIONES Y TRANSPORTES",
@@ -38,7 +38,7 @@
   {
     "canonical_authority": "Federal Communications Commission",
     "country": "United States",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "FCC",
       "FEDERAL COMMUNICATIONS COMMISSION",
@@ -50,7 +50,7 @@
   {
     "canonical_authority": "Innovation, Science and Economic Development Canada",
     "country": "Canada",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "ISED",
       "INDUSTRY CANADA",
@@ -63,7 +63,7 @@
   {
     "canonical_authority": "European Telecommunications Standards Institute / Notified Bodies",
     "country": "European Union",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "CE",
       "RED",
@@ -88,7 +88,7 @@
   {
     "canonical_authority": "Ministry of Internal Affairs and Communications",
     "country": "Japan",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "MIC",
       "TELECOM ENGINEERING CENTER",
@@ -101,7 +101,7 @@
   {
     "canonical_authority": "National Radio Research Agency",
     "country": "South Korea",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "RRA",
       "KC",
@@ -114,7 +114,7 @@
   {
     "canonical_authority": "National Communications Commission",
     "country": "Taiwan",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "NCC",
       "NATIONAL COMMUNICATIONS COMMISSION"
@@ -135,7 +135,7 @@
   {
     "canonical_authority": "Australian Communications and Media Authority",
     "country": "Australia",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "ACMA",
       "RCM",
@@ -146,7 +146,7 @@
   {
     "canonical_authority": "Radio Spectrum Management",
     "country": "New Zealand",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "RSM",
       "RADIO SPECTRUM MANAGEMENT"
@@ -156,7 +156,7 @@
   {
     "canonical_authority": "Independent Communications Authority of South Africa",
     "country": "South Africa",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "ICASA",
       "INDEPENDENT COMMUNICATIONS AUTHORITY OF SOUTH AFRICA"
@@ -166,7 +166,7 @@
   {
     "canonical_authority": "National Telecommunications Commission",
     "country": "Philippines",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "NTC",
       "NATIONAL TELECOMMUNICATIONS COMMISSION"
@@ -187,7 +187,7 @@
   {
     "canonical_authority": "Office of the National Broadcasting and Telecommunications Commission",
     "country": "Thailand",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "NBTC",
       "OFFICE OF THE NATIONAL BROADCASTING AND TELECOMMUNICATIONS COMMISSION"
@@ -245,7 +245,7 @@
   {
     "canonical_authority": "Instituto Federal de Telecomunicaciones",
     "country": "Mexico",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "IFT",
       "IFETEL",
@@ -266,7 +266,7 @@
   {
     "canonical_authority": "Organismo Supervisor de Inversión Privada en Telecomunicaciones / Ministerio de Transportes y Comunicaciones",
     "country": "Peru",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "MTC",
       "OSIPTEL",
@@ -277,7 +277,7 @@
   {
     "canonical_authority": "Subsecretaría de Telecomunicaciones",
     "country": "Chile",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "SUBTEL",
       "SUBSECRETARIA DE TELECOMUNICACIONES"
@@ -287,7 +287,7 @@
   {
     "canonical_authority": "Comisión de Regulación de Comunicaciones / Agencia Nacional del Espectro",
     "country": "Colombia",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "CRC",
       "ANE",
@@ -299,7 +299,7 @@
   {
     "canonical_authority": "Agencia de Regulación y Control de las Telecomunicaciones",
     "country": "Ecuador",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "ARCOTEL",
       "AGENCIA DE REGULACION Y CONTROL DE LAS TELECOMUNICACIONES"
@@ -319,7 +319,7 @@
   {
     "canonical_authority": "Nigerian Communications Commission",
     "country": "Nigeria",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "NCC",
       "NIGERIAN COMMUNICATIONS COMMISSION"
@@ -329,7 +329,7 @@
   {
     "canonical_authority": "Communications Authority of Kenya",
     "country": "Kenya",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "CA",
       "CCK",
@@ -340,7 +340,7 @@
   {
     "canonical_authority": "Agence Nationale de Réglementation des Télécommunications",
     "country": "Morocco",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "ANRT",
       "AGENCE NATIONALE DE REGLEMENTATION DES TELECOMMUNICATIONS"
@@ -433,7 +433,7 @@
   {
     "canonical_authority": "Autorité de Régulation des Communications Électroniques, des Postes et de la Distribution de la Presse",
     "country": "France",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "ARCEP",
       "ARCEP FRANCE"
@@ -443,7 +443,7 @@
   {
     "canonical_authority": "Bundesnetzagentur",
     "country": "Germany",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "BNetzA",
       "BUNDESNETZAGENTUR"
@@ -453,7 +453,7 @@
   {
     "canonical_authority": "Office of Communications",
     "country": "United Kingdom",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "OFCOM",
       "OFFICE OF COMMUNICATIONS"
@@ -475,7 +475,7 @@
   {
     "canonical_authority": "National Authority for Management and Regulation in Communications",
     "country": "Romania",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "ANCOM",
       "NATIONAL AUTHORITY FOR MANAGEMENT AND REGULATION IN COMMUNICATIONS"
@@ -485,7 +485,7 @@
   {
     "canonical_authority": "National Media and Infocommunications Authority",
     "country": "Hungary",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "NMHH",
       "NATIONAL MEDIA AND INFOCOMMUNICATIONS AUTHORITY"
@@ -495,7 +495,7 @@
   {
     "canonical_authority": "Office of Communications Authority",
     "country": "Hong Kong",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "OFCA",
       "OFTA",
@@ -518,7 +518,7 @@
   {
     "canonical_authority": "Superintendencia de Telecomunicaciones",
     "country": "Costa Rica",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "SUTEL",
       "SUPERINTENDENCIA DE TELECOMUNICACIONES"
@@ -528,7 +528,7 @@
   {
     "canonical_authority": "Autoridad Nacional de los Servicios Públicos",
     "country": "Panama",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "ASEP",
       "AUTORIDAD NACIONAL DE LOS SERVICIOS PUBLICOS"
@@ -538,7 +538,7 @@
   {
     "canonical_authority": "Instituto Dominicano de las Telecomunicaciones",
     "country": "Dominican Republic",
-    "standard_validity_years": null,
+    "standard_validity_years": "infinite",
     "aliases": [
       "INDOTEL",
       "INSTITUTO DOMINICANO DE LAS TELECOMUNICACIONES"

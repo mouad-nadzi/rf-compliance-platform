@@ -322,6 +322,113 @@ def _format_python_answer(user_query: str, rows: List[Dict[str, Any]], columns: 
     return "\n".join(lines)
 
 
+def _stream_synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, Any]], columns: List[str], history_text: str = ""):
+    """
+    Generator: streams the natural-language answer synthesis token-by-token.
+
+    Builds the same prompt as _synthesize_answer but decodes incrementally and
+    surfaces only the growing JSON 'answer' field. Falls back to the deterministic
+    Python-formatted answer (yielded once) if streaming or parsing fails.
+    """
+    formatted_results = _format_results(rows, columns)
+    history_block = f"{history_text}\n\n" if history_text else ""
+    user_prompt = (
+        f"{history_block}"
+        f"USER QUESTION: {user_query}\n\n"
+        f"EXECUTED SQL:\n{sql}\n\n"
+        f"QUERY RESULTS:\n{formatted_results}\n\n"
+        "Return ONLY the raw JSON output matching the schema."
+    )
+
+    buffer = ""
+    last_answer = ""
+    try:
+        from core.llm import generate_stream
+        from core.rag.qa import extract_answer_value
+
+        for token in generate_stream(
+            system_prompt=SQL_RESULT_SYNTHESIS_PROMPT,
+            user_prompt=user_prompt,
+            disable_thinking=True,
+        ):
+            buffer += token
+            current = extract_answer_value(buffer)
+            if current and len(current) > len(last_answer):
+                delta = current[len(last_answer):]
+                last_answer = current
+                if delta:
+                    yield delta
+        if last_answer:
+            return
+        logger.warning("  Empty answer returned by streamed SQL result synthesis.")
+    except Exception as e:
+        logger.warning(f"  SQL result synthesis streaming failed: {e}")
+
+    yield _format_python_answer(user_query, rows, columns)
+
+
+def stream_metadata_answer(user_query: str, db_session=None, history_text: str = ""):
+    """
+    Generator: runs the full METADATA_QUERY pipeline and yields the final
+    natural-language answer as progressive token chunks.
+
+    SQL translation + execution are synchronous (fast); the final answer
+    synthesis is streamed so the UI shows live output generation.
+    """
+    clean_query = str(user_query or "").strip()
+    if not clean_query:
+        logger.warning("Empty or blank user query provided to stream_metadata_answer.")
+        yield FALLBACK_MESSAGE
+        return
+
+    # 1. LLM  SQL translation
+    try:
+        sql = generate_sql_query(clean_query, history_text=history_text)
+    except Exception as e:
+        logger.warning(f"  Text-to-SQL generation failed: {e}")
+        yield FALLBACK_MESSAGE
+        return
+
+    if not sql or not _validate_sql(sql):
+        logger.warning(f"  Generated SQL failed validation. SQL: {sql!r}")
+        yield FALLBACK_MESSAGE
+        return
+
+    sql = _ensure_row_cap(sql)
+    logger.info(f" Executing generated SQL for METADATA_QUERY: {sql}")
+
+    # 2. Open a local session if the caller did not supply one
+    close_session_on_exit = False
+    if db_session is None:
+        from storage.database import SessionLocal
+
+        db_session = SessionLocal()
+        close_session_on_exit = True
+
+    # 3. Safe execution with graceful fallback
+    try:
+        _enforce_read_only(db_session)
+        result = db_session.execute(text(sql))
+        columns = list(result.keys())
+        rows = [dict(row) for row in result.mappings().all()]
+    except SQLAlchemyError as e:
+        logger.warning(f"  SQLAlchemy error during metadata query execution: {e}")
+        try:
+            db_session.rollback()
+        except Exception as rollback_err:
+            logger.warning(f"  Rollback failed: {rollback_err}")
+        yield FALLBACK_MESSAGE
+        return
+    finally:
+        if close_session_on_exit:
+            db_session.close()
+
+    # 4. Stream the natural-language answer synthesis
+    yield from _stream_synthesize_answer(
+        clean_query, sql, rows, columns, history_text=history_text
+    )
+
+
 def execute_metadata_query(user_query: str, db_session, history_text: str = "") -> str:
     """
     Full METADATA_QUERY execution pipeline:

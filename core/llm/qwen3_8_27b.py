@@ -168,18 +168,10 @@ class Qwen3_8_27BEngine(BaseLLMEngine):
         except Exception as exc:
             raise RuntimeError(f"Failed to load GGUF model from '{model_path}': {exc}")
 
-    # ── BaseLLMEngine hook ───────────────────────────────────────────────────
+# ── BaseLLMEngine hook ───────────────────────────────────────────────────
 
-    def _generate_raw(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        disable_thinking: bool = False,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-    ) -> str:
-        """
-        Assemble ChatML prompt (handling Qwen3.8 empty <think> block) and execute completion.
-        """
+    def _build_prompt(self, system_prompt: str, user_prompt: str, disable_thinking: bool) -> str:
+        """Assemble the ChatML prompt (handling Qwen3.8 empty  thinking block)."""
         if not system_prompt:
             system_prompt = (
                 "You are an expert technical data extraction engine. "
@@ -192,29 +184,71 @@ class Qwen3_8_27BEngine(BaseLLMEngine):
             f"<|im_start|>assistant\n"
         )
 
-        if disable_thinking and "<think>" not in prompt:
+        if disable_thinking and " thinking" not in prompt:
             prompt = prompt.replace(
                 "<|im_start|>assistant\n",
-                "<|im_start|>assistant\n<think>\n</think>\n",
+                "<|im_start|>assistant\n thinking\n response\n",
                 1,
             )
+        return prompt
 
+    def _sampling_params(self, disable_thinking: bool) -> Dict[str, Any]:
         temp = 0.0 if disable_thinking else 0.6
         top_p = 0.80 if disable_thinking else 0.95
+        return {
+            "temperature": temp,
+            "top_p": top_p,
+            "top_k": 20,
+            "min_p": 0.0,
+            "presence_penalty": 1.5,
+            "repeat_penalty": 1.0,
+            "stop": ["<|im_end|>", "<|endoftext|>"],
+        }
+
+    def _generate_raw(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        disable_thinking: bool = False,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+    ) -> str:
+        """
+        Assemble ChatML prompt (handling Qwen3.8 empty  thinking block) and execute completion.
+        """
+        prompt = self._build_prompt(system_prompt, user_prompt, disable_thinking)
 
         response = self._llm(
             prompt,
             max_tokens=max_tokens,
-            temperature=temp,
-            top_p=top_p,
-            top_k=20,
-            min_p=0.0,
-            presence_penalty=1.5,
-            repeat_penalty=1.0,
             echo=False,
-            stop=["<|im_end|>", "<|endoftext|>"],
+            **self._sampling_params(disable_thinking),
         )
         return response["choices"][0]["text"]
+
+    def _generate_stream(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        disable_thinking: bool = False,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+    ):
+        """
+        Token-level streaming variant of _generate_raw using llama.cpp stream=True.
+        Yields incremental text chunks as they are decoded on GPU.
+        """
+        prompt = self._build_prompt(system_prompt, user_prompt, disable_thinking)
+
+        stream = self._llm(
+            prompt,
+            max_tokens=max_tokens,
+            echo=False,
+            stream=True,
+            **self._sampling_params(disable_thinking),
+        )
+        for chunk in stream:
+            text = chunk["choices"][0]["text"]
+            if text:
+                yield text
 
 
 # Alias for compatibility with direct imports

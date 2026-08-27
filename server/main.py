@@ -447,7 +447,10 @@ def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
 
     from server.config import CACHE_DIR, OCR_CACHE_DIR, OCR_ENGINE
     from core.registry import get_ocr_engine
-    from core.extractor import extract_certificate_data, save_certificate_to_db
+    from core.extractor import extract_certificate_data, save_certificate_to_db, find_existing_certificate
+    from storage.database import SessionLocal
+
+    db_check = SessionLocal()
 
     def _save():
         _save_manifest(batch_id, manifest)
@@ -464,6 +467,16 @@ def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
             if entry.get("status") == "extracted":
                 manifest["skipped"] += 1
                 continue
+
+            # ── Anti-duplicate: skip files already ingested (case-insensitive file_name) ──
+            if find_existing_certificate(db_check, file_name=name, certif_number=None, country=None) is not None:
+                logger.info(f"  Skipping duplicate '{name}' (already in database).")
+                entry["status"] = "skipped"
+                entry["error"] = "Duplicate: file already exists in database."
+                manifest["skipped"] += 1
+                _save()
+                continue
+
             manifest["current_file"] = name
             _save()
 
@@ -519,6 +532,8 @@ def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
         manifest["phase"] = "error"
         manifest["error"] = str(e)
         _save()
+    finally:
+        db_check.close()
 
 
 @app.post("/api/v1/batch/ingest")
@@ -633,6 +648,7 @@ async def list_certificates(
     """
     from schemas.extraction import CertificateMetadata
     from server.config import OCR_CACHE_DIR
+    from core.extractor import format_exp_date
 
     if batch_id:
         manifest = _load_manifest(batch_id)
@@ -660,7 +676,7 @@ async def list_certificates(
             "certif_number": r.certif_number,
             "authority": r.authority,
             "issue_date": str(r.issue_date) if r.issue_date else None,
-            "exp_date": str(r.exp_date) if r.exp_date else None,
+            "exp_date": format_exp_date(r.exp_date),
             "cert_link": r.cert_link,
             "file_name": r.file_name,
             "last_update": r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else None,
@@ -698,11 +714,12 @@ async def check_certificate_exists(
         raise HTTPException(status_code=422, detail="file_name query parameter is required and cannot be blank.")
 
     from schemas.extraction import CertificateMetadata
+    from sqlalchemy import func
 
     try:
         exists = (
             db.query(CertificateMetadata)
-            .filter(CertificateMetadata.file_name == clean_file_name)
+            .filter(func.lower(CertificateMetadata.file_name) == clean_file_name.lower())
             .first()
             is not None
         )
@@ -735,13 +752,13 @@ async def list_authorities(db: Session = Depends(get_db)):
 @app.post("/api/v1/lookups/authorities")
 async def add_authority(payload: dict, db: Session = Depends(get_db)):
     """Adds a new authority lookup reference entry."""
-    from storage.models import AuthorityLookup
+    from storage.models import AuthorityLookup, normalize_validity_years
     try:
         record = AuthorityLookup(
             canonical_authority=payload.get("canonical_authority"),
             abbreviation=payload.get("abbreviation"),
             country=payload.get("country"),
-            standard_validity_years=payload.get("standard_validity_years"),
+            standard_validity_years=normalize_validity_years(payload.get("standard_validity_years")),
             aliases=payload.get("aliases") or [],
         )
         db.add(record)
@@ -782,7 +799,7 @@ async def add_supplier(payload: dict, db: Session = Depends(get_db)):
 @app.post("/api/v1/lookups/authorities/import")
 async def import_authorities_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """Imports authority lookups from an uploaded CSV or Excel file."""
-    from storage.models import AuthorityLookup
+    from storage.models import AuthorityLookup, normalize_validity_years
     import pandas as pd
     filename_lower = (file.filename or "").lower()
     if not (filename_lower.endswith(".csv") or filename_lower.endswith(".xlsx") or filename_lower.endswith(".xls")):
@@ -804,7 +821,7 @@ async def import_authorities_file(file: UploadFile = File(...), db: Session = De
                 canonical_authority=canonical,
                 abbreviation=str(row.get("abbreviation") or "").strip() or None,
                 country=str(row.get("country") or "").strip(),
-                standard_validity_years=int(float(row["standard_validity_years"])) if str(row.get("standard_validity_years") or "").strip() else None,
+                standard_validity_years=normalize_validity_years(row.get("standard_validity_years")),
                 aliases=[a.strip() for a in str(row.get("aliases") or "").split(",") if a.strip()],
             )
             db.add(record)
@@ -876,7 +893,7 @@ async def list_suppliers(db: Session = Depends(get_db)):
 @app.put("/api/v1/lookups/authorities/{auth_id}")
 async def update_authority(auth_id: int, payload: dict, db: Session = Depends(get_db)):
     """Updates an authority lookup reference entry."""
-    from storage.models import AuthorityLookup
+    from storage.models import AuthorityLookup, normalize_validity_years
     try:
         record = db.query(AuthorityLookup).filter(AuthorityLookup.id == auth_id).first()
         if not record:
@@ -888,7 +905,7 @@ async def update_authority(auth_id: int, payload: dict, db: Session = Depends(ge
         if "country" in payload:
             record.country = payload["country"]
         if "standard_validity_years" in payload:
-            record.standard_validity_years = payload["standard_validity_years"]
+            record.standard_validity_years = normalize_validity_years(payload["standard_validity_years"])
         if "aliases" in payload:
             record.aliases = payload["aliases"] or []
         db.commit()
@@ -974,6 +991,7 @@ async def update_certificate(cert_id: str, payload: dict, db: Session = Depends(
     """Updates editable fields of an existing certificate."""
     from schemas.extraction import CertificateMetadata
     from datetime import date
+    from core.extractor import NO_EXPIRY_DATE, is_no_expiry_marker
     try:
         record = db.query(CertificateMetadata).filter(CertificateMetadata.certificate_id == cert_id).first()
         if not record:
@@ -984,7 +1002,12 @@ async def update_certificate(cert_id: str, payload: dict, db: Session = Depends(
         for field in ("issue_date", "exp_date"):
             if field in payload:
                 val = payload[field]
-                setattr(record, field, date.fromisoformat(str(val)) if val else None)
+                if not val:
+                    setattr(record, field, None)
+                elif field == "exp_date" and is_no_expiry_marker(val):
+                    setattr(record, field, NO_EXPIRY_DATE)
+                else:
+                    setattr(record, field, date.fromisoformat(str(val)))
         if "cert_link" in payload:
             record.cert_link = payload["cert_link"] or None
         db.commit()
@@ -1021,7 +1044,7 @@ async def delete_certificate(cert_id: str, db: Session = Depends(get_db)):
         logger.error(f" Error deleting certificate {cert_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 import csv
 import io
 from schemas.extraction import CertificateExtractionSchema, CertificateMetadata
@@ -1031,17 +1054,73 @@ async def add_certificate_manual(cert_data: CertificateExtractionSchema, db: Ses
     """Manually insert a certificate record without OCR."""
     from core.extractor import save_certificate_to_db
     try:
-        record = save_certificate_to_db(cert_data, raw_markdown="Manual Entry", file_name="Manual Entry", db=db)
+        record = save_certificate_to_db(
+            cert_data,
+            raw_markdown="Manual Entry",
+            file_name="Manual Entry",
+            db=db,
+            dedup_file_name=False,
+        )
         return {"status": "success", "certificate_id": record.certificate_id}
     except Exception as e:
         logger.error(f" Error adding manual certificate: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/v1/certificates/deduplicate")
+async def deduplicate_certificates(db: Session = Depends(get_db)):
+    """
+    Merges legacy duplicate certificate records so each identity maps to a single row.
+
+    Identity is `certif_number` + `country` (case-insensitive) when both are known,
+    falling back to `file_name` (case-insensitive, excluding synthetic "Manual Entry"
+    names) only when the certificate number is unavailable. For each duplicate group
+    the most recently-created record is kept; older duplicates (and their vector
+    chunks) are deleted via the ORM cascade.
+
+    Returns:
+        {"status": "success", "removed": <int>}
+    """
+    from collections import defaultdict
+    from schemas.extraction import CertificateMetadata
+
+    def _identity_key(r):
+        if r.certif_number and r.country:
+            cn = str(r.certif_number).strip().lower()
+            co = str(r.country).strip().lower()
+            if cn and co:
+                return ("cert", cn, co)
+        if r.file_name and str(r.file_name).strip().lower() != "manual entry":
+            return ("file", str(r.file_name).strip().lower())
+        return None
+
+    rows = db.query(CertificateMetadata).order_by(CertificateMetadata.created_at.asc()).all()
+
+    groups: dict = defaultdict(list)
+    for r in rows:
+        key = _identity_key(r)
+        if key is not None:
+            groups[key].append(r)
+
+    removed_ids: set = set()
+    for group in groups.values():
+        if len(group) > 1:
+            # rows are sorted ascending by created_at -> keep the newest (last).
+            for dup in group[:-1]:
+                if dup.certificate_id not in removed_ids:
+                    removed_ids.add(dup.certificate_id)
+                    db.delete(dup)
+
+    db.commit()
+    logger.info(f" Deduplication removed {len(removed_ids)} duplicate certificate record(s).")
+    return {"status": "success", "removed": len(removed_ids)}
+
+
 @app.get("/api/v1/certificates/export/csv")
 async def export_certificates_csv(db: Session = Depends(get_db)):
     """Exports all certificate database records to a downloadable CSV file."""
     from schemas.extraction import CertificateMetadata
+    from core.extractor import format_exp_date
     try:
         records = db.query(CertificateMetadata).order_by(CertificateMetadata.created_at.desc()).all()
         
@@ -1063,7 +1142,7 @@ async def export_certificates_csv(db: Session = Depends(get_db)):
                 r.certif_number or "",
                 r.authority or "",
                 r.issue_date.strftime("%Y-%m-%d") if r.issue_date else "",
-                r.exp_date.strftime("%Y-%m-%d") if r.exp_date else "",
+                format_exp_date(r.exp_date) or "",
                 r.cert_link or "",
                 r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else ""
             ])
@@ -1085,6 +1164,7 @@ async def export_certificates_csv(db: Session = Depends(get_db)):
 async def export_certificates_excel(db: Session = Depends(get_db)):
     """Exports all certificate database records to a downloadable Excel (.xlsx) spreadsheet."""
     from schemas.extraction import CertificateMetadata
+    from core.extractor import format_exp_date
     import pandas as pd
 
     try:
@@ -1101,7 +1181,7 @@ async def export_certificates_excel(db: Session = Depends(get_db)):
                 "certif_number": r.certif_number or "",
                 "authority": r.authority or "",
                 "issue_date": r.issue_date.strftime("%Y-%m-%d") if r.issue_date else "",
-                "exp_date": r.exp_date.strftime("%Y-%m-%d") if r.exp_date else "",
+                "exp_date": format_exp_date(r.exp_date) or "",
                 "cert_link": r.cert_link or "",
                 "created_at": r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else ""
             })
@@ -1247,7 +1327,13 @@ Return ONLY a JSON object like:
                 f"Issue Date: {iss_dt}\nExp Date: {exp_dt}\nCert Link: {cert_lnk}"
             )
 
-            save_certificate_to_db(cert_schema, raw_markdown=raw_mk, file_name=fname, db=db)
+            save_certificate_to_db(
+                cert_schema,
+                raw_markdown=raw_mk,
+                file_name=fname,
+                db=db,
+                dedup_file_name=False,
+            )
             imported_count += 1
 
         logger.info(f" File Import successful: {imported_count}/{total_rows} records processed from '{file.filename}'")
@@ -1447,6 +1533,197 @@ async def chat_compliance_query(
     except Exception as exc:
         logger.error(f" Error during /api/v1/chat processing: {exc}")
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(exc)}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Streaming Chat (Job-based SSE) — fixes UI freeze by decoupling inference from
+# the Streamlit script run. The pipeline runs in a background thread; the UI
+# consumes tokens via a tailing SSE endpoint while staying interactive.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_CHAT_STREAM_JOBS: Dict[str, Dict[str, Any]] = {}
+_CHAT_STREAM_JOBS_LOCK = threading.Lock()
+
+#: Serializes LLM inference across streaming jobs. The llama-cpp engine is
+#: single-residency (one process, one context) and not thread-safe, so only one
+#: RAG job may generate at a time; additional jobs queue until the current one
+#: finishes.
+_CHAT_INFERENCE_LOCK = threading.Lock()
+
+
+def _sse_event(event: Dict[str, Any]) -> str:
+    return f"data: {json.dumps(event)}\n\n"
+
+
+def _persist_streamed_turn(session_id: str, user_query: str, done_event: Dict[str, Any]) -> None:
+    """Records the streamed turn into the in-memory session and PostgreSQL."""
+    answer = str(done_event.get("answer", ""))
+    with _CHAT_SESSIONS_LOCK:
+        session = _CHAT_SESSIONS.get(session_id)
+        if session is not None:
+            session.setdefault("messages", []).append({"role": "user", "content": user_query})
+            session["messages"].append({"role": "assistant", "content": answer})
+            if not session.get("title"):
+                session["title"] = (user_query or "")[:60]
+        is_first_turn = bool(session and len(session.get("messages", [])) == 2)
+        title = session["title"] if is_first_turn else None
+    _persist_chat_turn(session_id, "user", user_query, title=title)
+    _persist_chat_turn(session_id, "assistant", answer)
+
+
+def _run_chat_stream_job(
+    job: Dict[str, Any],
+    user_query: str,
+    session_id: str,
+    history: List[Dict[str, str]],
+) -> None:
+    """Background worker: runs the streaming RAG pipeline and persists the turn.
+
+    Token/status events are appended immediately; the terminal `done` event is
+    only emitted AFTER the turn has been persisted, so a client that receives
+    `done` can immediately re-fetch the session history.
+    """
+    from core.rag import answer_compliance_query_stream
+
+    done_event = None
+    try:
+        with _CHAT_INFERENCE_LOCK:
+            for evt in answer_compliance_query_stream(user_query=user_query, history=history):
+                if evt["type"] == "done":
+                    evt["session_id"] = session_id
+                    done_event = evt
+                    break
+                with job["cond"]:
+                    job["events"].append(evt)
+                    job["cond"].notify_all()
+    except Exception as exc:
+        logger.error(f" Chat stream job failed: {exc}")
+        done_event = {
+            "type": "done",
+            "session_id": session_id,
+            "answer": f"Query processing failed: {str(exc)}",
+            "intent": "UNSTRUCTURED_RAG",
+            "reasoning": "Streaming job exception.",
+            "sources": [],
+            "latency_ms": 0.0,
+        }
+
+    # Persist the turn BEFORE signalling completion.
+    if done_event is not None:
+        try:
+            _persist_streamed_turn(session_id, user_query, done_event)
+        except Exception as exc:
+            logger.warning(f" Could not persist streamed chat turn: {exc}")
+
+    with job["cond"]:
+        if done_event is not None:
+            job["events"].append(done_event)
+        job["done"] = True
+        job["cond"].notify_all()
+
+
+def _purge_stale_chat_jobs() -> None:
+    """Removes completed chat jobs to bound memory (called on new job creation)."""
+    from datetime import datetime as _dt
+    now = _dt.now(timezone.utc).timestamp()
+    with _CHAT_STREAM_JOBS_LOCK:
+        stale = [
+            job_id
+            for job_id, job in _CHAT_STREAM_JOBS.items()
+            if job["done"] and (now - job["created_at"]) > 300
+        ]
+        for job_id in stale:
+            _CHAT_STREAM_JOBS.pop(job_id, None)
+
+
+@app.post("/api/v1/chat/stream")
+def start_chat_stream(request: ChatRequest):
+    """
+    Starts a streaming chat job. Returns immediately with a job_id; the answer is
+    consumed progressively via GET /api/v1/chat/stream/{job_id} (SSE).
+    """
+    clean_query = (request.query or "").strip()
+    if not clean_query:
+        raise HTTPException(status_code=422, detail="query field cannot be blank.")
+
+    session = _get_or_create_chat_session(request.session_id)
+    base_response = {
+        "job_id": None,
+        "session_id": session["id"],
+        "frozen": False,
+        "usage_tokens": _session_usage_tokens(session),
+        "context_threshold": config.CHAT_CONTEXT_FULL_THRESHOLD,
+    }
+
+    if session.get("frozen", False):
+        base_response.update({
+            "frozen": True,
+            "intent": "SESSION_FROZEN",
+            "answer": config.CHAT_CONTEXT_FULL_MESSAGE,
+        })
+        return base_response
+
+    projected_usage = _session_usage_tokens(session, clean_query)
+    if projected_usage > config.CHAT_CONTEXT_FULL_THRESHOLD:
+        with _CHAT_SESSIONS_LOCK:
+            session["frozen"] = True
+        _persist_chat_session_frozen(session["id"], True)
+        base_response.update({
+            "frozen": True,
+            "intent": "SESSION_FROZEN",
+            "answer": config.CHAT_CONTEXT_FULL_MESSAGE,
+        })
+        return base_response
+
+    _purge_stale_chat_jobs()
+
+    job_id = f"chat_{uuid.uuid4().hex[:12]}"
+    job = {
+        "events": [],
+        "done": False,
+        "cond": threading.Condition(),
+        "created_at": datetime.now(timezone.utc).timestamp(),
+    }
+    with _CHAT_STREAM_JOBS_LOCK:
+        _CHAT_STREAM_JOBS[job_id] = job
+
+    worker = threading.Thread(
+        target=_run_chat_stream_job,
+        args=(job, clean_query, session["id"], list(session.get("messages", []))),
+        daemon=True,
+    )
+    worker.start()
+
+    base_response["job_id"] = job_id
+    return base_response
+
+
+@app.get("/api/v1/chat/stream/{job_id}")
+def stream_chat_job(job_id: str):
+    """
+    Tails a streaming chat job and yields its events as Server-Sent Events.
+    """
+
+    def event_iterator():
+        with _CHAT_STREAM_JOBS_LOCK:
+            job = _CHAT_STREAM_JOBS.get(job_id)
+        if job is None:
+            yield _sse_event({"type": "error", "message": "Unknown or expired chat job."})
+            return
+        sent = 0
+        while True:
+            with job["cond"]:
+                while sent >= len(job["events"]) and not job["done"]:
+                    job["cond"].wait(timeout=1.0)
+                new_events = job["events"][sent:]
+                sent = len(job["events"])
+                done = job["done"]
+            for evt in new_events:
+                yield _sse_event(evt)
+            if done:
+                break
+
+    return StreamingResponse(event_iterator(), media_type="text/event-stream")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

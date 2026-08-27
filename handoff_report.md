@@ -1,6 +1,6 @@
 # Project Handoff Report — Automotive Certificate Compliance & Q&A Platform
-**Date:** 2026-08-26 (updated Chat Session Persistence, RAG Accuracy Hardening, and LLM Upgrade to Qwen3.8-27B-UD-IQ3_XXS)
-**Status:** **LIVE IN PRODUCTION on GCP NVIDIA L4 Host**. Primary LLM Engine: **Qwen3.8-27B GGUF UD-IQ3_XXS** (`qwen3.8-27b-gguf`, 3-bit, 32k context), Pure-HF GLM-OCR (`glm-ocr`), LLM-Based Automated File Column Mapping, Multi-Lingual French Date Normalization (`_parse_iso_date`), Streamlit `LinkColumn` Direct Access, Zero-Hardcoding Dynamic Link Resolution (`PUBLIC_API_URL`), Docker Compose Infrastructure (`rf_app` + `rf_postgres_db`), Deterministic 7-Field Compliance Pipeline (`CertificateExtractionSchema`), SQL Lookup Tables & Ingestion (`AuthorityLookup`, `SupplierLookup`), PostgreSQL-Persisted Chat Sessions, GPU VRAM Coexistence (NVIDIA L4 24GB), End-to-End Hybrid RAG, SQL Hydration, CPU Embeddings, Model Registry, Intelligent Router, & Production Decoupled Architecture.
+**Date:** 2026-08-27 (updated Three-Tier Validity Disambiguation, Perpetual Certificate Sentinel, SSE Streaming Chat, DATABASES Uploader UX, Robust Anti-Duplicate System, and Chunker Safety-Valve Guardrail)
+**Status:** **LIVE IN PRODUCTION on GCP NVIDIA L4 Host**. Primary LLM Engine: **Qwen3.8-27B GGUF UD-IQ3_XXS** (`qwen3.8-27b-gguf`, 3-bit, 32k context), Pure-HF GLM-OCR (`glm-ocr`), LLM-Based Automated File Column Mapping, Multi-Lingual French Date Normalization (`_parse_iso_date`), Streamlit `LinkColumn` Direct Access, Zero-Hardcoding Dynamic Link Resolution (`PUBLIC_API_URL`), Docker Compose Infrastructure (`rf_app` + `rf_postgres_db`), Deterministic 7-Field Compliance Pipeline (`CertificateExtractionSchema`), SQL Lookup Tables & Ingestion (`AuthorityLookup`, `SupplierLookup`), PostgreSQL-Persisted Chat Sessions, SSE Token-Streaming Chat (job-based), Robust Anti-Duplicate Ingestion (upsert + batch skip + dedup endpoint), GPU VRAM Coexistence (NVIDIA L4 24GB), End-to-End Hybrid RAG, SQL Hydration, CPU Embeddings, Model Registry, Intelligent Router, & Production Decoupled Architecture.
 
 ---
 
@@ -400,6 +400,7 @@ To guarantee deterministic metadata accuracy and eliminate ambiguities between f
 - **Supplier vs. Applicant Disambiguation**: The `supplier` field description and prompt directive (`CERTIFICATE_EXTRACTION_SYSTEM_PROMPT` in `core/prompts.py`) strictly instruct the model to extract foreign manufacturers/brands (e.g., `VALEO`, `BOSCH`, `APTIV`, `FIH Mobile Limited`) and ignore domestic legal representatives or filing attorneys (e.g., `PABLO RICARDO CASSI`, `APPROVE - IT S.A.`).
 
 ### 14.2 Relational Lookup Models & Seed Assets
+> **Superseded (2026-08-27):** `standard_validity_years` is now a **`String(20)`** column holding a three-tier value (numeric string, `"infinite"`, or `NULL`), and seeding upserts by `canonical_authority + country`. See §21.1.
 - **Database Models (`core/storage/models.py`)**:
   - `AuthorityLookup` (`authority_lookups`): Stores `canonical_authority`, `country`, `standard_validity_years`, and `aliases` (JSONB).
   - `SupplierLookup` (`supplier_lookups`): Stores `canonical_supplier` and `aliases` (JSONB).
@@ -452,6 +453,7 @@ To support complex document uploads, eliminate database duplication, and guarant
 
 ### 16.2 Comprehensive Case-Insensitive Duplicate Guardrails
 The system enforces strict duplicate prevention across all input paths:
+> **Superseded (2026-08-27):** this section describes the original guardrails. The current unified implementation is documented in §21.5 — identity is `certif_number + country` (case-insensitive) first, with `file_name` as a fallback only when the certif number is absent; manual/import paths intentionally skip the file_name identity.
 1. **Batch Ingestion Pre-Check**: Checks existing PostgreSQL records by `func.lower(file_name)`. Matching files are skipped completely prior to running GLM-OCR or LLM extraction.
 2. **Single Parsing In-Place Upsert**: `save_certificate_to_db()` checks for existing `file_name` or `certif_number` + `country` records. If found, it updates the metadata in-place and replaces vector chunks rather than inserting duplicates.
 3. **Manual Entry Guardrail**: `POST /api/v1/certificates/manual` enforces identical case-insensitive checking and updates existing records in-place.
@@ -574,6 +576,77 @@ Investigation of an off-topic answer ("what about the others" returning Dominica
 
 ### 20.5 AGENTS.md Update (`/home/mouadnadzi3/rf-compliance-platform/.agents/AGENTS.md`)
 - The hard `llama-cpp-python v0.3.34-cu122` wheel pin is now documented as a **Google Colab / Tesla T4 sandbox constraint**, superseded on production (GCP NVIDIA L4). Production may use a current CUDA build, or serve the LLM via a recent `llama-server` sidecar for speculative decoding. Integer GGML enums for `type_k`/`type_v` and GGUF-architecture compatibility requirements remain.
+
+
+---
+
+## 21. Session Updates — Validity Disambiguation, Perpetual Sentinel, Streaming Chat, Uploader UX, Anti-Duplicates & Chunker Guardrail (2026-08-27)
+
+### 21.1 Three-Tier Validity Disambiguation & Enrichment Refactoring
+- **Data model (`storage/models.py`):** `AuthorityLookup.standard_validity_years` changed from `Integer` to `String(20)` and now stores three distinct tiers read from `data/lookups/authorities.json`:
+  - **Determined term** — numeric string (e.g. `"3"`, `"5"`).
+  - **Infinite term** — the literal string `"infinite"` (non-expiring certificate).
+  - **Variable / context-dependent term** — SQL `NULL`.
+- **Normalization helper:** `normalize_validity_years(value)` (in `storage/models.py`) canonicalizes raw JSON values to `"infinite"`, `"3"`, or `None` without casting exceptions.
+- **Seeding (`storage/seed_lookups.py`):** performs an idempotent migration `ALTER TABLE authority_lookups ALTER COLUMN standard_validity_years TYPE VARCHAR(20) USING standard_validity_years::text`, then upserts every authority keyed on `canonical_authority + country` (fixes a first-pass key-mismatch that duplicated rows; the table was truncated and reseeded cleanly to 50 rows: 10 numeric, 28 `infinite`, 12 `NULL`).
+- **Enrichment (`core/extractor.py` `enrich_certificate_metadata`):** resolves a missing `exp_date` by the matched authority's validity tier:
+  - `"infinite"` -> sets `data.exp_date = "Perpetual"` (persisted as the sentinel below).
+  - numeric -> `exp_date = issue_date + validity_years` via `_parse_iso_date` (robust to non-ISO/French dates).
+  - `NULL` -> leaves the raw extracted `exp_date` untouched (variable-term authorities rely on the document).
+- **API/UI normalization (`server/main.py`, `ui/app.py`):** add/update/import authority endpoints normalize validity values via `normalize_validity_years`; the DATABASES authorities table passes raw string values (no `int()` casts) so `"infinite"` survives the edit round-trip.
+
+### 21.2 Non-Expiring ("Perpetual") Certificate Sentinel — `9999-01-01`
+- **Rationale:** a perpetual certificate's `exp_date` must not be stored as `NULL` (NULL is reserved for variable-term authorities with no extracted expiry). The existing Excel "no expiry" convention `9999-01-01` is used as the canonical sentinel.
+- **Persistence (`core/extractor.py`):** `_parse_iso_date` maps `"Perpetual"` / `"infinite"` / `"no expiry"` markers to `NO_EXPIRY_DATE = date(9999, 1, 1)` (defined in `core/extractor.py`); the relational `Date` column stores the sentinel. The `9999-01-01` sentinel itself still round-trips as-is.
+- **Display (`core/extractor.py` `format_exp_date`):** renders the sentinel as `"infinite"` (real dates as `YYYY-MM-DD`); used by `GET /api/v1/certificates` and the CSV/Excel exports so the DATABASES table shows `infinite`.
+- **Edit round-trip (`server/main.py` `PUT /api/v1/certificates/{id}`):** accepts `"infinite"` / `"Perpetual"` (and the sentinel) back to `NO_EXPIRY_DATE`.
+- **Backfill:** existing `NULL`-expiry certificates whose authority is `infinite` were backfilled to the sentinel (5 rows); the remaining NULLs are genuine variable-term/unresolved records.
+- `NO_EXPIRY_MARKERS`, `is_no_expiry_marker()`, `NO_EXPIRY_DISPLAY` helpers live in `core/extractor.py`.
+
+### 21.3 SSE Token-Streaming Chat (Job-Based, Decoupled from the Script Run)
+- **Motivation:** the original blocking chat call froze the Streamlit UI during generation, and a naive `@st.fragment(run_every)` renderer did not tick in this deployment. The final architecture decouples generation from the UI thread while rendering tokens progressively and correctly.
+- **Backend streaming contract:**
+  - `core/base.py` — `BaseLLMEngine.generate_stream()` template method + `_generate_stream()` hook (default yields the full `_generate_raw()` result, so all engines stay streaming-safe).
+  - `core/llm/qwen3_8_27b.py` — real token streaming via llama.cpp `stream=True` (prompt/sampling shared with `_generate_raw` via `_build_prompt` / `_sampling_params`).
+  - `core/rag/qa.py` — `stream_synthesize_answer()` yields `thinking` / `token` / `synthesis_done` events; `extract_answer_value()` incrementally decodes the JSON `answer` field (latches at the opening quote, handles escaped quotes/newlines and incomplete trailing escapes); `parse_qa_response()` final-validates via `extract_json`.
+  - `core/rag/orchestrator.py` — `answer_compliance_query_stream()` mirrors the dual-path router for all three intents: METADATA streams the SQL answer synthesis (`stream_metadata_answer` in `core/rag/sql_engine.py`), UNSTRUCTURED/HYBRID stream the QA generation; emits `status`, `token`, `done` events.
+  - `core/rag/sql_engine.py` — `_stream_synthesize_answer()` + `stream_metadata_answer()` stream the metadata answer synthesis; `build_unstructured_qa_prompt()` shared with the sync path.
+- **Job + SSE endpoints (`server/main.py`):**
+  - `POST /api/v1/chat/stream` — validates session/freeze/budget, launches the RAG pipeline in a background thread, returns `{job_id, session_id}` immediately.
+  - `GET /api/v1/chat/stream/{job_id}` — tailing SSE (`data: <json>` lines); emits `status`, `thinking`, `token`, then `done` (which carries `session_id`).
+  - `_CHAT_INFERENCE_LOCK` serializes concurrent jobs (llama-cpp engine is single-residency and not thread-safe).
+  - The turn is persisted to PostgreSQL **before** the `done` event is emitted, so a client that receives `done` can immediately re-fetch history.
+  - The legacy `POST /api/v1/chat` endpoint remains intact and verified working.
+- **Frontend (`ui/app.py` `_render_chat_window`):** the script run submits the job and then blocks on the SSE stream, updating `st.empty()` placeholders created inside `progress_ph` (positioned in the message area, ABOVE the typing box) so chat-element ordering stays correct — status + elapsed timer, growing "Reasoning:" preview during the deep-thinking phase, then answer tokens. The answer renders in place (no refresh). Streamlit 1.62 has no script-run timeout, so the blocking run is safe.
+- **Known tradeoff:** navigation queues while a long generation is in flight, but the UI shows continuous live progress (status/reasoning/tokens) rather than a silent freeze.
+- **Metadata-path latency note:** "Querying certificate database... (Ns)" is NOT thinking-mode — all metadata-path LLM calls use `disable_thinking=True`. The ~8s is 3 sequential LLM calls on the 27B model (router ~4s + SQL generation ~5s + synthesis), which is a model-inference bound on the L4 (300 GB/s bandwidth caps decode near ~27 tok/s theoretical; smaller models decode ~3-4x faster).
+
+### 21.4 DATABASES Page — Uploader UX Refinements (`ui/app.py`)
+- **Uploaders now visible:** removed the CSS that hid `[data-testid="stFileUploaderDropzone"]` (leftover from the old custom-browse-button era).
+- **Removed the auto-click browse-button hack:** deleted `_AUTO_CLICK_SCRIPT`, `browse_button()`, and `open_dialog_accept`; replaced with plain text labels above each native uploader: "Import CSV or Excel" (RF Certificates), "Ingest certificate documents" (RF Certificates), "Import authorities from CSV or Excel" (Authorities), "Import suppliers from CSV or Excel" (Suppliers).
+- **Each upload section** (label + uploader + preview + action buttons) is wrapped in its own `st.container(border=True)` box; labels render via `<b>` HTML with zero bottom margin and a tightened gap before the uploader (`upload-label` CSS).
+- **File count caption:** "N file(s) selected" above the batch "Process Batch Ingestion" button.
+- **Cancel buttons** beside "Process Batch Ingestion" and "Import File Records" (wider `[2, 1]` columns). Clearing works by **changing the uploader's widget `key`** (e.g. `file_import_uploader_0` -> `file_import_uploader_1` via a reset counter) — Streamlit treats a new key as a fresh, empty widget. The earlier flag+pop approach failed because the file uploader re-hydrates from the frontend after the session-state key is deleted.
+- **`seek(0)` fix:** every CSV/Excel preview read now rewinds the `UploadedFile` stream before `pd.read_csv`/`read_excel` (an EOF stream caused "No columns to parse from file" on reruns).
+- **Overall page scroll enabled:** removed the `overflow: hidden` + `100vh` rule on the main containers; the chat card retains its internal message-area scroll.
+
+### 21.5 Robust Anti-Duplicate System
+- **Identity rule (`core/extractor.py` `find_existing_certificate`):** `certif_number + country` (case-insensitive) is the primary identity whenever both are known; `file_name` (case-insensitive) is the fallback identity only when the certificate number is absent. This avoids collapsing legitimate multi-record CSV/Excel imports that share one source filename.
+- **Central upsert (`save_certificate_to_db`):** every ingestion path (single parse, batch, manual, CSV/Excel import) now detects an existing match and **updates the record in place + replaces its vector chunks** instead of inserting a duplicate. New `dedup_file_name` param.
+- **Batch pre-check (`server/main.py` `_run_batch`):** files whose `file_name` already exists (case-insensitive) are skipped BEFORE OCR (counted as `skipped` in the manifest, surfaced by the UI batch progress).
+- **Manual entry** passes `dedup_file_name=False` (dedup by certif+country only — all manual rows share the synthetic "Manual Entry" filename).
+- **CSV/Excel import** passes `dedup_file_name=False` (dedup by certif+country only — one file yields many distinct certificates).
+- **`GET /api/v1/certificates/exists`** is now case-insensitive (`func.lower(file_name)`).
+- **`POST /api/v1/certificates/deduplicate`:** merges legacy duplicates by the unified identity (keeps the newest record, deletes older ones, cascading chunk deletion). Verified `removed: 0` on the current 21-cert corpus (no false positives; the 9 records sharing `import_test.xlsx` are distinct certificates and are preserved).
+- **Verified upsert behavior:** re-ingesting the same file -> same `certificate_id` (chunks replaced); same cert under a different filename -> same id via certif+country; a genuinely different cert -> new record.
+
+### 21.6 RAG Chunker Safety-Valve Guardrail (`core/rag/chunker.py`)
+- **Primary:** unchanged paragraph chunking on `\n\n`, **zero overlap** across the board (prevents duplicate chunk indexing in `certificate_chunks`).
+- **Soft max-length guardrail:** `SOFT_MAX_CHUNK_TOKENS = 800` (~4 chars/token via `estimate_tokens`). If and only if a single paragraph exceeds the cap (giant OCR table/block missing blank lines), that paragraph alone is split:
+  1. On single newlines (`\n`), then
+  2. On period boundaries (`. `) for any still-oversized piece, then
+  3. Greedily packed back into cap-sized chunks (`_pack_parts`) with no overlap.
+- Page-tag tracking (`<Page N>`) is preserved through the splitter (sub-chunks inherit/update the page). Verified: normal docs unchanged; a 200-row table block -> 5 packed chunks (max 800 tokens); giant prose -> 4 chunks (max 795 tokens); no overlap detected.
 
 
 

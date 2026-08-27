@@ -299,3 +299,59 @@ class BaseLLMEngine(ABC):
         logger.debug(f"Raw model output (first 500 chars): {raw_content[:500]}")
         return extract_json(raw_content)
 
+    def generate_stream(
+        self,
+        system_prompt: str = "",
+        user_prompt: str = "",
+        disable_thinking: bool = False,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+    ):
+        """
+        Template method: streams the raw model output token-by-token.
+
+        Delegates to the model-specific _generate_stream() hook. Engines that do not
+        override the hook fall back to yielding the complete _generate_raw() result in
+        a single chunk, so streaming is always safe to call.
+
+        Args:
+            system_prompt: System instructions for the completion.
+            user_prompt:   User-facing query / instruction payload.
+            disable_thinking: True for fast non-thinking mode; False for deep reasoning mode.
+            max_tokens: Maximum completion tokens to generate.
+
+        Yields:
+            str: Incremental raw text chunks from the model.
+        """
+        if getattr(self, "_llm", None) is None:
+            raise RuntimeError("Model not loaded. Call load() before generate_stream().")
+
+        logger.info(
+            f" Streaming {self.__class__.__name__} generation "
+            f"(disable_thinking={disable_thinking}, max_tokens={max_tokens})..."
+        )
+        yield from self._generate_stream(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            disable_thinking=disable_thinking,
+            max_tokens=max_tokens,
+        )
+
+    def _generate_stream(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        disable_thinking: bool = False,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+    ):
+        """
+        Model-specific streaming hook. Default implementation yields the complete
+        non-streaming result in one chunk. Engines that support incremental decoding
+        (e.g. llama-cpp-python `stream=True`) override this to yield real tokens.
+        """
+        yield self._generate_raw(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            disable_thinking=disable_thinking,
+            max_tokens=max_tokens,
+        )
+

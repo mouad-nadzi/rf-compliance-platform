@@ -12,7 +12,7 @@ from core.rag.qa import answer_query_with_citations
 from core.rag.router import QueryIntent, RouterDecision, classify_intent
 from core.rag.sql_engine import execute_metadata_query
 from core.rag.hybrid_engine import retrieve_hybrid_context, execute_unstructured_query
-from core.rag.orchestrator import answer_compliance_query
+from core.rag.orchestrator import answer_compliance_query, answer_compliance_query_stream
 
 __all__ = [
     "chunk_for_qa",
@@ -27,4 +27,5 @@ __all__ = [
     "retrieve_hybrid_context",
     "execute_unstructured_query",
     "answer_compliance_query",
+    "answer_compliance_query_stream",
 ]
