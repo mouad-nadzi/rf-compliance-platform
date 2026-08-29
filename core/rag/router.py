@@ -1,12 +1,22 @@
 """
-core/rag/router.py — Intelligent Dual-Path Query Intent Classifier
+core/rag/router.py — Agentic Supervisor Query Intent Classifier
 
-Classifies natural language user queries into three distinct routing intents:
+Classifies natural language user queries into five distinct routing intents:
   1. METADATA_QUERY: Structured SQL filtering/aggregations over certificate attributes.
   2. UNSTRUCTURED_RAG: Semantic dense vector chunk retrieval across document text.
   3. HYBRID_QUERY: Combined relational metadata filtering + semantic vector search.
+  4. CASUAL_CONVERSATION: Greetings, pleasantries, or questions about the assistant itself.
+  5. AGENT_ACTION: Explicit side-effectful commands requiring external tools (download, mutate, convert, send).
 
 Uses the local LLM facade (generate_json) and includes robust fallback exception handling.
+
+Statelessness: the router holds no cross-call state. Context (conversation history) is
+passed in per call and the classifier returns immediately; nothing is retained after
+classification so the supervisor stays stateless between queries.
+
+Safety: AGENT_ACTION intents will eventually drive database edits and other side-effectful
+tool executions. Those executions MUST be gated behind human-in-the-loop (HITL) approval
+in the Streamlit UI before any tool's execute() is invoked.
 """
 
 import json
@@ -26,6 +36,8 @@ class QueryIntent(str, Enum):
     METADATA_QUERY = "METADATA_QUERY"
     UNSTRUCTURED_RAG = "UNSTRUCTURED_RAG"
     HYBRID_QUERY = "HYBRID_QUERY"
+    CASUAL_CONVERSATION = "CASUAL_CONVERSATION"
+    AGENT_ACTION = "AGENT_ACTION"
 
 
 try:
@@ -42,7 +54,7 @@ if PYDANTIC_AVAILABLE:
         """
         intent: QueryIntent = Field(
             ...,
-            description="The classified routing intent (METADATA_QUERY, UNSTRUCTURED_RAG, or HYBRID_QUERY)."
+            description="The classified routing intent (METADATA_QUERY, UNSTRUCTURED_RAG, HYBRID_QUERY, CASUAL_CONVERSATION, or AGENT_ACTION)."
         )
         reasoning: str = Field(
             ...,
@@ -75,7 +87,15 @@ def _format_history(history) -> str:
 def classify_intent(user_query: str, history=None) -> Dict[str, str]:
     """
     Evaluates a user query using the local LLM facade and classifies it strictly
-    into one of three routing intents: METADATA_QUERY, UNSTRUCTURED_RAG, or HYBRID_QUERY.
+    into one of five routing intents: METADATA_QUERY, UNSTRUCTURED_RAG, HYBRID_QUERY,
+    CASUAL_CONVERSATION, or AGENT_ACTION.
+
+    Statelessness: context is passed in per call and flushed immediately after
+    classification; the router retains no state between invocations.
+
+    Safety: AGENT_ACTION intents may drive database edits / external tool executions.
+    Those side effects REQUIRE human-in-the-loop (HITL) approval in the Streamlit UI
+    before any tool's execute() is invoked.
 
     Args:
         user_query (str): The natural language query submitted by the user.
@@ -84,7 +104,8 @@ def classify_intent(user_query: str, history=None) -> Dict[str, str]:
 
     Returns:
         Dict[str, str]: A dictionary containing:
-            - "intent": Classified intent string ("METADATA_QUERY", "UNSTRUCTURED_RAG", or "HYBRID_QUERY")
+            - "intent": Classified intent string ("METADATA_QUERY", "UNSTRUCTURED_RAG",
+              "HYBRID_QUERY", "CASUAL_CONVERSATION", or "AGENT_ACTION")
             - "reasoning": Brief explanation for the decision.
     """
     # 1. Defensive check for empty or whitespace query
@@ -100,13 +121,15 @@ def classify_intent(user_query: str, history=None) -> Dict[str, str]:
 
     # 2. Call local LLM engine facade with DEFAULT_MAX_TOKENS & disable_thinking=True
     #    The engine formats (system_prompt, user_prompt) into its own native template.
+    #    Statelessness: after this call returns, no conversation context is retained.
     try:
         from core.llm import generate_json
+        from core.prompts import config_router_system_prompt
         user_prompt = (
             f"{history_block}\n\n" if history_block else ""
         ) + f"USER QUERY: {clean_query}\n\nReturn ONLY the raw JSON output matching the schema."
         raw_json_response = generate_json(
-            system_prompt=ROUTER_SYSTEM_PROMPT,
+            system_prompt=config_router_system_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
         )
@@ -143,6 +166,10 @@ def classify_intent(user_query: str, history=None) -> Dict[str, str]:
                 "reasoning": reasoning
             }
 
+        # NOTE: AGENT_ACTION intents eventually route to core/agent tools (e.g. database
+        # edits). Those executions MUST be gated behind human-in-the-loop (HITL) approval
+        # in the Streamlit UI before any tool's execute() is invoked.
+
         logger.warning(
             f" Unknown intent token '{raw_intent}' returned by LLM router. "
             f"Expected one of {valid_intents}. Defaulting to UNSTRUCTURED_RAG."
@@ -169,6 +196,9 @@ if __name__ == "__main__":
         "How many certificates expire in 2026?",
         "What are the test requirements for section 4?",
         "For German certificates, what is the warranty policy?",
+        "hi",
+        "who are you?",
+        "download this URL: https://example.com/cert.pdf",
         ""
     ]
 

@@ -138,26 +138,45 @@ def extract_answer_value(buffer: str) -> Optional[str]:
     Incrementally extracts the decoded text of the JSON 'answer' field from a
     partial streamed buffer.
 
-    Unlike a full-value regex, this latches as soon as `"answer": "` begins and
-    returns everything decoded so far (including incomplete values), so callers
-    can emit deltas token-by-token without waiting for the closing quote.
+    Handles reasoning blocks (<think>...</think>), JSON schemas with 'question' or
+    other keys before 'answer', and escaped characters in partial strings.
     """
     if not buffer:
         return None
-    brace = buffer.rfind("{")
-    region = buffer[brace:] if brace != -1 else buffer
-    m = _ANSWER_FIELD_START_RE.search(region)
-    if not m:
+
+    # Strip thinking block if present to isolate JSON payload
+    clean_buf = buffer
+    if "</think>" in clean_buf:
+        clean_buf = clean_buf.split("</think>", 1)[1]
+    elif "<think>" in clean_buf:
+        # Still inside thinking block
         return None
-    raw = region[m.end():]
-    end = _find_unescaped_quote(raw)
-    if end != -1:
-        raw = raw[:end]
-    cleaned = _trim_incomplete_escape(raw)
-    try:
-        return json.loads('"' + cleaned + '"')
-    except Exception:
-        return None
+
+    # Search for "answer": " anywhere in the clean buffer
+    m = _ANSWER_FIELD_START_RE.search(clean_buf)
+    if m:
+        raw = clean_buf[m.end():]
+        end = _find_unescaped_quote(raw)
+        if end != -1:
+            raw = raw[:end]
+        cleaned = _trim_incomplete_escape(raw)
+        cleaned_escaped = (
+            cleaned.replace("\r", "\\r")
+            .replace("\n", "\\n")
+            .replace("\t", "\\t")
+        )
+        try:
+            return json.loads('"' + cleaned_escaped + '"')
+        except Exception:
+            return cleaned.replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
+
+    # If the response is plain text (does not start with '{' or '```')
+    s_buf = clean_buf.strip()
+    if s_buf and not s_buf.startswith("{") and not s_buf.startswith("```"):
+        if not s_buf.startswith('"') and not s_buf.startswith("</think"):
+            return s_buf
+
+    return None
 
 
 def parse_qa_response(buffer: str, query: str) -> tuple:
@@ -182,15 +201,23 @@ def parse_qa_response(buffer: str, query: str) -> tuple:
         return "", []
 
 
-def stream_synthesize_answer(system_prompt: str, user_prompt: str, query: str):
+def stream_synthesize_answer(
+    system_prompt: str,
+    user_prompt: str,
+    query: str,
+    disable_thinking: bool = False,
+):
     """
     Streams a citation-backed answer generation token-by-token.
 
-    The raw model output (a JSON QAResponseSchema payload, usually preceded by a
-    long reasoning/thinking block in deep-thinking mode) is buffered. Only the
-    growing JSON 'answer' field is surfaced to the caller so the UI renders clean
-    progressive text; the pre-answer reasoning text is emitted separately so the
-    UI can show live progress during the (often lengthy) thinking phase.
+    Surfaces progressive text token-by-token as the JSON 'answer' field populates,
+    while yielding raw thinking tokens separately during the reasoning phase.
+
+    Args:
+        system_prompt: System instructions for the completion.
+        user_prompt:   User-facing query / instruction payload.
+        query:         Original user question (used for final QAResponseSchema validation).
+        disable_thinking: True for fast non-thinking mode (e.g. casual replies).
 
     Yields event dicts:
       {"type": "thinking", "text": <raw reasoning tokens>}
@@ -201,21 +228,31 @@ def stream_synthesize_answer(system_prompt: str, user_prompt: str, query: str):
 
     buffer = ""
     last_answer = ""
-    answer_started = False
+    in_thinking_block = False
+
     for token in generate_stream(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
-        disable_thinking=False,
+        disable_thinking=disable_thinking,
     ):
         buffer += token
-        if not answer_started:
-            brace = buffer.rfind("{")
-            region = buffer[brace:] if brace != -1 else buffer
-            if _ANSWER_FIELD_START_RE.search(region) is None:
-                if token.strip():
-                    yield {"type": "thinking", "text": token}
-                continue
-            answer_started = True
+
+        # Handle live thinking events
+        if "<think>" in token or (in_thinking_block and "</think>" not in token):
+            in_thinking_block = True
+            if not disable_thinking:
+                clean_think = token.replace("<think>", "").replace("</think>", "")
+                if clean_think:
+                    yield {"type": "thinking", "text": clean_think}
+            continue
+        elif "</think>" in token:
+            in_thinking_block = False
+            if not disable_thinking:
+                clean_think = token.split("</think>", 1)[0].replace("<think>", "")
+                if clean_think:
+                    yield {"type": "thinking", "text": clean_think}
+
+        # Extract progressive answer text
         current = extract_answer_value(buffer)
         if current and len(current) > len(last_answer):
             delta = current[len(last_answer):]
@@ -224,13 +261,14 @@ def stream_synthesize_answer(system_prompt: str, user_prompt: str, query: str):
                 yield {"type": "token", "text": delta}
 
     answer, citations = parse_qa_response(buffer, query)
-    if not last_answer and answer:
-        # Progressive extraction never latched (e.g. malformed partial JSON);
-        # surface the final parsed answer in one shot.
-        yield {"type": "token", "text": answer}
+    final_answer = answer or last_answer
+    
+    if not last_answer and final_answer:
+        yield {"type": "token", "text": final_answer}
+
     yield {
         "type": "synthesis_done",
-        "answer": answer or last_answer,
+        "answer": final_answer,
         "citations": citations,
     }
 

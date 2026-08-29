@@ -426,6 +426,7 @@ def save_certificate_to_db(
             existing.exp_date = exp_dt
             existing.cert_link = cert_link
             existing.file_name = file_name
+            existing.created_at = datetime.utcnow()
             # Replace the old vector chunks so retrieval reflects the new content.
             db.query(CertificateChunk).filter(CertificateChunk.certificate_id == cert_id).delete()
             metadata_record = existing
@@ -474,12 +475,13 @@ def save_certificate_to_db(
         db.add_all(chunk_records)
         db.commit()
         db.refresh(metadata_record)
+        metadata_record._is_updated = updated
         action = "Updated" if updated else "Successfully persisted"
         logger.info(f" {action} Certificate '{cert_id}' with {len(chunk_records)} chunks to PostgreSQL.")
         
-        # Trigger automated backup
-        from storage.backup import export_database_to_sql
-        export_database_to_sql()
+        # Trigger automated backup in background thread
+        from storage.backup import trigger_async_backup
+        trigger_async_backup()
         
         return metadata_record
     except Exception as e:

@@ -102,3 +102,45 @@ PUBLIC_HOST: str = os.getenv("PUBLIC_HOST", "34.158.150.51")
 API_PORT: int = int(os.getenv("API_PORT", "8000"))
 PUBLIC_API_URL: str = os.getenv("PUBLIC_API_URL", f"http://{PUBLIC_HOST}:{API_PORT}")
 
+# ── Autonomous Background Scheduler ──────────────────────────────────────────
+# Seconds between autonomous ingestion job runs (default 24 hours).
+AUTONOMOUS_INGESTION_INTERVAL_SECONDS: int = int(
+    os.getenv("AUTONOMOUS_INGESTION_INTERVAL_SECONDS", str(24 * 60 * 60))
+)
+# Optional target URL downloaded each autonomous run (empty string = job logs and skips).
+AUTONOMOUS_INGESTION_TARGET_URL: str = os.getenv("AUTONOMOUS_INGESTION_TARGET_URL", "")
+
+# ── Autonomous PDF Discovery (Scraper) ───────────────────────────────────────
+# Fetcher backend: "auto" (default) tries the fast requests fetcher first and
+# transparently retries with headless Chromium when the HTML crawl finds no
+# candidate links (JS-rendered portals). "html" or "playwright" force a specific
+# backend. Playwright requires the playwright package + `playwright install
+# chromium` + system deps in the runtime image.
+SCRAPER_FETCHER: str = os.getenv("SCRAPER_FETCHER", "auto")
+# Optional transient session cookie header for authenticated portals. Used
+# in-memory only and NEVER logged, stored, or returned by the API. Leave empty
+# for public portals. Prefer passing it per-run from the CONTROL page instead of
+# baking it into the environment.
+SCRAPER_COOKIE_HEADER: str = os.getenv("SCRAPER_COOKIE_HEADER", "")
+# Crawl budget.
+SCRAPER_MAX_PAGES: int = int(os.getenv("SCRAPER_MAX_PAGES", "10"))
+SCRAPER_MAX_DEPTH: int = int(os.getenv("SCRAPER_MAX_DEPTH", "2"))
+SCRAPER_TIMEOUT_SECONDS: int = int(os.getenv("SCRAPER_TIMEOUT_SECONDS", "30"))
+SCRAPER_USER_AGENT: str = os.getenv(
+    "SCRAPER_USER_AGENT", "RFComplianceBot/1.0 (compliance document discovery)"
+)
+SCRAPER_POLITE_DELAY_SECONDS: float = float(os.getenv("SCRAPER_POLITE_DELAY_SECONDS", "0.5"))
+SCRAPER_BLOCKED_KEYWORDS: tuple = (
+    "login", "logout", "signin", "signup", "register", "password", "account",
+    "privacy", "terms", "contact", "about", "sitemap", "help", "faq", "career",
+    "news", "press", "javascript:", "mailto:", "tel:",
+)
+SCRAPER_ALLOWED_KEYWORDS: tuple = (
+    "certificate", "certif", "homologat", "homologation", "compliance",
+    "conformity", "approval", "attestation", "document", "pdf", "download",
+)
+# Run the agentic LLM link-selection step (Phase B).
+SCRAPER_USE_LLM_FILTER: bool = os.getenv("SCRAPER_USE_LLM_FILTER", "1") == "1"
+# Append-only manifest of already-fetched URLs (dedup across runs).
+SCRAPER_FETCHED_MANIFEST: str = os.path.join(BASE_DIR, "data", "agent", "fetched_urls.json")
+

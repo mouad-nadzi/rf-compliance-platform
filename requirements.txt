@@ -32,13 +32,20 @@ bitsandbytes
 pdf2image
 Pillow
 openpyxl
+# Embedded-text extraction for the scraper's RF-certificate relevance gate.
+pypdf
 
 # ── API & Web ────────────────────────────────────────────────────────────────
 fastapi
 uvicorn
 python-multipart
 httpx
+requests
 streamlit
+apscheduler
+# Headless browser for JS-rendered document portals (SCRAPER_FETCHER="playwright").
+# Requires `playwright install chromium` + system deps in the runtime image.
+playwright
 
 # ── Database & Vector Storage ────────────────────────────────────────────────
 psycopg2-binary

@@ -49,7 +49,6 @@ def _blocking_stream(job_id: str, status_ph, thinking_ph, msg_ph):
     """
     answer = ""
     thinking = ""
-    t0 = time.time()
     with api_client.stream("GET", f"/api/v1/chat/stream/{job_id}") as resp:
         for line in resp.iter_lines():
             if not line or not line.startswith("data: "):
@@ -61,20 +60,36 @@ def _blocking_stream(job_id: str, status_ph, thinking_ph, msg_ph):
             etype = evt.get("type")
             if etype == "token":
                 answer += evt.get("text", "")
-                msg_ph.markdown(answer)
+                if msg_ph is not None:
+                    msg_ph.markdown(answer)
             elif etype == "thinking":
                 thinking += evt.get("text", "")
                 preview = thinking[-400:]
-                thinking_ph.markdown(
-                    f"<div style='color:#94a3b8;font-size:0.85em;white-space:pre-wrap;'>Reasoning: {preview}</div>",
-                    unsafe_allow_html=True,
-                )
+                if thinking_ph is not None:
+                    thinking_ph.markdown(
+                        f"<div style='color:#94a3b8;font-size:0.85em;white-space:pre-wrap;'>Reasoning: {preview}</div>",
+                        unsafe_allow_html=True,
+                    )
             elif etype == "status":
-                status_ph.caption(f"{evt.get('message', '')}  ({int(time.time() - t0)}s)")
+                msg = evt.get("message", "")
+                if msg and status_ph is not None:
+                    status_ph.markdown(
+                        f"<div style='color:#3b82f6;font-size:0.85em;margin-bottom:6px;font-weight:500;'>{msg}</div>",
+                        unsafe_allow_html=True,
+                    )
             elif etype == "done":
+                if status_ph is not None:
+                    status_ph.empty()
+                if thinking_ph is not None:
+                    thinking_ph.empty()
                 return answer, evt
             elif etype == "error":
-                msg_ph.markdown(evt.get("message", "Chat failed."))
+                if status_ph is not None:
+                    status_ph.empty()
+                if thinking_ph is not None:
+                    thinking_ph.empty()
+                if msg_ph is not None:
+                    msg_ph.markdown(evt.get("message", "Chat failed."))
                 return answer, {"type": "done", "answer": evt.get("message", "")}
     return answer, {"type": "done", "answer": answer or "No response received."}
 
@@ -604,63 +619,63 @@ def _create_new_session():
 
 
 def _render_session_panel():
-    """Renders the chat-session list in the native Streamlit sidebar."""
-    st.markdown(
-        """
-        <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 1px; margin-bottom: 10px; text-transform: uppercase;">
-            CHAT SESSIONS
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    """Renders the chat-session panel inside a single outer card box with internal scrolling."""
+    with st.container(border=True):
+        st.markdown(
+            """
+            <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 1px; margin-bottom: 10px; text-transform: uppercase;">
+                CHAT SESSIONS
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    if st.button("+ New Chat", key="new_chat_btn", use_container_width=True):
-        new_id = _create_new_session()
-        if new_id:
-            st.session_state.current_session_id = new_id
-            st.session_state.show_wrapper = True
-            st.rerun()
-
-    sessions = _fetch_sessions()
-    st.session_state.chat_sessions = sessions
-
-    st.markdown(
-        "<div style='height: 10px;'></div>",
-        unsafe_allow_html=True,
-    )
-
-    if not sessions:
-        st.caption("No sessions yet. Start a new chat.")
-        return
-
-    for s in sessions:
-        sid = s["id"]
-        title = s["title"] or "New chat"
-        is_active = sid == st.session_state.current_session_id
-        if s.get("frozen"):
-            title = f"{title}  [full]"
-        row = st.columns([5, 1])
-        with row[0]:
-            if is_active:
-                st.markdown(
-                    f'<div class="sess-item sess-item-active">{title}</div>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                if st.button(title, key=f"sess_btn_{sid}", use_container_width=True):
-                    st.session_state.current_session_id = sid
-                    st.session_state.show_wrapper = True
-                    st.rerun()
-        with row[1]:
-            if st.button("x", key=f"sess_del_{sid}", help="Delete session", use_container_width=True):
-                try:
-                    api_client.delete(f"/api/v1/chat/sessions/{sid}")
-                except Exception:
-                    pass
-                if st.session_state.current_session_id == sid:
-                    st.session_state.current_session_id = None
-                    st.session_state.show_wrapper = False
+        if st.button("+ New Chat", key="new_chat_btn", use_container_width=True, type="primary"):
+            new_id = _create_new_session()
+            if new_id:
+                st.session_state.current_session_id = new_id
+                st.session_state.show_wrapper = True
                 st.rerun()
+
+        sessions = _fetch_sessions()
+        st.session_state.chat_sessions = sessions
+
+        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+
+        if not sessions:
+            st.caption("No sessions yet. Start a new chat.")
+            return
+
+        # Fixed-height scrollable container matching chat window height
+        with st.container(height=CHAT_MESSAGES_HEIGHT, border=False):
+            for s in sessions:
+                sid = s["id"]
+                title = s["title"] or "New chat"
+                is_active = sid == st.session_state.current_session_id
+                if s.get("frozen"):
+                    title = f"{title}  [full]"
+                row = st.columns([5, 1])
+                with row[0]:
+                    if is_active:
+                        st.markdown(
+                            f'<div class="sess-item sess-item-active">{title}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        if st.button(title, key=f"sess_btn_{sid}", use_container_width=True):
+                            st.session_state.current_session_id = sid
+                            st.session_state.show_wrapper = True
+                            st.rerun()
+                with row[1]:
+                    if st.button("x", key=f"sess_del_{sid}", help="Delete session", use_container_width=True):
+                        try:
+                            api_client.delete(f"/api/v1/chat/sessions/{sid}")
+                        except Exception:
+                            pass
+                        if st.session_state.current_session_id == sid:
+                            st.session_state.current_session_id = None
+                            st.session_state.show_wrapper = False
+                        st.rerun()
 
 
 def _render_chat_window(
@@ -769,36 +784,73 @@ def _render_chat_window(
         width=0,
     )
 
-    if active_query:
-        # Submit a background job, then block on the SSE stream and render
-        # progress live into the placeholders above the typing box.
+    active_job_id = st.session_state.get("active_job_id")
+
+    if active_query or (active_job_id and not active_query):
+        # Submit a background job or resume an in-flight background job, then
+        # block on the SSE stream and render progress live into placeholders.
+        _turn_handled = False
         try:
-            job_resp = api_client.post(
-                "/api/v1/chat/stream",
-                json={"query": active_query, "session_id": session_id},
-            )
-            if job_resp.status_code == 200:
-                data = job_resp.json()
-                job_id = data.get("job_id")
-                if job_id:
-                    st.session_state.current_session_id = data.get("session_id") or session_id
-                    st.session_state.show_wrapper = True
-                    if stream_ph is not None:
-                        _blocking_stream(job_id, status_ph, thinking_ph, stream_ph)
-                    st.session_state.optimistic_messages = []
+            if active_query:
+                job_resp = api_client.post(
+                    "/api/v1/chat/stream",
+                    json={"query": active_query, "session_id": session_id},
+                )
+                if job_resp.status_code == 200:
+                    data = job_resp.json()
+                    job_id = data.get("job_id")
+                    if job_id:
+                        st.session_state.active_job_id = job_id
+                        st.session_state.active_job_session_id = data.get("session_id") or session_id
+                        st.session_state.current_session_id = data.get("session_id") or session_id
+                        st.session_state.show_wrapper = True
+                        if stream_ph is not None:
+                            _blocking_stream(job_id, status_ph, thinking_ph, stream_ph)
+                        st.session_state.active_job_id = None
+                        st.session_state.active_job_session_id = None
+                        st.session_state.optimistic_messages = []
+                        _turn_handled = True
+                    else:
+                        # Frozen session or immediate rejection: surface backend message.
+                        st.session_state.current_session_id = data.get("session_id") or session_id
+                        st.session_state.show_wrapper = True
+                        if stream_ph is not None:
+                            stream_ph.markdown(data.get("answer") or "Chat unavailable.")
+                        st.session_state.optimistic_messages = []
+                        _turn_handled = True
                 else:
-                    # Frozen session or immediate rejection: surface backend message.
-                    st.session_state.current_session_id = data.get("session_id") or session_id
-                    st.session_state.show_wrapper = True
-                    if stream_ph is not None:
-                        stream_ph.markdown(data.get("answer") or "Chat unavailable.")
+                    st.error(f"Chat request failed: {job_resp.text[:300]}")
                     st.session_state.optimistic_messages = []
-            else:
-                st.error(f"Chat request failed: {job_resp.text[:300]}")
+            elif active_job_id:
+                # Resuming an in-flight background streaming job across reruns/session switches!
+                with progress_ph.container():
+                    with st.chat_message("assistant"):
+                        status_ph = st.empty()
+                        thinking_ph = st.empty()
+                        stream_ph = st.empty()
+                        stream_ph.markdown(
+                            '<div class="thinking-dots"><span></span><span></span><span></span></div>',
+                            unsafe_allow_html=True,
+                        )
+                _blocking_stream(active_job_id, status_ph, thinking_ph, stream_ph)
+                st.session_state.active_job_id = None
+                st.session_state.active_job_session_id = None
                 st.session_state.optimistic_messages = []
+                _turn_handled = True
         except Exception as e:
             st.error(f"Error during Q&A: {str(e)}")
             st.session_state.optimistic_messages = []
+            st.session_state.active_job_id = None
+
+        # Re-run once after a handled turn. The sidebar was rendered BEFORE the
+        # session was created (so it missed the new session) and the typing box was
+        # rendered DISABLED while the turn's optimistic message was pending. One
+        # rerun re-syncs both from server state. Chat-input widget values are cleared
+        # first so the same query is never re-submitted.
+        if _turn_handled:
+            st.session_state.pop("chat_input_conv", None)
+            st.session_state.pop("chat_input_landing", None)
+            st.rerun()
     return active_query
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -827,7 +879,7 @@ with nav_col1:
 with nav_col2:
     selected_nav = st.radio(
         "NAVIGATION",
-        ["HOME", "DATABASES"],
+        ["HOME", "ASSISTANT", "AUTOMATIONS"],
         index=0,
         horizontal=True,
         label_visibility="collapsed",
@@ -962,7 +1014,155 @@ def _index_document_chunks(data: dict, file_name: str) -> list:
     return chunks
 
 
-if selected_nav == "HOME":
+@st.fragment(run_every="3s")
+def _render_autonomous_run_status():
+    """Polls an in-flight autonomous discovery run and renders result buckets."""
+    run_id = st.session_state.get("active_autonomous_run")
+    if not run_id:
+        return
+    run = None
+    try:
+        resp = api_client.get(f"/api/v1/agent/autonomous/runs/{run_id}", timeout=15)
+        if resp.status_code == 200:
+            run = resp.json()
+    except Exception:
+        run = None
+    if run is None:
+        st.warning("Autonomous run expired or not found.")
+        st.session_state.pop("active_autonomous_run", None)
+        return
+
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    st.markdown(f"**Run `{run_id[:8]}...`**  ·  `{run.get('status', '')}`")
+    if run.get("target_url"):
+        st.caption(f"Target: {run['target_url']}")
+
+    if run.get("status") == "RUNNING":
+        st.caption("Discovering and downloading target PDFs...")
+        return
+
+    if run.get("status") == "ERROR":
+        st.error(f"Run error: {run.get('error') or 'unknown'}")
+    else:
+        result = run.get("result")
+        if isinstance(result, str):
+            st.markdown(f"**Result:** {result}")
+        elif isinstance(result, dict):
+            st.markdown(f"**Result:** {result.get('summary', '')}")
+            downloaded = result.get("downloaded_paths") or []
+            skipped = result.get("skipped_existing") or []
+            failed = result.get("failed_verification") or []
+            irrelevant = result.get("irrelevant") or []
+            staged = result.get("staged_proposals") or []
+            if downloaded:
+                st.markdown("**Downloaded (new):**")
+                for path in downloaded:
+                    st.code(path)
+            if staged:
+                st.markdown(f"**Staged for approval ({len(staged)}):**")
+                st.caption("Approve them in Pending Agent Actions below to run OCR -> extraction -> persistence into the certificates table.")
+            if irrelevant:
+                st.markdown(f"**Dropped - not an RF certificate ({len(irrelevant)}):**")
+                for url in irrelevant:
+                    st.caption(url)
+            if skipped:
+                st.markdown(f"**Already in database - skipped ({len(skipped)}):**")
+                for url in skipped:
+                    st.caption(url)
+            if failed:
+                st.markdown(f"**Failed verification ({len(failed)}):**")
+                for url in failed:
+                    st.caption(url)
+
+    if st.button("Clear", key="clear_autonomous_run", use_container_width=True):
+        st.session_state.pop("active_autonomous_run", None)
+        st.rerun()
+
+
+def _on_scheduler_config_change():
+    """Auto-apply scheduler config (on/off + require_approval + interval) immediately, no save button."""
+    card_id = "autonomous_scheduler"
+    enabled = bool(st.session_state.get(f"{card_id}_enabled_toggle", True))
+    require_approval = bool(st.session_state.get(f"{card_id}_require_approval_toggle", True))
+    hours = int(st.session_state.get(f"{card_id}_interval_hours", 24) or 24)
+    try:
+        resp = api_client.post(
+            "/api/v1/agent/autonomous/config",
+            json={
+                "enabled": enabled,
+                "require_approval": require_approval,
+                "interval_seconds": hours * 3600,
+            },
+            timeout=30,
+        )
+        st.session_state[f"_{card_id}_cfg_updated"] = resp.status_code == 200
+        st.session_state[f"_{card_id}_cfg_error"] = None if resp.status_code == 200 else resp.text[:200]
+    except Exception as exc:
+        st.session_state[f"_{card_id}_cfg_updated"] = False
+        st.session_state[f"_{card_id}_cfg_error"] = str(exc)
+
+
+def render_automation_card(config, on_change_callback=None):
+    """
+    Reusable UI component that renders a standardized automation configuration card.
+    Supports any AutomationConfig instance (system jobs or agent-created automations).
+    """
+    card_id = getattr(config, "id", "automation")
+    with st.container(border=True):
+        st.markdown(
+            f"""
+            <div style="font-family: 'Outfit', sans-serif; font-size: 1.05rem; font-weight: 700; color: #0f172a; margin-bottom: 2px;">
+                {getattr(config, "title", "Automation Configuration")}
+            </div>
+            <div style="color: #64748b; font-size: 0.82rem; margin-bottom: 14px;">
+                {getattr(config, "description", "")}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        col_en, col_app = st.columns(2)
+        with col_en:
+            st.toggle(
+                "Scheduled ingestion enabled",
+                value=bool(getattr(config, "enabled", True)),
+                key=f"{card_id}_enabled_toggle",
+                on_change=on_change_callback,
+                help="Enable or disable recurring background ingestion. Changes apply immediately.",
+            )
+        with col_app:
+            st.toggle(
+                "Require staged approval",
+                value=bool(getattr(config, "require_approval", True)),
+                key=f"{card_id}_require_approval_toggle",
+                on_change=on_change_callback,
+                help="When ON, discovered documents create staged proposals in Pending Agent Actions for human approval. When OFF, autonomous ingestion directly parses and persists documents into the database.",
+            )
+
+        st.number_input(
+            "Interval (hours)",
+            min_value=1,
+            max_value=168,
+            step=1,
+            value=max(1, int(getattr(config, "interval_hours", 24) or 24)),
+            key=f"{card_id}_interval_hours",
+            on_change=on_change_callback,
+            help="How often the scheduled job runs. Minimum 1 hour. Changes apply immediately.",
+        )
+
+        st.session_state.pop(f"_{card_id}_cfg_updated", None)
+        if st.session_state.get(f"_{card_id}_cfg_error"):
+            st.error(f"Config apply failed: {st.session_state.pop(f'_{card_id}_cfg_error', '')}")
+
+        if getattr(config, "running", False):
+            next_info = getattr(config, "next_run_time", None) or "scheduled"
+            st.caption(f"Next scheduled run: {next_info}")
+        else:
+            st.caption("Scheduler state: not running")
+        st.caption("Source URLs are managed in DATABASES > Sources. The scheduled job checks all active sources.")
+
+
+if selected_nav == "ASSISTANT":
     # No auto-selection on load: the app starts on the default landing view.
     # A session is only opened by clicking it in the sidebar or via a new chat.
 
@@ -1049,42 +1249,212 @@ if selected_nav == "HOME":
 # ──────────────────────────────────────────────────────────────────────────────
 # PAGE 3: DATABASES (Database Management & CRUD)
 # ──────────────────────────────────────────────────────────────────────────────
-elif selected_nav == "DATABASES":
+elif selected_nav == "HOME":
     db_nav_col, db_main_col = st.columns([1.2, 3.8])
 
     with db_nav_col:
-        st.markdown(
-            """
-            <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 1px; margin-bottom: 10px; text-transform: uppercase;">
-                DATABASE TABLES
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-        
-        if "selected_db_table" not in st.session_state:
-            st.session_state.selected_db_table = "RF Certificates"
+        with st.container(border=True):
+            st.markdown(
+                """
+                <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 1px; margin-bottom: 10px; text-transform: uppercase;">
+                    DATABASE TABLES
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-        db_table_options = ["RF Certificates", "Authorities", "Suppliers"]
-        selected_db_table = st.selectbox(
-            "Database Table",
-            db_table_options,
-            index=db_table_options.index(st.session_state.selected_db_table) if st.session_state.selected_db_table in db_table_options else 0,
-            key="db_table_select",
-            label_visibility="collapsed",
-            width="stretch",
-        )
-        st.session_state.selected_db_table = selected_db_table
+            if "selected_db_table" not in st.session_state:
+                st.session_state.selected_db_table = "RF Certificates"
+
+            # Discover all database tables dynamically from backend API (excluding internal engine tables & standard core tables)
+            EXCLUDED_INTERNAL_TABLES = {
+                "certificate_chunks", "chat_sessions", "chat_messages", "agent_actions",
+                "workflows", "workflow_runs", "alembic_version",
+                "certificates", "authorities", "authority_lookups",
+                "suppliers", "supplier_lookups", "sources", "agent_memories"
+            }
+            dynamic_custom_tables_map = {}
+            try:
+                tbl_resp = api_client.get("/api/v1/schema/tables")
+                if tbl_resp.status_code == 200:
+                    raw_tables = tbl_resp.json().get("tables", [])
+                    for t in raw_tables:
+                        t_name = t.get("table_name")
+                        if t.get("is_custom") and t_name and t_name not in EXCLUDED_INTERNAL_TABLES:
+                            disp_title = t_name.replace("_", " ").title()
+                            dynamic_custom_tables_map[disp_title] = t_name
+            except Exception:
+                dynamic_custom_tables_map = {}
+
+            base_table_options = ["RF Certificates", "Authorities", "Suppliers", "Sources", "Agent Memories"]
+            custom_table_options = [title for title in dynamic_custom_tables_map.keys() if title not in base_table_options]
+            db_table_options = base_table_options + custom_table_options
+
+            if st.session_state.selected_db_table not in db_table_options and base_table_options:
+                st.session_state.selected_db_table = "RF Certificates"
+
+            with st.container(height=170, border=False):
+                for tbl in db_table_options:
+                    is_active = (st.session_state.selected_db_table == tbl)
+                    btn_type = "primary" if is_active else "secondary"
+                    if st.button(tbl, key=f"nav_tbl_btn_{tbl}", use_container_width=True, type=btn_type):
+                        st.session_state.selected_db_table = tbl
+                        st.rerun()
+
+            selected_db_table = st.session_state.selected_db_table
+
+            # Action buttons for + New and Delete
+            if "show_new_tbl_form" not in st.session_state:
+                st.session_state.show_new_tbl_form = False
+            if "show_del_tbl_form" not in st.session_state:
+                st.session_state.show_del_tbl_form = False
+
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                btn_new_type = "primary" if st.session_state.show_new_tbl_form else "secondary"
+                if st.button("+ New", key="btn_toggle_new_tbl", use_container_width=True, type=btn_new_type):
+                    st.session_state.show_new_tbl_form = not st.session_state.show_new_tbl_form
+                    st.session_state.show_del_tbl_form = False
+                    st.rerun()
+
+            with btn_col2:
+                btn_del_type = "primary" if st.session_state.show_del_tbl_form else "secondary"
+                if st.button("Delete", key="btn_toggle_del_tbl", use_container_width=True, type=btn_del_type):
+                    st.session_state.show_del_tbl_form = not st.session_state.show_del_tbl_form
+                    st.session_state.show_new_tbl_form = False
+                    st.rerun()
+
+            # Quick Table Creation form under + New
+            if st.session_state.show_new_tbl_form:
+                with st.container(border=True):
+                    existing_count = len(custom_table_options) + 1
+                    default_tname = f"New Table {existing_count}"
+                    
+                    tab_m_new, tab_i_new = st.tabs(["Custom Table", "Import File"])
+
+                    with tab_m_new:
+                        c_tbl_name = st.text_input("Table Name", value=default_tname, key="create_tbl_name")
+                        cols_input = st.text_input("Columns (comma-separated)", placeholder="e.g. vendor_code, audit_score, inspector", key="create_cols_input")
+                        c_sub, c_can = st.columns(2)
+                        with c_sub:
+                            if st.button("Create Table", type="primary", use_container_width=True, key="btn_create_custom_tbl"):
+                                t_clean = c_tbl_name.strip()
+                                if not t_clean:
+                                    st.error("Enter table name first.")
+                                else:
+                                    parsed_cols = [c.strip() for c in cols_input.split(",") if c.strip()]
+                                    if parsed_cols:
+                                        target_cols = [{"name": c, "type": "string"} for c in parsed_cols]
+                                    else:
+                                        target_cols = [
+                                            {"name": "Column 1", "type": "string"},
+                                            {"name": "Column 2", "type": "string"},
+                                            {"name": "Column 3", "type": "string"},
+                                            {"name": "Column 4", "type": "string"},
+                                        ]
+                                    try:
+                                        res = api_client.post("/api/v1/schema/tables", json={"table_name": t_clean, "columns": target_cols})
+                                        if res.status_code == 200:
+                                            disp_title = t_clean.replace("_", " ").title()
+                                            st.session_state.selected_db_table = disp_title
+                                            st.session_state.show_new_tbl_form = False
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Failed: {res.text}")
+                                    except Exception as e:
+                                        st.error(f"Error creating table: {e}")
+                        with c_can:
+                            if st.button("Cancel", use_container_width=True, key="btn_cancel_new_tbl"):
+                                st.session_state.show_new_tbl_form = False
+                                st.rerun()
+
+                    with tab_i_new:
+                        imp_tname_val = st.text_input("Table Name (optional)", placeholder="e.g. Vendor Audits", key="create_imp_tbl_name")
+                        up_new_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "xls"], key="up_file_create_new_tbl")
+                        i_sub, i_can = st.columns(2)
+                        with i_sub:
+                            if st.button("Import & Create", type="primary", use_container_width=True, key="btn_import_create_custom_tbl"):
+                                if not up_new_file:
+                                    st.error("Choose a CSV or Excel file first.")
+                                else:
+                                    try:
+                                        import io
+                                        import re
+                                        file_bytes = up_new_file.getvalue()
+                                        filename_clean = os.path.splitext(up_new_file.name)[0]
+                                        target_tname = imp_tname_val.strip() if imp_tname_val.strip() else filename_clean.replace("_", " ").title()
+                                        raw_tbl_key = re.sub(r"[^a-zA-Z0-9_]", "_", target_tname.lower()).strip("_")
+                                        
+                                        if up_new_file.name.lower().endswith(".csv"):
+                                            preview_df = pd.read_csv(io.BytesIO(file_bytes))
+                                        else:
+                                            preview_df = pd.read_excel(io.BytesIO(file_bytes))
+                                        
+                                        extracted_cols = [{"name": str(c).strip(), "type": "string"} for c in preview_df.columns if str(c).strip() and str(c).strip() != "id"]
+                                        if not extracted_cols:
+                                            extracted_cols = [{"name": "Column 1", "type": "string"}]
+                                        
+                                        create_res = api_client.post("/api/v1/schema/tables", json={"table_name": target_tname, "columns": extracted_cols})
+                                        if create_res.status_code in (200, 201):
+                                            files_payload = {"file": (up_new_file.name, file_bytes, up_new_file.type)}
+                                            imp_res = api_client.post(f"/api/v1/schema/tables/{raw_tbl_key}/import", files=files_payload)
+                                            st.session_state.selected_db_table = target_tname
+                                            st.session_state.show_new_tbl_form = False
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Failed to create table schema: {create_res.text}")
+                                    except Exception as e_imp:
+                                        st.error(f"Import creation error: {e_imp}")
+                        with i_can:
+                            if st.button("Cancel", use_container_width=True, key="btn_cancel_imp_new_tbl"):
+                                st.session_state.show_new_tbl_form = False
+                                st.rerun()
+
+            if st.session_state.show_del_tbl_form:
+                with st.container(border=True):
+                    st.markdown(f"**Delete Table: `{selected_db_table}`**")
+                    is_custom_tbl_selected = (selected_db_table in dynamic_custom_tables_map) or (selected_db_table not in base_table_options)
+                    if not is_custom_tbl_selected:
+                        st.warning(f"Standard table '{selected_db_table}' is a core system table and cannot be deleted.")
+                    else:
+                        target_raw_tbl = dynamic_custom_tables_map.get(selected_db_table) or selected_db_table.lower().replace(" ", "_")
+                        st.error(f"Are you sure you want to permanently delete table '{selected_db_table}' and all its data?")
+                        d_sub, d_can = st.columns(2)
+                        with d_sub:
+                            if st.button("Confirm Delete", type="primary", use_container_width=True, key="btn_confirm_drop_tbl"):
+                                try:
+                                    drop_res = api_client.delete(f"/api/v1/schema/tables/{target_raw_tbl}")
+                                    if drop_res.status_code == 200:
+                                        st.success(f"Table '{selected_db_table}' deleted!")
+                                        st.session_state.selected_db_table = "RF Certificates"
+                                        st.session_state.show_del_tbl_form = False
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Delete failed: {drop_res.text}")
+                                except Exception as e_drop:
+                                    st.error(f"Delete error: {e_drop}")
+                        with d_can:
+                            if st.button("Cancel", use_container_width=True, key="btn_cancel_del_tbl"):
+                                st.session_state.show_del_tbl_form = False
+                                st.rerun()
 
         # ── Left-side Table Actions & Management Tools ─────────────────────────
         db_table_meta = {
             "RF Certificates": ("cert_table", "cert_table_df", "certificates"),
             "Authorities": ("auth_table", "auth_table_df", "authorities"),
             "Suppliers": ("supp_table", "supp_table_df", "suppliers"),
+            "Sources": ("src_table", "src_table_df", "sources"),
+            "Agent Memories": ("mem_table", "mem_table_df", "memories"),
         }
-        db_widget_key, db_df_key, db_prefix = db_table_meta[selected_db_table]
+        is_custom_table = (selected_db_table in dynamic_custom_tables_map) or (selected_db_table not in db_table_meta)
+        if is_custom_table:
+            raw_c_name = dynamic_custom_tables_map.get(selected_db_table) or selected_db_table.lower().replace(" ", "_")
+            db_widget_key, db_df_key, db_prefix = f"dyn_{raw_c_name}_table", f"dyn_{raw_c_name}_df", raw_c_name
+        else:
+            raw_c_name = None
+            db_widget_key, db_df_key, db_prefix = db_table_meta[selected_db_table]
 
-        c_header, c_refresh_icon, c_filter_icon, c_add_icon = st.columns([3, 1, 1, 1])
+        c_header, c_refresh_icon, c_filter_icon = st.columns([4, 1, 1])
         with c_header:
             st.markdown(
                 """
@@ -1099,14 +1469,15 @@ elif selected_nav == "DATABASES":
                 pass
         with c_filter_icon:
             if st.button(":material/filter_alt:", key="filter_icon_btn", help="Add Filter", use_container_width=True):
-                filter_list_key = {"RF Certificates": "cert_filters", "Authorities": "auth_filters", "Suppliers": "supp_filters"}[selected_db_table]
-                default_col = {"RF Certificates": "component", "Authorities": "canonical_authority", "Suppliers": "canonical_supplier"}[selected_db_table]
-                st.session_state[filter_list_key].append({"col": default_col, "value": ""})
-                st.rerun()
-        with c_add_icon:
-            if st.button(":material/add:", key="add_row_icon", help="Add Row", use_container_width=True):
-                add_flag = {"RF Certificates": "show_add_row", "Authorities": "show_add_auth", "Suppliers": "show_add_supp"}[selected_db_table]
-                st.session_state[add_flag] = True
+                if is_custom_table:
+                    filter_list_key = f"dyn_{raw_c_name}_filters"
+                    if filter_list_key not in st.session_state:
+                        st.session_state[filter_list_key] = []
+                    st.session_state[filter_list_key].append({"col": "id", "value": ""})
+                else:
+                    filter_list_key = {"RF Certificates": "cert_filters", "Authorities": "auth_filters", "Suppliers": "supp_filters", "Sources": "src_filters", "Agent Memories": "mem_filters"}[selected_db_table]
+                    default_col = {"RF Certificates": "component", "Authorities": "canonical_authority", "Suppliers": "canonical_supplier", "Sources": "url", "Agent Memories": "memory_key"}[selected_db_table]
+                    st.session_state[filter_list_key].append({"col": default_col, "value": ""})
                 st.rerun()
 
         # Selected-row actions (hidden until a row is selected)
@@ -1115,8 +1486,6 @@ elif selected_nav == "DATABASES":
         db_table_df = st.session_state.get(db_df_key)
         db_has_selection = db_table_df is not None and not db_table_df.empty and bool(db_sel_rows)
         db_selected_df = db_table_df.iloc[list(db_sel_rows)] if db_has_selection else None
-
-
 
         if selected_db_table == "RF Certificates":
             file_import_key = f"file_import_uploader_{st.session_state.get('file_import_reset', 0)}"
@@ -1259,6 +1628,80 @@ elif selected_nav == "DATABASES":
                     except Exception as e_imp:
                         st.error(f"Error reading file: {e_imp}")
 
+        elif selected_db_table != "RF Certificates":
+            with st.expander("Edit Table Columns", expanded=False):
+                tab_ren, tab_add, tab_del = st.tabs(["Rename", "Add New", "Delete"])
+                
+                try:
+                    c_info_resp = api_client.get(f"/api/v1/schema/tables/{raw_c_name}/data?limit=1")
+                    dyn_cols_list = [c["column_name"] for c in c_info_resp.json().get("columns", []) if c["column_name"] not in ("id", "created_at")] if c_info_resp.status_code == 200 else []
+                except Exception:
+                    dyn_cols_list = []
+
+                with tab_ren:
+                    if not dyn_cols_list:
+                        st.caption("No columns available to rename.")
+                    else:
+                        old_c = st.selectbox("Select Column", dyn_cols_list, key=f"sel_ren_col_{raw_c_name}")
+                        new_c = st.text_input("New Name", key=f"inp_ren_col_{raw_c_name}", placeholder="e.g. Inspector Name")
+                        if st.button("Rename Column", type="primary", use_container_width=True, key=f"btn_apply_ren_{raw_c_name}"):
+                            if old_c and new_c.strip():
+                                try:
+                                    r_res = api_client.put(f"/api/v1/schema/tables/{raw_c_name}/columns/{old_c}/rename", json={"new_name": new_c.strip()})
+                                    if r_res.status_code == 200:
+                                        st.success(f"Renamed '{old_c}' to '{new_c.strip()}'!")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Failed: {r_res.text}")
+                                except Exception as e_r:
+                                    st.error(f"Error: {e_r}")
+
+                with tab_add:
+                    add_c = st.text_input("Column Name", key=f"inp_add_col_{raw_c_name}", placeholder="e.g. Inspector Name")
+                    if st.button("Add Column", type="primary", use_container_width=True, key=f"btn_apply_add_{raw_c_name}"):
+                        if add_c.strip():
+                            try:
+                                a_res = api_client.post(f"/api/v1/schema/tables/{raw_c_name}/columns", json={"column_name": add_c.strip(), "column_type": "string"})
+                                if a_res.status_code == 200:
+                                    st.success(f"Added column '{add_c.strip()}'!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Failed: {a_res.text}")
+                            except Exception as e_a:
+                                st.error(f"Error: {e_a}")
+
+                with tab_del:
+                    if not dyn_cols_list:
+                        st.caption("No columns available to delete.")
+                    else:
+                        del_c = st.selectbox("Select Column to Delete", dyn_cols_list, key=f"sel_del_col_{raw_c_name}")
+                        if st.button("Delete Column", type="primary", use_container_width=True, key=f"btn_apply_del_{raw_c_name}"):
+                            if del_c:
+                                try:
+                                    d_res = api_client.delete(f"/api/v1/schema/tables/{raw_c_name}/columns/{del_c}")
+                                    if d_res.status_code == 200:
+                                        st.success(f"Deleted column '{del_c}'!")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Failed: {d_res.text}")
+                                except Exception as e_d:
+                                    st.error(f"Error: {e_d}")
+
+            with st.expander("Import CSV / Excel Records", expanded=False):
+                up_file = st.file_uploader("Choose CSV/Excel file", type=["csv", "xlsx", "xls"], key=f"up_file_{raw_c_name}")
+                if up_file and st.button("Import File", type="primary", use_container_width=True, key=f"btn_imp_{raw_c_name}"):
+                    try:
+                        files = {"file": (up_file.name, up_file.getvalue(), up_file.type)}
+                        imp_res = api_client.post(f"/api/v1/schema/tables/{raw_c_name}/import", files=files)
+                        if imp_res.status_code == 200:
+                            cnt = imp_res.json().get("imported_count", 0)
+                            st.success(f"Imported {cnt} records into {selected_db_table}!")
+                            st.rerun()
+                        else:
+                            st.error(f"Import failed: {imp_res.text}")
+                    except Exception as e_imp:
+                        st.error(f"Import error: {e_imp}")
+
         if db_has_selection:
             st.markdown(f"**{len(db_selected_df)} record(s) selected**")
             if selected_db_table == "RF Certificates":
@@ -1298,6 +1741,39 @@ elif selected_nav == "DATABASES":
                         for auth_id in ids_to_delete:
                             try:
                                 resp = api_client.delete(f"/api/v1/lookups/authorities/{auth_id}")
+                                if resp.status_code == 200:
+                                    deleted_count += 1
+                                else:
+                                    failed_count += 1
+                            except Exception:
+                                failed_count += 1
+                    elif selected_db_table == "Sources":
+                        ids_to_delete = db_selected_df["id"].astype(int).tolist()
+                        for src_id in ids_to_delete:
+                            try:
+                                resp = api_client.delete(f"/api/v1/sources/{src_id}")
+                                if resp.status_code == 200:
+                                    deleted_count += 1
+                                else:
+                                    failed_count += 1
+                            except Exception:
+                                failed_count += 1
+                    elif selected_db_table == "Agent Memories":
+                        ids_to_delete = db_selected_df["id"].astype(int).tolist()
+                        for mem_id in ids_to_delete:
+                            try:
+                                resp = api_client.delete(f"/api/v1/memories/{mem_id}")
+                                if resp.status_code == 200:
+                                    deleted_count += 1
+                                else:
+                                    failed_count += 1
+                            except Exception:
+                                failed_count += 1
+                    elif is_custom_table:
+                        ids_to_delete = db_selected_df["id"].astype(int).tolist()
+                        for rec_id in ids_to_delete:
+                            try:
+                                resp = api_client.delete(f"/api/v1/schema/tables/{raw_c_name}/data/{rec_id}")
                                 if resp.status_code == 200:
                                     deleted_count += 1
                                 else:
@@ -1578,146 +2054,85 @@ elif selected_nav == "DATABASES":
         # TABLE 2: AUTHORITIES LOOKUP TABLE
         # ──────────────────────────────────────────────────────────────────────
         elif selected_db_table == "Authorities":
-            
             try:
                 auth_resp = api_client.get("/api/v1/lookups/authorities")
                 if auth_resp.status_code == 200:
                     auth_list = auth_resp.json().get("authorities", [])
-                    if auth_list:
-                        df_auth = pd.DataFrame(auth_list)
-                        
-                        # Format aliases list as comma-separated string
-                        if "aliases" in df_auth.columns:
-                            df_auth["aliases"] = df_auth["aliases"].apply(
-                                lambda a: ", ".join(a) if isinstance(a, list) and a else "—"
-                            )
-                        
-                        col_stats1, col_stats2 = st.columns(2)
-                        with col_stats1:
-                            st.metric("Total Authorities Registered", len(df_auth))
-                        with col_stats2:
-                            unique_countries = df_auth["country"].nunique() if "country" in df_auth.columns else 0
-                            st.metric("Unique Countries", unique_countries)
+                    df_auth = pd.DataFrame(auth_list) if auth_list else pd.DataFrame(columns=["canonical_authority", "abbreviation", "country", "standard_validity_years", "aliases"])
+                    
+                    if "aliases" in df_auth.columns:
+                        df_auth["aliases"] = df_auth["aliases"].apply(
+                            lambda a: ", ".join(a) if isinstance(a, list) and a else ""
+                        )
+                    
+                    col_stats1, col_stats2 = st.columns(2)
+                    with col_stats1:
+                        st.metric("Total Authorities Registered", len(df_auth))
+                    with col_stats2:
+                        unique_countries = df_auth["country"].nunique() if "country" in df_auth.columns else 0
+                        st.metric("Unique Countries", unique_countries)
 
-                        auth_filter_cols = [c for c in ["canonical_authority", "abbreviation", "country", "standard_validity_years", "aliases"] if c in df_auth.columns]
+                    auth_filter_cols = [c for c in ["canonical_authority", "abbreviation", "country", "standard_validity_years", "aliases"] if c in df_auth.columns]
+                    if auth_list:
                         df_auth = render_table_filters(df_auth, "auth_filters", auth_filter_cols)
 
-                        auth_display_cols = [c for c in ["canonical_authority", "abbreviation", "country", "standard_validity_years"] if c in df_auth.columns]
-                        df_auth_display = df_auth[auth_display_cols]
+                    auth_display_cols = [c for c in ["canonical_authority", "abbreviation", "country", "standard_validity_years", "aliases"] if c in df_auth.columns]
+                    df_auth_display = df_auth[auth_display_cols]
+                    st.session_state["auth_table_df"] = df_auth
 
-                        st.session_state["auth_table_df"] = df_auth
+                    edited_auth_df = st.data_editor(
+                        df_auth_display,
+                        use_container_width=True,
+                        hide_index=True,
+                        num_rows="dynamic",
+                        key="auth_table_editor",
+                        column_config={
+                            "canonical_authority": "Canonical Authority",
+                            "abbreviation": "Abbreviation",
+                            "country": "Country",
+                            "standard_validity_years": "Standard Validity (Years)",
+                            "aliases": "Aliases",
+                        }
+                    )
 
-                        st.dataframe(
-                            df_auth_display,
-                            use_container_width=True,
-                            hide_index=True,
-                            on_select="rerun",
-                            selection_mode="multi-row",
-                            key="auth_table",
-                            column_config={
-                                "canonical_authority": "Canonical Authority",
-                                "abbreviation": "Abbreviation",
-                                "country": "Country",
-                                "standard_validity_years": "Standard Validity (Years)"
+                    if st.button("Save Changes to Database", type="primary", use_container_width=True, key="save_auth_grid"):
+                        saved_count = 0
+                        failed_count = 0
+                        for idx, row in edited_auth_df.iterrows():
+                            c_auth = str(row.get("canonical_authority") or "").strip()
+                            if not c_auth:
+                                continue
+                            aliases_val = [x.strip() for x in str(row.get("aliases") or "").split(",") if x.strip() and x.strip() != "—"]
+                            a_payload = {
+                                "canonical_authority": c_auth,
+                                "abbreviation": str(row.get("abbreviation") or "").strip() or None,
+                                "country": str(row.get("country") or "").strip() or None,
+                                "standard_validity_years": row.get("standard_validity_years") if pd.notna(row.get("standard_validity_years")) else None,
+                                "aliases": aliases_val,
                             }
-                        )
-
-                        # ── Quick Add Authority Row ─────────────────────────────
-                        if st.session_state.get("show_add_auth"):
-                            auth_new_df = st.data_editor(
-                                pd.DataFrame(columns=["canonical_authority", "abbreviation", "country", "standard_validity_years", "aliases"]),
-                                use_container_width=True,
-                                hide_index=True,
-                                num_rows="dynamic",
-                                key="new_auth_editor",
-                                column_config={
-                                    "canonical_authority": "Canonical Authority",
-                                    "abbreviation": "Abbreviation",
-                                    "country": "Country",
-                                    "standard_validity_years": "Standard Validity (Years)",
-                                    "aliases": "Aliases",
-                                },
-                            )
-                            c_save, c_cancel = st.columns(2)
-                            with c_save:
-                                if st.button("Save New Rows", type="primary", use_container_width=True):
-                                    saved_count = 0
-                                    failed_count = 0
-                                    for _, a_row in auth_new_df.iterrows():
-                                        if not (a_row.get("canonical_authority") or "").strip():
-                                            continue
-                                        a_payload = {
-                                            "canonical_authority": a_row.get("canonical_authority") or None,
-                                            "abbreviation": a_row.get("abbreviation") or None,
-                                            "country": a_row.get("country") or None,
-                                            "standard_validity_years": a_row.get("standard_validity_years") or None,
-                                            "aliases": [x.strip() for x in str(a_row.get("aliases") or "").split(",") if x.strip()],
-                                        }
-                                        try:
-                                            a_resp = api_client.post("/api/v1/lookups/authorities", json=a_payload)
-                                            if a_resp.status_code == 200:
-                                                saved_count += 1
-                                            else:
-                                                failed_count += 1
-                                        except Exception:
-                                            failed_count += 1
-                                    st.success(f"Saved {saved_count} new record(s).")
-                                    if failed_count:
-                                        st.error(f"Failed to save {failed_count} record(s).")
-                                    st.session_state.show_add_auth = False
-                                    st.rerun()
-                            with c_cancel:
-                                if st.button("Cancel", use_container_width=True):
-                                    st.session_state.show_add_auth = False
-                                    st.rerun()
-
-                        # ── Edit Selected Authority ──────────────────────────────
-                        auth_edit_row = st.session_state.get("edit_row")
-                        if auth_edit_row and st.session_state.get("edit_table") == "Authorities":
-                            auth_edit_cols = [c for c in ["canonical_authority", "abbreviation", "country", "standard_validity_years", "aliases"] if c in auth_edit_row]
-                            auth_edit_df = pd.DataFrame([auth_edit_row])[auth_edit_cols]
-                            st.markdown(f"**Editing authority `{auth_edit_row.get('canonical_authority')}`**")
-                            auth_edit = st.data_editor(
-                                auth_edit_df,
-                                use_container_width=True,
-                                hide_index=True,
-                                num_rows="fixed",
-                                key="edit_auth_editor",
-                                column_config={
-                                    "canonical_authority": "Canonical Authority",
-                                    "abbreviation": "Abbreviation",
-                                    "country": "Country",
-                                    "standard_validity_years": "Standard Validity (Years)",
-                                    "aliases": "Aliases",
-                                },
-                            )
-                            c_save, c_cancel = st.columns(2)
-                            with c_save:
-                                if st.button("Save Changes", type="primary", use_container_width=True):
-                                    a_row = auth_edit.iloc[0]
-                                    a_payload = {
-                                        "canonical_authority": a_row.get("canonical_authority") or None,
-                                        "abbreviation": a_row.get("abbreviation") or None,
-                                        "country": a_row.get("country") or None,
-                                        "standard_validity_years": a_row.get("standard_validity_years") or None,
-                                        "aliases": [x.strip() for x in str(a_row.get("aliases") or "").split(",") if x.strip()],
-                                    }
-                                    try:
-                                        a_resp = api_client.put(f"/api/v1/lookups/authorities/{auth_edit_row['id']}", json=a_payload)
-                                        if a_resp.status_code == 200:
-                                            st.success("Authority updated.")
-                                        else:
-                                            st.error(f"Update failed: {a_resp.text}")
-                                    except Exception as e:
-                                        st.error(f"Update error: {e}")
-                                    st.session_state.pop("edit_row", None)
-                                    st.rerun()
-                            with c_cancel:
-                                if st.button("Cancel", use_container_width=True):
-                                    st.session_state.pop("edit_row", None)
-                                    st.rerun()
-                    else:
-                        st.info("No authority lookup records currently seeded in the database.")
+                            if idx < len(auth_list) and "id" in auth_list[idx]:
+                                auth_id = auth_list[idx]["id"]
+                                try:
+                                    res = api_client.put(f"/api/v1/lookups/authorities/{auth_id}", json=a_payload)
+                                    if res.status_code == 200:
+                                        saved_count += 1
+                                    else:
+                                        failed_count += 1
+                                except Exception:
+                                    failed_count += 1
+                            else:
+                                try:
+                                    res = api_client.post("/api/v1/lookups/authorities", json=a_payload)
+                                    if res.status_code == 200:
+                                        saved_count += 1
+                                    else:
+                                        failed_count += 1
+                                except Exception:
+                                    failed_count += 1
+                        st.success(f"Saved {saved_count} authority record(s)!")
+                        if failed_count:
+                            st.error(f"Failed to save {failed_count} record(s).")
+                        st.rerun()
                 else:
                     st.error("Failed to load authority lookups from API.")
             except Exception as e_auth:
@@ -1727,127 +2142,448 @@ elif selected_nav == "DATABASES":
         # TABLE 3: SUPPLIERS LOOKUP TABLE
         # ──────────────────────────────────────────────────────────────────────
         elif selected_db_table == "Suppliers":
-            
             try:
                 supp_resp = api_client.get("/api/v1/lookups/suppliers")
                 if supp_resp.status_code == 200:
                     supp_list = supp_resp.json().get("suppliers", [])
-                    if supp_list:
-                        df_supp = pd.DataFrame(supp_list)
-                        
-                        # Format aliases list as comma-separated string
-                        if "aliases" in df_supp.columns:
-                            df_supp["aliases"] = df_supp["aliases"].apply(
-                                lambda a: ", ".join(a) if isinstance(a, list) and a else "—"
-                            )
-
-                        st.metric("Total Global Suppliers Registered", len(df_supp))
-
-                        supp_filter_cols = [c for c in ["canonical_supplier", "aliases"] if c in df_supp.columns]
-                        df_supp = render_table_filters(df_supp, "supp_filters", supp_filter_cols)
-
-                        supp_display_cols = [c for c in ["canonical_supplier"] if c in df_supp.columns]
-                        df_supp_display = df_supp[supp_display_cols]
-
-                        st.session_state["supp_table_df"] = df_supp
-
-                        st.dataframe(
-                            df_supp_display,
-                            use_container_width=True,
-                            hide_index=True,
-                            on_select="rerun",
-                            selection_mode="multi-row",
-                            key="supp_table",
-                            column_config={
-                                "canonical_supplier": "Canonical Supplier"
-                            }
+                    df_supp = pd.DataFrame(supp_list) if supp_list else pd.DataFrame(columns=["canonical_supplier", "aliases"])
+                    
+                    if "aliases" in df_supp.columns:
+                        df_supp["aliases"] = df_supp["aliases"].apply(
+                            lambda a: ", ".join(a) if isinstance(a, list) and a else ""
                         )
 
-                        # ── Quick Add Supplier Row ─────────────────────────────
-                        if st.session_state.get("show_add_supp"):
-                            supp_new_df = st.data_editor(
-                                pd.DataFrame(columns=["canonical_supplier", "aliases"]),
-                                use_container_width=True,
-                                hide_index=True,
-                                num_rows="dynamic",
-                                key="new_supp_editor",
-                                column_config={
-                                    "canonical_supplier": "Canonical Supplier",
-                                    "aliases": "Aliases",
-                                },
-                            )
-                            c_save, c_cancel = st.columns(2)
-                            with c_save:
-                                if st.button("Save New Rows", type="primary", use_container_width=True):
-                                    saved_count = 0
-                                    failed_count = 0
-                                    for _, s_row in supp_new_df.iterrows():
-                                        if not (s_row.get("canonical_supplier") or "").strip():
-                                            continue
-                                        s_payload = {
-                                            "canonical_supplier": s_row.get("canonical_supplier") or None,
-                                            "aliases": [x.strip() for x in str(s_row.get("aliases") or "").split(",") if x.strip()],
-                                        }
-                                        try:
-                                            s_resp = api_client.post("/api/v1/lookups/suppliers", json=s_payload)
-                                            if s_resp.status_code == 200:
-                                                saved_count += 1
-                                            else:
-                                                failed_count += 1
-                                        except Exception:
-                                            failed_count += 1
-                                    st.success(f"Saved {saved_count} new record(s).")
-                                    if failed_count:
-                                        st.error(f"Failed to save {failed_count} record(s).")
-                                    st.session_state.show_add_supp = False
-                                    st.rerun()
-                            with c_cancel:
-                                if st.button("Cancel", use_container_width=True):
-                                    st.session_state.show_add_supp = False
-                                    st.rerun()
+                    st.metric("Total Global Suppliers Registered", len(df_supp))
 
-                        # ── Edit Selected Supplier ──────────────────────────────
-                        supp_edit_row = st.session_state.get("edit_row")
-                        if supp_edit_row and st.session_state.get("edit_table") == "Suppliers":
-                            supp_edit_cols = [c for c in ["canonical_supplier", "aliases"] if c in supp_edit_row]
-                            supp_edit_df = pd.DataFrame([supp_edit_row])[supp_edit_cols]
-                            st.markdown(f"**Editing supplier `{supp_edit_row.get('canonical_supplier')}`**")
-                            supp_edit = st.data_editor(
-                                supp_edit_df,
-                                use_container_width=True,
-                                hide_index=True,
-                                num_rows="fixed",
-                                key="edit_supp_editor",
-                                column_config={
-                                    "canonical_supplier": "Canonical Supplier",
-                                    "aliases": "Aliases",
-                                },
-                            )
-                            c_save, c_cancel = st.columns(2)
-                            with c_save:
-                                if st.button("Save Changes", type="primary", use_container_width=True):
-                                    s_row = supp_edit.iloc[0]
-                                    s_payload = {
-                                        "canonical_supplier": s_row.get("canonical_supplier") or None,
-                                        "aliases": [x.strip() for x in str(s_row.get("aliases") or "").split(",") if x.strip()],
-                                    }
-                                    try:
-                                        s_resp = api_client.put(f"/api/v1/lookups/suppliers/{supp_edit_row['id']}", json=s_payload)
-                                        if s_resp.status_code == 200:
-                                            st.success("Supplier updated.")
-                                        else:
-                                            st.error(f"Update failed: {s_resp.text}")
-                                    except Exception as e:
-                                        st.error(f"Update error: {e}")
-                                    st.session_state.pop("edit_row", None)
-                                    st.rerun()
-                            with c_cancel:
-                                if st.button("Cancel", use_container_width=True):
-                                    st.session_state.pop("edit_row", None)
-                                    st.rerun()
-                    else:
-                        st.info("No supplier lookup records currently seeded in the database.")
+                    supp_filter_cols = [c for c in ["canonical_supplier", "aliases"] if c in df_supp.columns]
+                    if supp_list:
+                        df_supp = render_table_filters(df_supp, "supp_filters", supp_filter_cols)
+
+                    supp_display_cols = [c for c in ["canonical_supplier", "aliases"] if c in df_supp.columns]
+                    df_supp_display = df_supp[supp_display_cols]
+                    st.session_state["supp_table_df"] = df_supp
+
+                    edited_supp_df = st.data_editor(
+                        df_supp_display,
+                        use_container_width=True,
+                        hide_index=True,
+                        num_rows="dynamic",
+                        key="supp_table_editor",
+                        column_config={
+                            "canonical_supplier": "Canonical Supplier",
+                            "aliases": "Aliases",
+                        }
+                    )
+
+                    if st.button("Save Changes to Database", type="primary", use_container_width=True, key="save_supp_grid"):
+                        saved_count = 0
+                        failed_count = 0
+                        for idx, row in edited_supp_df.iterrows():
+                            c_supp = str(row.get("canonical_supplier") or "").strip()
+                            if not c_supp:
+                                continue
+                            aliases_val = [x.strip() for x in str(row.get("aliases") or "").split(",") if x.strip() and x.strip() != "—"]
+                            s_payload = {
+                                "canonical_supplier": c_supp,
+                                "aliases": aliases_val,
+                            }
+                            if idx < len(supp_list) and "id" in supp_list[idx]:
+                                supp_id = supp_list[idx]["id"]
+                                try:
+                                    res = api_client.put(f"/api/v1/lookups/suppliers/{supp_id}", json=s_payload)
+                                    if res.status_code == 200:
+                                        saved_count += 1
+                                    else:
+                                        failed_count += 1
+                                except Exception:
+                                    failed_count += 1
+                            else:
+                                try:
+                                    res = api_client.post("/api/v1/lookups/suppliers", json=s_payload)
+                                    if res.status_code == 200:
+                                        saved_count += 1
+                                    else:
+                                        failed_count += 1
+                                except Exception:
+                                    failed_count += 1
+                        st.success(f"Saved {saved_count} supplier record(s)!")
+                        if failed_count:
+                            st.error(f"Failed to save {failed_count} record(s).")
+                        st.rerun()
                 else:
                     st.error("Failed to load supplier lookups from API.")
             except Exception as e_supp:
                 st.error(f"Error fetching supplier lookups: {e_supp}")
+
+        # ──────────────────────────────────────────────────────────────────────
+        # TABLE 4: SOURCES (autonomous scraper source URLs)
+        # ──────────────────────────────────────────────────────────────────────
+        elif selected_db_table == "Sources":
+            try:
+                src_resp = api_client.get("/api/v1/sources", timeout=15)
+                if src_resp.status_code == 200:
+                    src_list = src_resp.json().get("sources", [])
+                    df_src = pd.DataFrame(src_list) if src_list else pd.DataFrame(columns=["url", "description", "cookie_header", "active"])
+                    
+                    if "active" in df_src.columns:
+                        df_src["active"] = df_src["active"].apply(lambda v: True if v is True or v == "Yes" or str(v).lower() == "true" else False)
+
+                    st.session_state["src_table_df"] = df_src
+
+                    m1, m2 = st.columns(2)
+                    with m1:
+                        st.metric("Total Sources", len(df_src))
+                    with m2:
+                        st.metric("Active Sources", int((df_src["active"] == True).sum()) if "active" in df_src.columns else len(df_src))
+
+                    cols_to_show = [c for c in ["url", "description", "cookie_header", "active"] if c in df_src.columns]
+                    df_src_display = df_src[cols_to_show]
+
+                    edited_src_df = st.data_editor(
+                        df_src_display,
+                        use_container_width=True,
+                        hide_index=True,
+                        num_rows="dynamic",
+                        key="src_table_editor",
+                        column_config={
+                            "url": "Source URL",
+                            "description": "Description",
+                            "cookie_header": "Cookie / Auth Token",
+                            "active": "Active",
+                        },
+                    )
+
+                    if st.button("Save Changes to Database", type="primary", use_container_width=True, key="save_src_grid"):
+                        saved_count = 0
+                        failed_count = 0
+                        for idx, row in edited_src_df.iterrows():
+                            url_val = str(row.get("url") or "").strip()
+                            if not url_val:
+                                continue
+                            s_payload = {
+                                "url": url_val,
+                                "description": str(row.get("description") or "").strip() or None,
+                                "cookie_header": str(row.get("cookie_header") or "").strip() or None,
+                                "active": bool(row.get("active")),
+                            }
+                            if idx < len(src_list) and "id" in src_list[idx]:
+                                src_id = src_list[idx]["id"]
+                                try:
+                                    res = api_client.put(f"/api/v1/sources/{src_id}", json=s_payload)
+                                    if res.status_code == 200:
+                                        saved_count += 1
+                                    else:
+                                        failed_count += 1
+                                except Exception:
+                                    failed_count += 1
+                            else:
+                                try:
+                                    res = api_client.post("/api/v1/sources", json=s_payload)
+                                    if res.status_code == 200:
+                                        saved_count += 1
+                                    else:
+                                        failed_count += 1
+                                except Exception:
+                                    failed_count += 1
+                        st.success(f"Saved {saved_count} source record(s)!")
+                        if failed_count:
+                            st.error(f"Failed to save {failed_count} record(s).")
+                        st.rerun()
+                else:
+                    st.error("Failed to load sources from API.")
+            except Exception as e_src:
+                st.error(f"Error fetching sources: {e_src}")
+
+        # ──────────────────────────────────────────────────────────────────────
+        # TABLE 5: AGENT LONG-TERM MEMORIES TABLE
+        # ──────────────────────────────────────────────────────────────────────
+        elif selected_db_table == "Agent Memories":
+            try:
+                m_resp = api_client.get("/api/v1/memories")
+                if m_resp.status_code == 200:
+                    mem_list = m_resp.json().get("memories", [])
+                    df_mem = pd.DataFrame(mem_list) if mem_list else pd.DataFrame(columns=["memory_key", "fact_text"])
+
+                    col_stats1, col_stats2 = st.columns(2)
+                    with col_stats1:
+                        st.metric("Total Memories Recorded", len(df_mem))
+                    with col_stats2:
+                        categories_count = df_mem["memory_key"].nunique() if "memory_key" in df_mem.columns else 0
+                        st.metric("Memory Categories", categories_count)
+
+                    mem_filter_cols = [c for c in ["memory_key", "fact_text"] if c in df_mem.columns]
+                    if mem_list:
+                        df_mem = render_table_filters(df_mem, "mem_filters", mem_filter_cols)
+
+                    mem_display_cols = [c for c in ["memory_key", "fact_text"] if c in df_mem.columns]
+                    df_mem_display = df_mem[mem_display_cols]
+                    st.session_state["mem_table_df"] = df_mem
+
+                    edited_mem_df = st.data_editor(
+                        df_mem_display,
+                        use_container_width=True,
+                        hide_index=True,
+                        num_rows="dynamic",
+                        key="mem_table_editor",
+                        column_config={
+                            "memory_key": "Category",
+                            "fact_text": "Memory Fact / Directive",
+                        },
+                    )
+
+                    if st.button("Save Changes to Database", type="primary", use_container_width=True, key="save_mem_grid"):
+                        saved_count = 0
+                        failed_count = 0
+                        for idx, row in edited_mem_df.iterrows():
+                            m_key = str(row.get("memory_key") or "").strip()
+                            m_fact = str(row.get("fact_text") or "").strip()
+                            if not m_key or not m_fact:
+                                continue
+                            m_payload = {
+                                "memory_key": m_key,
+                                "fact_text": m_fact,
+                            }
+                            if idx < len(mem_list) and "id" in mem_list[idx]:
+                                mem_id = mem_list[idx]["id"]
+                                try:
+                                    res = api_client.put(f"/api/v1/memories/{mem_id}", json=m_payload)
+                                    if res.status_code == 200:
+                                        saved_count += 1
+                                    else:
+                                        failed_count += 1
+                                except Exception:
+                                    failed_count += 1
+                            else:
+                                try:
+                                    res = api_client.post("/api/v1/memories", json=m_payload)
+                                    if res.status_code == 200:
+                                        saved_count += 1
+                                    else:
+                                        failed_count += 1
+                                except Exception:
+                                    failed_count += 1
+                        st.success(f"Saved {saved_count} memory record(s)!")
+                        if failed_count:
+                            st.error(f"Failed to save {failed_count} record(s).")
+                        st.rerun()
+                else:
+                    st.error("Failed to load agent memories from API.")
+            except Exception as e_mem:
+                st.error(f"Error fetching agent memories: {e_mem}")
+
+        # ──────────────────────────────────────────────────────────────────────
+        # DYNAMIC CUSTOM TABLE VIEW
+        # ──────────────────────────────────────────────────────────────────────
+        elif is_custom_table:
+            try:
+                dyn_resp = api_client.get(f"/api/v1/schema/tables/{raw_c_name}/data")
+                if dyn_resp.status_code == 200:
+                    d_payload = dyn_resp.json()
+                    records = d_payload.get("records", [])
+                    columns_meta = d_payload.get("columns", [])
+
+                    col_stats1, col_stats2 = st.columns(2)
+                    with col_stats1:
+                        st.metric("Total Records", len(records))
+                    with col_stats2:
+                        st.metric("Table Columns", len(columns_meta))
+
+                    dyn_disp_cols = [c["column_name"] for c in columns_meta if c["column_name"] != "id"]
+                    df_dyn = pd.DataFrame(records) if records else pd.DataFrame(columns=dyn_disp_cols)
+                    filter_cols = [c["column_name"] for c in columns_meta if c["column_name"] != "id"]
+                    if records:
+                        df_dyn = render_table_filters(df_dyn, f"dyn_{raw_c_name}_filters", filter_cols)
+
+                    st.session_state[f"dyn_{raw_c_name}_df"] = df_dyn
+
+                    df_dyn_display = df_dyn[dyn_disp_cols] if (dyn_disp_cols and records) else df_dyn
+
+                    dyn_col_config = {col: col.replace("_", " ").title() for col in dyn_disp_cols}
+
+                    edited_dyn_df = st.data_editor(
+                        df_dyn_display,
+                        use_container_width=True,
+                        hide_index=True,
+                        num_rows="dynamic",
+                        key=f"dyn_{raw_c_name}_editor",
+                        column_config=dyn_col_config,
+                    )
+
+                    if st.button("Save Changes to Database", type="primary", use_container_width=True, key=f"save_dyn_{raw_c_name}_grid"):
+                        saved_count = 0
+                        failed_count = 0
+                        for idx, row in edited_dyn_df.iterrows():
+                            row_dict = row.to_dict()
+                            row_dict = {k: ("" if pd.isna(v) or v is None else str(v).strip()) for k, v in row_dict.items() if k not in ("id", "created_at")}
+                            if not any(row_dict.values()):
+                                continue
+                            if idx < len(records) and "id" in records[idx]:
+                                row_id = records[idx]["id"]
+                                try:
+                                    res = api_client.put(f"/api/v1/schema/tables/{raw_c_name}/data/{row_id}", json=row_dict)
+                                    if res.status_code == 200:
+                                        saved_count += 1
+                                    else:
+                                        failed_count += 1
+                                except Exception:
+                                    failed_count += 1
+                            else:
+                                try:
+                                    res = api_client.post(f"/api/v1/schema/tables/{raw_c_name}/data", json=row_dict)
+                                    if res.status_code == 200:
+                                        saved_count += 1
+                                    else:
+                                        failed_count += 1
+                                except Exception:
+                                    failed_count += 1
+                        st.success("Spreadsheet saved successfully!")
+                        st.rerun()
+                else:
+                    st.error(f"Failed to load dynamic table '{raw_c_name}' from API.")
+            except Exception as e_dyn:
+                st.error(f"Error fetching dynamic table data: {e_dyn}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PAGE 4: AUTOMATIONS (Agent Proposals & Background Worker)
+# ──────────────────────────────────────────────────────────────────────────────
+elif selected_nav == "AUTOMATIONS":
+    ctrl_nav_col, ctrl_main_col = st.columns([1.2, 3.8])
+
+    # ── Left sidebar: Agent trigger & Pending Agent Actions ──────────────────
+    with ctrl_nav_col:
+        st.markdown(
+            """
+            <div style="font-family: 'Outfit', sans-serif; font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 1px; margin-bottom: 10px; text-transform: uppercase;">
+                AGENT CONTROL
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if st.button("Run Autonomous Scraper Now", key="run_scraper_btn", use_container_width=True):
+            try:
+                scraper_resp = api_client.post(
+                    "/api/v1/agent/autonomous/run",
+                    json={},
+                    timeout=30,
+                )
+                if scraper_resp.status_code == 200:
+                    s_data = scraper_resp.json()
+                    st.session_state.active_autonomous_run = s_data.get("run_id")
+                    st.success(f"Autonomous discovery dispatched (run {s_data.get('run_id', '')[:8]}...).")
+                    st.rerun()
+                else:
+                    st.error(f"Dispatch failed: {scraper_resp.text[:300]}")
+            except Exception as exc:
+                st.error(f"Dispatch error: {exc}")
+
+        _render_autonomous_run_status()
+
+        # ── Pending Agent Actions dashboard ───────────────────────────────────
+        st.markdown(
+            """
+            <div style="font-family: 'Outfit', sans-serif; font-size: 0.95rem; font-weight: 700; color: #0f172a; margin-bottom: 2px; margin-top: 18px;">
+                Pending Agent Actions
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<div style='color:#64748b;font-size:0.8rem;margin-bottom:10px;'>Human-in-the-loop approval - nothing executes until you approve it.</div>",
+            unsafe_allow_html=True,
+        )
+
+        proposals = []
+        try:
+            prop_resp = api_client.get("/api/v1/agent/proposals", timeout=30)
+            if prop_resp.status_code == 200:
+                proposals = prop_resp.json().get("proposals", [])
+            else:
+                st.error(f"Failed to load proposals: {prop_resp.text[:300]}")
+        except Exception as exc:
+            st.error(f"Error loading proposals: {exc}")
+
+        if not proposals:
+            st.caption("No pending proposals requiring human approval.")
+        else:
+            for p in proposals:
+                pid = p.get("proposal_id")
+                ptype = p.get("type", "UNKNOWN")
+                created = p.get("created_at", "")
+                with st.container(border=True):
+                    st.markdown(
+                        f"**{ptype}**  ·  `{pid}`"
+                    )
+
+                    if ptype == "DB_EDIT":
+                        sql_preview = p.get("sql_preview") or "(no SQL preview available)"
+                        st.code(sql_preview, language="sql")
+                    elif ptype == "SEND_EMAIL":
+                        draft_id = (p.get("payload") or {}).get("draft_id")
+                        draft = None
+                        if draft_id:
+                            try:
+                                draft_resp = api_client.get(f"/api/v1/agent/drafts/{draft_id}", timeout=15)
+                                if draft_resp.status_code == 200:
+                                    draft = draft_resp.json()
+                            except Exception:
+                                draft = None
+                        if draft:
+                            st.markdown(f"**To:** {draft.get('recipient', '')}")
+                            st.markdown(f"**Subject:** {draft.get('subject', '')}")
+                            st.markdown("**Body:**")
+                            st.markdown(draft.get("body_content", "") or "_(empty body)_")
+                        else:
+                            st.caption(f"draft_id: {draft_id}")
+                    elif ptype == "INGEST_DOCUMENT":
+                        payload = p.get("payload") or {}
+                        st.markdown(f"**Source URL:** {payload.get('source_url') or '(none)'}")
+                        st.markdown(f"**File:** `{payload.get('file_path') or '?'}`")
+                        st.caption("Approving runs OCR -> extraction -> persistence on this document.")
+                    elif ptype == "AGENT_ACTION":
+                        payload = p.get("payload") or {}
+                        st.markdown(f"**Step:** {payload.get('description') or payload.get('action') or 'agent action'}")
+                        st.markdown(f"**Source URL:** {payload.get('source_url') or '(none)'}")
+                        n_files = len(payload.get("file_paths") or [])
+                        if n_files:
+                            st.caption(f"{n_files} downloaded file(s) ready to be added to the database.")
+                        st.caption("Approving runs the write step (add the downloaded certificates to the database).")
+
+                    c_approve, c_reject = st.columns(2)
+                    with c_approve:
+                        if st.button("Approve", key=f"approve_{pid}", type="primary", use_container_width=True):
+                            try:
+                                ar = api_client.post(f"/api/v1/agent/proposals/{pid}/approve", timeout=300)
+                                if ar.status_code == 200:
+                                    st.success("Proposal approved and executed.")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Approval failed: {ar.text[:300]}")
+                            except Exception as exc:
+                                st.error(f"Approval error: {exc}")
+                    with c_reject:
+                        if st.button("Reject", key=f"reject_{pid}", use_container_width=True):
+                            try:
+                                rr = api_client.post(f"/api/v1/agent/proposals/{pid}/reject", timeout=30)
+                                if rr.status_code == 200:
+                                    st.info("Proposal rejected - nothing was executed.")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Reject failed: {rr.text[:300]}")
+                            except Exception as exc:
+                                st.error(f"Reject error: {exc}")
+
+    # ── Main: Autonomous Scheduler config ────────────────────────────────────
+    with ctrl_main_col:
+        sched_cfg = {}
+        try:
+            cfg_resp = api_client.get("/api/v1/agent/autonomous/config", timeout=15)
+            if cfg_resp.status_code == 200:
+                sched_cfg = cfg_resp.json()
+        except Exception:
+            sched_cfg = {}
+
+        from schemas.automation import AutomationConfig
+        auto_config = AutomationConfig.from_dict(sched_cfg)
+        render_automation_card(auto_config, on_change_callback=_on_scheduler_config_change)

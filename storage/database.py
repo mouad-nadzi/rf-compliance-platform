@@ -72,6 +72,8 @@ def init_db() -> bool:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
             conn.execute(text("ALTER TABLE IF EXISTS authority_lookups DROP CONSTRAINT IF EXISTS authority_lookups_canonical_authority_key;"))
             conn.execute(text("DROP INDEX IF EXISTS authority_lookups_canonical_authority_key;"))
+            conn.execute(text("ALTER TABLE IF EXISTS sources ADD COLUMN IF NOT EXISTS cookie_header TEXT;"))
+            conn.execute(text("ALTER TABLE IF EXISTS certificates ADD COLUMN IF NOT EXISTS cert_link VARCHAR(500);"))
             conn.commit()
 
         # Create tables
@@ -84,6 +86,13 @@ def init_db() -> bool:
             seed_lookup_tables()
         except Exception as seed_err:
             logger.warning(f"Lookup table seeding skipped/failed: {seed_err}")
+
+        # Seed base identity memories into long-term memory store
+        try:
+            from core.agent.memory import seed_base_identity_memories
+            seed_base_identity_memories()
+        except Exception as mem_err:
+            logger.warning(f"Base memory seeding skipped/failed: {mem_err}")
 
         # Auto-restore from db_backup.sql if database is empty but backup file exists
         try:

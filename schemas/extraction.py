@@ -125,3 +125,26 @@ class ChatMessage(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, comment="Message timestamp")
 
     session = relationship("ChatSession", back_populates="messages")
+
+
+class Source(Base):
+    __tablename__ = "sources"
+    __table_args__ = {"extend_existing": True}
+
+    id = Column(Integer, primary_key=True, autoincrement=True, comment="Source row id")
+    url = Column(Text, nullable=False, comment="Portal/database URL to check for documents")
+    description = Column(String(255), nullable=True, comment="Optional human-readable label")
+    active = Column(Boolean, nullable=False, default=True, comment="Whether the autonomous scraper checks this source")
+    cookie_header = Column(Text, nullable=True, comment="Optional HTTP cookie/token header for authenticated portals")
+    created_at = Column(DateTime, default=datetime.utcnow, comment="Timestamp of source record insertion")
+
+
+class AgentMemory(Base):
+    __tablename__ = "agent_memories"
+    __table_args__ = {"extend_existing": True}
+
+    id = Column(Integer, primary_key=True, autoincrement=True, comment="Memory row id")
+    memory_key = Column(String(100), nullable=False, default="preference", comment="Category key: preference, rule, contact, portal_note")
+    fact_text = Column(Text, nullable=False, comment="Persisted long-term fact or user directive")
+    source_session_id = Column(String(100), nullable=True, comment="Optional session ID where memory originated")
+    created_at = Column(DateTime, default=datetime.utcnow, comment="Timestamp when memory was recorded")

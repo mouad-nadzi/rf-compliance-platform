@@ -15,6 +15,7 @@ data/ocr_cache/
 data/uploads/
 data/files/
 data/db_backup.sql
+data/agent/
 
 # Legacy runtime locations (pre-consolidation)
 model_cache/

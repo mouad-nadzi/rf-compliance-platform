@@ -8,12 +8,19 @@ via the BaseLLMEngine hook (_generate_raw).
 """
 
 import logging
+import threading
 from core.registry import get_llm_engine
 
 logger = logging.getLogger(__name__)
 
 # Singleton LLM instance
 _engine_instance = None
+
+#: Serializes ALL LLM inference (chat, extraction, autonomous scrape, etc.).
+#: The llama-cpp engine is single-residency (one process, one context) and is NOT
+#: thread-safe, so every generate_json / generate_stream call through this facade
+#: acquires this lock. RLock allows re-entrancy on the same thread.
+_INFERENCE_LOCK = threading.RLock()
 
 
 def _get_engine():
@@ -51,12 +58,13 @@ def generate_json(
     This is the public API consumed by extractor.py, rag/qa.py, and rag/router.py.
     """
     engine = _get_engine()
-    return engine.generate_json(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        disable_thinking=disable_thinking,
-        max_tokens=max_tokens,
-    )
+    with _INFERENCE_LOCK:
+        return engine.generate_json(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            disable_thinking=disable_thinking,
+            max_tokens=max_tokens,
+        )
 
 
 def generate_stream(
@@ -73,12 +81,13 @@ def generate_stream(
     incrementally; engines without streaming support fall back to a single chunk.
     """
     engine = _get_engine()
-    yield from engine.generate_stream(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        disable_thinking=disable_thinking,
-        max_tokens=max_tokens,
-    )
+    with _INFERENCE_LOCK:
+        yield from engine.generate_stream(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            disable_thinking=disable_thinking,
+            max_tokens=max_tokens,
+        )
 
 
 def unload_llm_engine():

@@ -32,6 +32,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Depends
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import func
 import shutil
 
 from storage.database import get_db, SessionLocal
@@ -231,6 +232,10 @@ async def lifespan(app: FastAPI):
     if _ocr_engine is None:
         _ocr_engine = get_ocr_engine(OCR_ENGINE)
         _ocr_engine.load(CACHE_DIR)
+    # Share the OCR engine with the agent ingestor (step-loop write step / HITL ingest).
+    from core.agent.ingestor import set_ocr_engine
+
+    set_ocr_engine(_ocr_engine)
 
     logger.info(f" Preloading LLM engine '{LLM_ENGINE}' into VRAM...")
     load_llm_engine()
@@ -241,9 +246,25 @@ async def lifespan(app: FastAPI):
 
     logger.info("OCR and LLM engines resident in VRAM; embedding model in RAM.")
 
+    # Start the autonomous background scheduler (APScheduler AsyncIOScheduler).
+    # The ingestion job runs at a configurable interval; failures are contained
+    # inside the job so they can never crash the API. Config (on/off, interval,
+    # persistent URL) is loaded from data/agent/scheduler_config.json (editable
+    # from the CONTROL page), falling back to env/config defaults.
+    try:
+        from core.agent.worker import start_scheduler, shutdown_scheduler
+
+        start_scheduler()
+    except Exception as exc:
+        logger.error(f" Failed to start autonomous scheduler: {exc}")
+
     yield  # This tells FastAPI it's ready to accept requests
 
     logger.info(" Shutting down API...")
+    try:
+        shutdown_scheduler()
+    except Exception as exc:
+        logger.warning(f" Scheduler shutdown error: {exc}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1544,6 +1565,11 @@ async def chat_compliance_query(
 _CHAT_STREAM_JOBS: Dict[str, Dict[str, Any]] = {}
 _CHAT_STREAM_JOBS_LOCK = threading.Lock()
 
+#: In-memory store of manual autonomous-discovery runs (dispatched from the
+#: CONTROL page). Completed runs are purged periodically to bound memory.
+_AUTONOMOUS_RUNS: Dict[str, Dict[str, Any]] = {}
+_AUTONOMOUS_RUNS_LOCK = threading.Lock()
+
 #: Serializes LLM inference across streaming jobs. The llama-cpp engine is
 #: single-residency (one process, one context) and not thread-safe, so only one
 #: RAG job may generate at a time; additional jobs queue until the current one
@@ -1724,6 +1750,618 @@ def stream_chat_job(job_id: str):
                 break
 
     return StreamingResponse(event_iterator(), media_type="text/event-stream")
+
+
+@app.get("/api/v1/sources")
+def list_sources(db: Session = Depends(get_db)):
+    """Lists all scraper source URLs (newest first)."""
+    from schemas.extraction import Source
+
+    rows = db.query(Source).order_by(Source.created_at.desc()).all()
+    return {
+        "sources": [
+            {
+                "id": r.id,
+                "url": r.url,
+                "description": r.description,
+                "active": bool(r.active),
+                "cookie_header": getattr(r, "cookie_header", None),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.post("/api/v1/sources")
+def add_source(payload: dict, db: Session = Depends(get_db)):
+    """Adds a new scraper source URL (case-insensitive uniqueness)."""
+    from schemas.extraction import Source
+
+    url = str((payload or {}).get("url") or "").strip()
+    description = str((payload or {}).get("description") or "").strip() or None
+    active = bool((payload or {}).get("active", True))
+    cookie_header = str((payload or {}).get("cookie_header") or "").strip() or None
+
+    if not url:
+        raise HTTPException(status_code=422, detail="'url' is required.")
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(status_code=422, detail="'url' must start with http:// or https://.")
+
+    existing = db.query(Source).filter(func.lower(Source.url) == url.lower()).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Source URL already exists (id={existing.id}).")
+
+    row = Source(url=url, description=description, active=active, cookie_header=cookie_header)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    logger.info(f" Added scraper source id={row.id}: {url}")
+    return {
+        "id": row.id,
+        "url": row.url,
+        "description": row.description,
+        "active": bool(row.active),
+        "cookie_header": row.cookie_header,
+    }
+
+
+@app.put("/api/v1/sources/{source_id}")
+def update_source(source_id: int, payload: dict, db: Session = Depends(get_db)):
+    """Updates a scraper source (url, description, active, cookie_header)."""
+    from schemas.extraction import Source
+
+    row = db.query(Source).filter(Source.id == source_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Source {source_id} not found.")
+
+    url = payload.get("url")
+    if url is not None:
+        url = str(url).strip()
+        if not url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail="'url' must start with http:// or https://.")
+        clash = db.query(Source).filter(
+            Source.id != source_id, func.lower(Source.url) == url.lower()
+        ).first()
+        if clash:
+            raise HTTPException(status_code=409, detail=f"Another source already uses URL {url}.")
+        row.url = url
+    if "description" in payload:
+        row.description = str(payload.get("description") or "").strip() or None
+    if "active" in payload:
+        row.active = bool(payload.get("active"))
+    if "cookie_header" in payload:
+        row.cookie_header = str(payload.get("cookie_header") or "").strip() or None
+
+    db.commit()
+    logger.info(f" Updated scraper source id={source_id}.")
+    return {
+        "id": row.id,
+        "url": row.url,
+        "description": row.description,
+        "active": bool(row.active),
+        "cookie_header": row.cookie_header,
+    }
+
+
+@app.delete("/api/v1/sources/{source_id}")
+def delete_source(source_id: int, db: Session = Depends(get_db)):
+    """Deletes a scraper source."""
+    from schemas.extraction import Source
+
+    row = db.query(Source).filter(Source.id == source_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Source {source_id} not found.")
+    db.delete(row)
+    db.commit()
+    logger.info(f" Deleted scraper source id={source_id}.")
+    return {"status": "success", "deleted_id": source_id}
+
+
+def _ingest_document_file(file_path: str, source_url: str) -> dict:
+    """Delegates document ingestion to core.agent.ingestor."""
+    from core.agent.ingestor import ingest_document_file
+    return ingest_document_file(file_path, source_url)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Agentic HITL Proposal Routes (DB_EDIT / SEND_EMAIL approval pipeline)
+# ──────────────────────────────────────────────────────────────────────────────
+# Proposals are staged PENDING actions that MUST be human-approved before any
+# write or dispatch executes. Nothing here mutates state without approval.
+
+
+@app.get("/api/v1/agent/proposals")
+def list_agent_proposals():
+    """Returns all PENDING action proposals for UI rendering."""
+    from core.agent.proposals import proposal_manager
+
+    return {"proposals": proposal_manager.list_pending_proposals()}
+
+
+@app.post("/api/v1/agent/proposals/{proposal_id}/approve")
+def approve_agent_proposal(proposal_id: str, db: Session = Depends(get_db)):
+    """
+    Executes an approved proposal inside a strict transaction.
+
+    - DB_EDIT: builds the parameter-bound mutation and runs it in a single
+      PostgreSQL transaction (rollback on any error).
+    - SEND_EMAIL: reads the staged draft from data/agent/drafts/ and marks it
+      dispatched (no live SMTP; dispatch is a HITL-marked action).
+    """
+    from core.agent.proposals import proposal_manager
+    from core.agent.db_editor import build_mutation_sql, execute_mutation
+
+    proposal = proposal_manager.get_proposal(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail=f"Proposal {proposal_id} not found.")
+    if proposal.get("status") != "PENDING":
+        raise HTTPException(status_code=409, detail=f"Proposal is already {proposal.get('status')}.")
+
+    try:
+        if proposal["type"] == "DB_EDIT":
+            payload = proposal.get("payload", {})
+            mutation = build_mutation_sql(
+                op=payload.get("op", ""),
+                table=payload.get("table", ""),
+                values=payload.get("values", {}),
+                row_filter=payload.get("row_filter"),
+            )
+            rowcount = execute_mutation(db, mutation)
+            detail = {
+                "op": mutation["op"],
+                "table": mutation["table"],
+                "rowcount": rowcount,
+                "preview": mutation["preview"],
+            }
+        elif proposal["type"] == "SEND_EMAIL":
+            draft_id = proposal.get("payload", {}).get("draft_id")
+            if not draft_id:
+                raise HTTPException(status_code=422, detail="SEND_EMAIL proposal missing 'draft_id' in payload.")
+            from core.agent.tools import DRAFTS_DIR
+
+            draft_path = os.path.join(DRAFTS_DIR, f"{draft_id}.json")
+            if not os.path.exists(draft_path):
+                raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found in drafts directory.")
+            with open(draft_path, encoding="utf-8") as fh:
+                draft = json.load(fh)
+            draft["status"] = "dispatched"
+            with open(draft_path, "w", encoding="utf-8") as fh:
+                json.dump(draft, fh, indent=2, ensure_ascii=False)
+            detail = {
+                "draft_id": draft_id,
+                "recipient": draft.get("recipient"),
+                "message": "Draft marked as dispatched.",
+            }
+        elif proposal["type"] == "INGEST_DOCUMENT":
+            file_path = proposal.get("payload", {}).get("file_path")
+            source_url = proposal.get("payload", {}).get("source_url")
+            if not file_path or not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail=f"Document file not found: {file_path}")
+            detail = _ingest_document_file(file_path, source_url)
+        elif proposal["type"] == "AGENT_ACTION":
+            # Approving the write-step proposal dispatches the write executor
+            # (OCR -> ingest into the database) in the background; read steps
+            # already ran freely before the approval was requested.
+            from core.agent.agent_loop import dispatch_resolve_write_step
+
+            detail = dispatch_resolve_write_step(proposal)
+        else:
+            raise HTTPException(status_code=422, detail=f"Unsupported proposal type: {proposal['type']}")
+
+        updated = proposal_manager.update_status(proposal_id, "APPROVED")
+        return {
+            "status": "success",
+            "proposal_id": proposal_id,
+            "proposal": updated,
+            "execution": detail,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f" Proposal approval failed for {proposal_id}: {exc}")
+        raise HTTPException(status_code=500, detail=f"Proposal execution failed: {str(exc)}")
+
+
+@app.post("/api/v1/agent/proposals/{proposal_id}/reject")
+def reject_agent_proposal(proposal_id: str):
+    """Marks a proposal as REJECTED with no execution."""
+    from core.agent.proposals import proposal_manager
+
+    try:
+        updated = proposal_manager.update_status(proposal_id, "REJECTED")
+        return {"status": "success", "proposal_id": proposal_id, "proposal": updated}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/api/v1/agent/drafts/{draft_id}")
+def get_agent_draft(draft_id: str):
+    """Returns a staged email draft by id (for the CONTROL dashboard preview)."""
+    from core.agent.tools import DRAFTS_DIR
+
+    draft_path = os.path.join(DRAFTS_DIR, f"{draft_id}.json")
+    if not os.path.exists(draft_path):
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found in drafts directory.")
+    with open(draft_path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+@app.get("/api/v1/agent/autonomous/config")
+async def get_autonomous_config():
+    """Returns the scheduled-ingestion configuration (on/off, interval, persistent URL)."""
+    from core.agent.worker import get_scheduler_status
+
+    return get_scheduler_status()
+
+
+@app.post("/api/v1/agent/autonomous/config")
+async def update_autonomous_config(payload: dict):
+    """
+    Updates the scheduled-ingestion configuration and applies it live.
+
+    Body (all optional): {"enabled": bool, "require_approval": bool, "interval_seconds": int >= 60,
+    "target_url": str}. Persisted to data/agent/scheduler_config.json so it
+    survives restarts. Also affects the manual-run URL fallback.
+    """
+    from core.agent.worker import update_scheduler_config
+
+    enabled = payload.get("enabled")
+    require_approval = payload.get("require_approval")
+    interval_seconds = payload.get("interval_seconds")
+    target_url = payload.get("target_url")
+
+    if enabled is not None and not isinstance(enabled, bool):
+        raise HTTPException(status_code=422, detail="'enabled' must be a boolean.")
+    if require_approval is not None and not isinstance(require_approval, bool):
+        raise HTTPException(status_code=422, detail="'require_approval' must be a boolean.")
+    if interval_seconds is not None:
+        try:
+            interval_seconds = int(interval_seconds)
+            if interval_seconds < 60:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="'interval_seconds' must be an integer >= 60.")
+    if target_url is not None and not isinstance(target_url, str):
+        raise HTTPException(status_code=422, detail="'target_url' must be a string.")
+
+    try:
+        return update_scheduler_config(enabled, require_approval, interval_seconds, target_url)
+    except Exception as exc:
+        logger.error(f" Failed to update autonomous scheduler config: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/v1/agent/autonomous/run")
+def run_autonomous_ingestion(payload: dict | None = None):
+    """
+    Manually dispatches the autonomous PDF discovery + download job.
+
+    Accepts an optional body: {"target_url": "https://portal/listing",
+    "fetcher": "html"|"playwright", "cookie_header": "<session cookie>"}.
+    When target_url is omitted, the job checks ALL active sources in the
+    `sources` table. fetcher selects the fetch backend. cookie_header is a
+    TRANSIENT session cookie applied in-memory only: it is never stored, logged, or
+    returned by the API (the run record only carries a has_cookie flag). The job
+    (discovery -> verify -> dedup -> download, per source) runs in a daemon thread
+    so the request returns immediately with a run_id; progress is polled via
+    GET /api/v1/agent/autonomous/runs/{run_id}.
+    """
+    import threading as _threading
+    from core.agent.worker import autonomous_ingestion_job
+    from server.config import AUTONOMOUS_INGESTION_TARGET_URL, SCRAPER_FETCHER, SCRAPER_COOKIE_HEADER
+
+    body = payload or {}
+    target_url = str(body.get("target_url") or AUTONOMOUS_INGESTION_TARGET_URL or "").strip() or None
+    fetcher = str(body.get("fetcher") or SCRAPER_FETCHER or "auto").strip().lower()
+    cookie_header = str(body.get("cookie_header") or SCRAPER_COOKIE_HEADER or "").strip() or None
+
+    run_id = uuid.uuid4().hex[:12]
+    run = {
+        "run_id": run_id,
+        "status": "RUNNING",
+        "target_url": target_url,
+        "fetcher": fetcher,
+        "has_cookie": bool(cookie_header),  # presence only; the value is never stored
+        "result": None,
+        "error": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "done": False,
+    }
+    with _AUTONOMOUS_RUNS_LOCK:
+        _AUTONOMOUS_RUNS[run_id] = run
+        _purge_stale_autonomous_runs()
+
+    def _runner():
+        try:
+            import asyncio as _asyncio
+            summary = _asyncio.run(
+                autonomous_ingestion_job(target_url, cookie_header=cookie_header, fetcher_type=fetcher)
+            )
+            with _AUTONOMOUS_RUNS_LOCK:
+                run["status"] = "COMPLETED" if summary is not None else "SKIPPED"
+                run["result"] = summary
+                run["done"] = True
+        except Exception as exc:
+            logger.error(f" Manual autonomous ingestion run {run_id} failed: {exc}")
+            with _AUTONOMOUS_RUNS_LOCK:
+                run["status"] = "ERROR"
+                run["error"] = str(exc)
+                run["done"] = True
+
+    _threading.Thread(target=_runner, daemon=True).start()
+    logger.info(f" Manual autonomous ingestion dispatched (run_id={run_id}, fetcher={fetcher}, has_cookie={bool(cookie_header)})")
+    return {"run_id": run_id, "status": "dispatched", "target_url": target_url, "fetcher": fetcher, "has_cookie": bool(cookie_header)}
+
+
+@app.get("/api/v1/agent/autonomous/runs/{run_id}")
+def get_autonomous_run(run_id: str):
+    """Returns the status + result of a manual autonomous discovery run."""
+    with _AUTONOMOUS_RUNS_LOCK:
+        run = _AUTONOMOUS_RUNS.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Autonomous run {run_id} not found.")
+    return run
+
+
+def _ingest_document_file(file_path: str, source_url: str) -> dict:
+    """Delegates to the shared core/agent/ingestor (OCR -> extraction -> persist)."""
+    from core.agent.ingestor import ingest_document_file
+
+    return ingest_document_file(file_path, source_url)
+
+
+def _purge_stale_autonomous_runs(max_age_seconds: int = 1800) -> None:
+    """Drop completed/errored runs older than max_age_seconds to bound memory."""
+    from datetime import datetime as _dt
+
+    now = _dt.now(timezone.utc)
+    stale = [
+        rid for rid, r in _AUTONOMOUS_RUNS.items()
+        if r.get("done") and (now - _dt.fromisoformat(r["created_at"])).total_seconds() > max_age_seconds
+    ]
+    for rid in stale:
+        _AUTONOMOUS_RUNS.pop(rid, None)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# WORKFLOWS API ENDPOINTS (DAG Engine Integration)
+# ──────────────────────────────────────────────────────────────────────────────
+_WORKFLOWS_STORE: Dict[str, Dict[str, Any]] = {}
+_WORKFLOW_RUNS: Dict[str, Dict[str, Any]] = {}
+
+
+@app.get("/api/v1/workflows")
+def list_workflows():
+    """Lists all configured DAG workflows."""
+    return {"workflows": list(_WORKFLOWS_STORE.values())}
+
+
+@app.post("/api/v1/workflows")
+def create_or_update_workflow(payload: dict):
+    """Registers or updates a DAG workflow."""
+    from core.workflow.dag_engine import DAGWorkflow
+    wf = DAGWorkflow.from_dict(payload)
+    _WORKFLOWS_STORE[wf.workflow_id] = wf.to_dict()
+    logger.info(f" Registered DAG workflow '{wf.workflow_id}': {wf.title}")
+    return wf.to_dict()
+
+
+@app.post("/api/v1/workflows/{workflow_id}/execute")
+def execute_workflow_endpoint(workflow_id: str):
+    """Triggers execution of a DAG workflow."""
+    from core.workflow.dag_engine import DAGWorkflow, execute_dag_workflow
+
+    wf_dict = _WORKFLOWS_STORE.get(workflow_id)
+    if not wf_dict:
+        raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found.")
+
+    wf = DAGWorkflow.from_dict(wf_dict)
+    run_id = f"run_{uuid.uuid4().hex[:10]}"
+    run_record = {
+        "run_id": run_id,
+        "workflow_id": workflow_id,
+        "status": "RUNNING",
+        "result": None,
+    }
+    _WORKFLOW_RUNS[run_id] = run_record
+
+    def _worker():
+        res = execute_dag_workflow(wf)
+        _WORKFLOW_RUNS[run_id]["status"] = res.status.upper()
+        _WORKFLOW_RUNS[run_id]["result"] = res.to_dict()
+
+    _threading.Thread(target=_worker, daemon=True).start()
+    return {"run_id": run_id, "workflow_id": workflow_id, "status": "DISPATCHED"}
+
+
+@app.get("/api/v1/workflows/runs/{run_id}")
+def get_workflow_run_status(run_id: str):
+    """Fetches execution status and outputs of a workflow run."""
+    run = _WORKFLOW_RUNS.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Workflow run '{run_id}' not found.")
+    return run
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LONG-TERM MEMORY API ENDPOINTS (Agent Memory Engine Integration)
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/api/v1/memories")
+def list_memories(category: str | None = None):
+    """Lists all active agent long-term memories."""
+    from core.agent.memory import get_active_memories
+    return {"memories": get_active_memories(category=category)}
+
+
+@app.post("/api/v1/memories")
+def save_memory_endpoint(payload: dict):
+    """Saves a new persistent long-term memory fact."""
+    from core.agent.memory import save_agent_memory
+    key = str((payload or {}).get("memory_key") or "preference")
+    fact = str((payload or {}).get("fact_text") or "").strip()
+    session_id = (payload or {}).get("source_session_id")
+    if not fact:
+        raise HTTPException(status_code=422, detail="'fact_text' is required.")
+    return save_agent_memory(key, fact, source_session_id=session_id)
+
+
+@app.delete("/api/v1/memories/{memory_id}")
+def delete_memory_endpoint(memory_id: int):
+    """Deletes a long-term memory fact by ID."""
+    from core.agent.memory import delete_agent_memory
+    success = delete_agent_memory(memory_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Memory {memory_id} not found.")
+    return {"status": "deleted", "id": memory_id}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DYNAMIC SCHEMA & CUSTOM TABLE API ENDPOINTS
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/api/v1/schema/tables")
+def list_schema_tables():
+    """Lists all database tables and column schema metadata."""
+    from storage import dynamic_schema
+    tables = dynamic_schema.list_all_user_tables()
+    for t in tables:
+        t["columns"] = dynamic_schema.get_table_columns(t["table_name"])
+    return {"tables": tables}
+
+
+@app.post("/api/v1/schema/tables")
+def create_schema_table(payload: dict):
+    """Creates a new custom database table."""
+    from storage import dynamic_schema
+    table_name = str((payload or {}).get("table_name") or "").strip()
+    columns = (payload or {}).get("columns") or []
+    if not table_name:
+        raise HTTPException(status_code=422, detail="'table_name' is required.")
+    try:
+        return dynamic_schema.create_custom_table(table_name, columns)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/v1/schema/tables/{table_name}")
+def drop_schema_table(table_name: str):
+    """Drops a custom dynamic database table."""
+    from storage import dynamic_schema
+    try:
+        return dynamic_schema.drop_custom_table(table_name)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/schema/tables/{table_name}/columns")
+def add_schema_column(table_name: str, payload: dict):
+    """Adds a new column to an existing table."""
+    from storage import dynamic_schema
+    col_name = str((payload or {}).get("column_name") or "").strip()
+    col_type = str((payload or {}).get("column_type") or "string").strip()
+    if not col_name:
+        raise HTTPException(status_code=422, detail="'column_name' is required.")
+    try:
+        return dynamic_schema.add_column_to_table(table_name, col_name, col_type)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.put("/api/v1/schema/tables/{table_name}/columns/{column_name}/rename")
+def rename_schema_column(table_name: str, column_name: str, payload: dict):
+    """Renames an existing column in a dynamic custom table."""
+    from storage import dynamic_schema
+    new_name = str((payload or {}).get("new_name") or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=422, detail="'new_name' is required.")
+    try:
+        return dynamic_schema.rename_column_in_table(table_name, column_name, new_name)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/v1/schema/tables/{table_name}/columns/{column_name}")
+def drop_schema_column(table_name: str, column_name: str):
+    """Drops a column from an existing table."""
+    from storage import dynamic_schema
+    try:
+        return dynamic_schema.drop_column_from_table(table_name, column_name)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/v1/schema/tables/{table_name}/data")
+def fetch_schema_table_data(table_name: str, limit: int = 500):
+    """Fetches all rows from a dynamic custom table."""
+    from storage import dynamic_schema
+    try:
+        columns = dynamic_schema.get_table_columns(table_name)
+        records = dynamic_schema.fetch_dynamic_records(table_name, limit=limit)
+        return {"table_name": table_name, "columns": columns, "records": records}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/schema/tables/{table_name}/data")
+def insert_schema_table_data(table_name: str, payload: dict):
+    """Inserts a row into a dynamic custom table."""
+    from storage import dynamic_schema
+    try:
+        return dynamic_schema.insert_dynamic_record(table_name, payload or {})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/v1/schema/tables/{table_name}/data/{record_id}")
+def delete_schema_table_data(table_name: str, record_id: int):
+    """Deletes a row by ID from a dynamic custom table."""
+    from storage import dynamic_schema
+    try:
+        success = dynamic_schema.delete_dynamic_record(table_name, record_id)
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Record {record_id} not found.")
+        return {"status": "deleted", "id": record_id}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.put("/api/v1/schema/tables/{table_name}/data/{record_id}")
+def update_schema_table_data(table_name: str, record_id: int, payload: dict):
+    """Updates a record in a custom dynamic table."""
+    from storage import dynamic_schema
+    try:
+        success = dynamic_schema.update_dynamic_record(table_name, record_id, payload or {})
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Record {record_id} not found.")
+        return {"status": "success", "id": record_id}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/schema/tables/{table_name}/import")
+async def import_schema_table_file(table_name: str, file: UploadFile = File(...)):
+    """Imports CSV or Excel file records into a custom dynamic table."""
+    import io
+    import pandas as pd
+    from storage import dynamic_schema
+    filename_lower = (file.filename or "").lower()
+    if not (filename_lower.endswith(".csv") or filename_lower.endswith(".xlsx") or filename_lower.endswith(".xls")):
+        raise HTTPException(status_code=400, detail="Uploaded file must be a .csv, .xlsx, or .xls file.")
+    try:
+        content = await file.read()
+        file_bytes = io.BytesIO(content)
+        if filename_lower.endswith(".csv"):
+            df = pd.read_csv(file_bytes, dtype=str)
+        else:
+            df = pd.read_excel(file_bytes, dtype=str)
+        df = df.fillna("")
+        records = df.to_dict(orient="records")
+        imported_count = dynamic_schema.bulk_insert_dynamic_records(table_name, records)
+        return {"status": "success", "imported_count": imported_count}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ──────────────────────────────────────────────────────────────────────────────

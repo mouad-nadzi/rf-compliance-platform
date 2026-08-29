@@ -64,7 +64,10 @@ def export_database_to_sql(output_path: Optional[Path] = None) -> bool:
         logger.info(f" Database successfully dumped to {target_path}")
         return True
     except subprocess.CalledProcessError as e:
-        logger.error(f" pg_dump execution failed (exit code {e.returncode}): {e.stderr}")
+        if "server version mismatch" in str(e.stderr or "").lower():
+            logger.debug(f" Skipping pg_dump backup due to client/server version mismatch.")
+        else:
+            logger.error(f" pg_dump execution failed (exit code {e.returncode}): {e.stderr}")
         return False
     except FileNotFoundError:
         logger.warning(" 'pg_dump' CLI utility not found in system PATH. Backup skipped.")
