@@ -91,11 +91,10 @@ def _add_interval_job(interval_seconds: int, target_url: Optional[str]) -> None:
 def _load_active_sources() -> List[Dict[str, Any]]:
     """Load active sources (url + optional cookie_header) from the `sources` table."""
     try:
-        from storage.database import SessionLocal
+        from storage.database import get_db_session
         from schemas.extraction import Source
 
-        session = SessionLocal()
-        try:
+        with get_db_session() as session:
             rows = session.query(Source).filter(Source.active.is_(True)).all()
             return [
                 {
@@ -105,8 +104,6 @@ def _load_active_sources() -> List[Dict[str, Any]]:
                 for r in rows
                 if r.url and str(r.url).strip()
             ]
-        finally:
-            session.close()
     except Exception as exc:
         logger.warning(f" Could not load sources from database: {exc}")
         return []
@@ -188,8 +185,8 @@ async def autonomous_ingestion_job(
             url = item["url"]
             effective_cookie = item.get("cookie_header") or cookie_header
 
-            session = SessionLocal()
-            try:
+            from storage.database import get_db_session
+            with get_db_session() as session:
                 result = await asyncio.to_thread(
                     discover_pdf_urls,
                     url,
@@ -206,8 +203,6 @@ async def autonomous_ingestion_job(
                     fetcher_type=fetcher_type,
                     cookie_header=effective_cookie,
                 )
-            finally:
-                session.close()
 
             logger.info(
                 f" Autonomous discovery for '{url}' (fetcher={fetcher_type}, has_cookie={bool(effective_cookie)}): "

@@ -48,6 +48,16 @@ from server import config
 
 _ocr_engine = None
 
+def get_shared_ocr_engine():
+    """Returns the globally loaded shared OCR engine instance."""
+    global _ocr_engine
+    if _ocr_engine is None:
+        from server.config import CACHE_DIR, OCR_ENGINE
+        from core.registry import get_ocr_engine
+        _ocr_engine = get_ocr_engine(OCR_ENGINE)
+        _ocr_engine.load(CACHE_DIR)
+    return _ocr_engine
+
 OUTPUT_FOLDER = os.path.join(tempfile.gettempdir(), "ocr_outputs")
 
 _batch_thread: threading.Thread | None = None
@@ -353,40 +363,21 @@ async def parse_document(file: UploadFile = File(...)):
 
         logger.info(f"  Processing uploaded file: {file.filename}")
 
-        # 2. Ensure OCR Engine is initialized and resident
-        from server.config import CACHE_DIR, OCR_ENGINE
-        from core.registry import get_ocr_engine
-        if _ocr_engine is None:
-            _ocr_engine = get_ocr_engine(OCR_ENGINE)
-            _ocr_engine.load(CACHE_DIR)
+        # Copy to permanent file storage for static serving
+        from server.config import FILES_STORAGE_DIR, PUBLIC_API_URL
+        safe_fname = os.path.basename(file.filename or "upload")
+        persistent_path = os.path.join(FILES_STORAGE_DIR, "parse", safe_fname)
+        os.makedirs(os.path.dirname(persistent_path), exist_ok=True)
+        shutil.copy2(temp_file_path, persistent_path)
+        file_public_url = f"{PUBLIC_API_URL}/files/parse/{safe_fname}"
 
-        # 3. Run OCR to get layout-aware Markdown with <Page X> tags
-        extracted_text = _ocr_engine.process_document(temp_file_path, OUTPUT_FOLDER)
+        logger.info(f"  Processing uploaded file: {file.filename}")
 
-        # 4. Extract structured metadata directly from raw OCR output (LLM engine co-exists in VRAM)
-        from core.extractor import extract_certificate_data
-        certificates = [extract_certificate_data(extracted_text, file.filename)]
+        # Delegate to single canonical ingestion pipeline (Defect 4 fix)
+        from core.agent.ingestor import ingest_document_file
+        res = ingest_document_file(temp_file_path, source_url=file_public_url)
 
-        # 6. Persist extracted certificate metadata and 1024-d embedded chunks into PostgreSQL
-        from core.extractor import save_certificate_to_db
-        db_certificate_ids = []
-        for cert in certificates:
-            try:
-                cert.cert_link = file_public_url
-                metadata_record = save_certificate_to_db(cert, extracted_text, file.filename)
-                db_certificate_ids.append(metadata_record.certificate_id)
-            except Exception as db_err:
-                logger.warning(f"  Could not persist certificate to PostgreSQL: {db_err}")
-
-        # 7. Return a clean JSON response with certificate objects, DB IDs, and raw markdown
-        return {
-            "status": "success",
-            "filename": file.filename,
-            "certificates_found": len(certificates),
-            "certificates": [cert.model_dump() for cert in certificates],
-            "database_records": db_certificate_ids,
-            "raw_markdown": extracted_text
-        }
+        return res
 
     except MemoryError as e:
         error_msg = f"GPU memory exhausted while processing document: {str(e)}"
@@ -479,9 +470,7 @@ def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
     try:
         manifest["phase"] = "processing"
         _save()
-        if _ocr_engine is None:
-            _ocr_engine = get_ocr_engine(OCR_ENGINE)
-            _ocr_engine.load(CACHE_DIR)
+        _ocr_engine = get_shared_ocr_engine()
 
         for name in file_names:
             entry = manifest["files"].get(name, {})

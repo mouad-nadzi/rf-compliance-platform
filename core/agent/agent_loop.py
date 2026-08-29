@@ -60,15 +60,7 @@ def get_registered_actions_prompt_block() -> str:
 
 
 
-def _format_history_block(history: Optional[List[Dict[str, str]]]) -> str:
-    if not history:
-        return ""
-    lines = ["--- CONVERSATION HISTORY ---"]
-    for turn in history[-6:]:  # recent turns
-        role = "User" if turn.get("role") == "user" else "Assistant"
-        lines.append(f"{role}: {turn.get('content', '')}")
-    lines.append("--- END CONVERSATION HISTORY ---")
-    return "\n".join(lines)
+from core.utils.history import format_conversation_history as _format_history_block
 
 
 def _llm_plan(

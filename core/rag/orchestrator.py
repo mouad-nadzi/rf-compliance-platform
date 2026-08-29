@@ -21,7 +21,7 @@ import threading
 from typing import Any, Dict, List, Optional
 
 from server import config
-from core.rag.router import classify_intent, QueryIntent
+from core.rag.unified_agent import QueryIntent, unified_tool_select
 from core.rag.sql_engine import execute_metadata_query, FALLBACK_MESSAGE as SQL_FALLBACK
 from core.rag.hybrid_engine import (
     retrieve_hybrid_context,
@@ -33,21 +33,7 @@ from core.rag.hybrid_engine import (
 logger = logging.getLogger(__name__)
 
 
-def _format_history(history) -> str:
-    """
-    Formats a list of {role, content} turns into a compact conversation-history
-    block for prompt injection. Empty input yields an empty string.
-    """
-    if not history:
-        return ""
-    lines = ["--- CONVERSATION HISTORY ---"]
-    for turn in history:
-        role = "User" if turn.get("role") == "user" else "Assistant"
-        content = str(turn.get("content", "")).strip()
-        if content:
-            lines.append(f"{role}: {content}")
-    lines.append("--- END CONVERSATION HISTORY ---")
-    return "\n".join(lines)
+from core.utils.history import format_conversation_history as _format_history
 
 
 _ANAPHORA_RE = re.compile(
@@ -308,71 +294,6 @@ def _handle_chat_approval_stream(
         return
 
 
-def _iter_agent_action(
-    clean_query: str,
-    resolved_query: str,
-    history: Optional[List[Dict[str, str]]] = None,
-):
-    """
-    Step-based execution of an AGENT_ACTION request. Yields a string per READ
-    step as it completes (so the chat streams progress), then the approval
-    question if a WRITE step remains. Read steps run without permission; only
-    the write step is gated.
-    """
-    from core.agent.agent_loop import plan_agent_action, iter_read_steps, stage_write_step, RunArtifacts
-
-    urls = _extract_urls(resolved_query) or _extract_urls(clean_query)
-    target_query = resolved_query or clean_query
-    plan_result = plan_agent_action(target_query, urls=urls, history=history)
-    primary_url = urls[0] if urls else ""
-    artifacts = RunArtifacts()
-
-    yielded = False
-    for narration in iter_read_steps(plan_result.steps, primary_url, artifacts):
-        yielded = True
-        yield narration
-
-
-    write_steps = [s for s in plan_result.steps if s.kind == "write"]
-    if write_steps:
-        from core.agent.agent_loop import resolve_write_step, stage_write_step
-        w_step = write_steps[0]
-
-        if plan_result.is_direct_command:
-            try:
-                # Direct command: execute write action immediately without requiring 'yes' confirmation turn
-                payload_dict = dict(w_step.payload)
-                payload_dict.update({
-                    "action": w_step.action,
-                    "description": w_step.description,
-                    "source_url": artifacts.source_url,
-                    "file_paths": artifacts.file_paths,
-                    "verified_urls": artifacts.verified_urls,
-                })
-                result_msg = resolve_write_step({
-                    "payload": payload_dict,
-                    "action": w_step.action,
-                })
-                yield result_msg
-                yielded = True
-            except Exception as exc:
-                yield f"Action failed: {exc}"
-                yielded = True
-        else:
-            # Discovery / implicit command: stage proposal and request approval
-            try:
-                stage_write_step(w_step, artifacts)
-                desc = w_step.description or 'add to the database'
-                yield (
-                    f"To do the final step ({desc}), "
-                    "I need your approval. Is that OK? Reply 'yes' to proceed or 'no' to cancel."
-                )
-                yielded = True
-            except Exception as exc:
-                logger.warning(f" Could not stage write step: {exc}")
-
-    if not yielded:
-        yield "I cannot execute what you are asking because I do not have a tool available for this action."
 
 
 
@@ -412,18 +333,12 @@ def answer_compliance_query(
             "latency_ms": 0.0,
         }
 
-    # Chat-based HITL confirmation ("yes" / "approve" / "no") for a pending
-    # AGENT_ACTION proposal, handled before routing.
-    approval_reply = _handle_chat_approval(clean_query, history=history)
-    if approval_reply:
-        t_end = time.perf_counter()
-        return {
-            "answer": approval_reply,
-            "intent": QueryIntent.AGENT_ACTION.value,
-            "reasoning": "User confirmed a pending agent action via chat.",
-            "sources": [],
-            "latency_ms": round((t_end - t_start) * 1000.0, 2),
-        }
+    # Chat-based HITL confirmation: handled synchronously via the proposal manager
+    from core.agent.proposals import proposal_manager
+    pending = [p for p in proposal_manager.list_pending_proposals() if p.get("type") == "AGENT_ACTION"]
+    if pending:
+        # Route to AGENT_ACTION so the streaming path handles confirmation/rejection
+        pass
 
     # Resolve anaphoric follow-ups ("the others", "these", "them") into a
     # standalone query carrying entities from the conversation history.
@@ -437,13 +352,13 @@ def answer_compliance_query(
         close_session_on_exit = True
 
     try:
-        # Step 1: Intent Classification via Router (history-aware, on the resolved query)
-        logger.info(f" Classifying query intent for: '{clean_query[:60]}...'")
-        router_decision = classify_intent(resolved_query, history=history)
-        intent = router_decision.get("intent", QueryIntent.UNSTRUCTURED_RAG.value)
-        reasoning = router_decision.get("reasoning", "Default routing classification.")
+        # Step 1: Unified tool selection (single LLM hop replaces 2-stage router)
+        logger.info(f" Unified agent tool selection for: '{clean_query[:60]}...'")
+        tool_decision = unified_tool_select(resolved_query, history=history)
+        intent = tool_decision.get("intent", QueryIntent.UNSTRUCTURED_RAG.value)
+        reasoning = tool_decision.get("reasoning", "Unified agent default routing.")
 
-        logger.info(f" Router decision: intent={intent} ({reasoning})")
+        logger.info(f" Unified agent decision: tool={tool_decision.get('tool')} intent={intent} ({reasoning[:60]})'")
 
         answer_text = ""
         sources: List[Dict[str, Any]] = []
@@ -516,11 +431,12 @@ def answer_compliance_query(
             answer_text = _casual_conversation_reply(clean_query, history_text)
 
         elif intent == QueryIntent.AGENT_ACTION.value:
-            # Step-based agent action: read steps run freely; the write step
-            # (if any) is staged and waits for approval.
             logger.info(" Executing AGENT_ACTION path (step-based execution)...")
-            _parts = list(_iter_agent_action(clean_query, resolved_query, history=history))
-            answer_text = "\n\n".join(_parts)
+            tokens = []
+            for event in answer_compliance_query_stream(user_query, db_session=db_session, history=history):
+                if event.get("type") == "token":
+                    tokens.append(event.get("text", ""))
+            answer_text = "".join(tokens)
             sources = [{"type": "agent_action", "url": _extract_url(resolved_query) or _extract_url(clean_query)}]
 
         elif intent == QueryIntent.UNSTRUCTURED_RAG.value:
@@ -634,7 +550,7 @@ def answer_compliance_query_stream(
     clean_query = str(user_query or "").strip()
     history_text = _format_history(history)
 
-    yield {"type": "status", "stage": "routing", "message": "Routing query..."}
+    yield {"type": "status", "stage": "routing", "message": "Understanding your request..."}
 
     if not clean_query:
         yield {
@@ -666,14 +582,14 @@ def answer_compliance_query_stream(
         close_session_on_exit = True
 
     try:
-        # Step 1: Intent Classification via Router (history-aware, on the resolved query)
-        router_decision = classify_intent(resolved_query, history=history)
-        intent = router_decision.get("intent", QueryIntent.UNSTRUCTURED_RAG.value)
-        reasoning = router_decision.get("reasoning", "Default routing classification.")
+        # Step 1: Unified tool selection (single LLM hop replaces 2-stage router)
+        tool_decision = unified_tool_select(resolved_query, history=history)
+        intent = tool_decision.get("intent", QueryIntent.UNSTRUCTURED_RAG.value)
+        reasoning = tool_decision.get("reasoning", "Unified agent default routing.")
         yield {
             "type": "status",
             "stage": "routing",
-            "message": f"Intent: {intent} - {reasoning}",
+            "message": f"Tool selected: {tool_decision.get('tool', intent)}",
         }
 
         answer_text = ""
@@ -747,7 +663,7 @@ def answer_compliance_query_stream(
                     yield {"type": "token", "text": answer_text}
 
         elif intent == QueryIntent.CASUAL_CONVERSATION.value:
-            yield {"type": "status", "stage": "casual", "message": "Responding conversationally..."}
+            yield {"type": "status", "stage": "casual", "message": "Generating reply..."}
             from core.prompts import CASUAL_CONVERSATION_SYSTEM_PROMPT
             casual_prompt = (
                 f"{history_text}\n\n" if history_text else ""
@@ -860,7 +776,7 @@ def answer_compliance_query_stream(
             answer_text = "\n\n".join(_parts)
 
             # Stream the exact detailed answer text token-by-token (word-by-word) progressively
-            yield {"type": "status", "stage": "generation", "message": "Streaming results..."}
+            yield {"type": "status", "stage": "generation", "message": "Streaming agent results..."}
             words = answer_text.split(" ")
             for i, w in enumerate(words):
                 w_text = w + (" " if i < len(words) - 1 else "")

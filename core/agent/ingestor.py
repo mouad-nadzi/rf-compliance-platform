@@ -30,7 +30,7 @@ def set_ocr_engine(engine) -> None:
 
 def ingest_document_file(
     file_path: str,
-    source_url: str,
+    source_url: str = "",
     status_callback: Optional[Callable[[str, str], None]] = None,
 ) -> dict:
     """
@@ -42,7 +42,7 @@ def ingest_document_file(
         status_callback: optional callback(stage, message) for live UI status reporting.
 
     Returns:
-        dict with filename, source_url, certificates_found, database_records.
+        dict with filename, source_url, certificates_found, certificates, database_records, raw_markdown.
     """
     global _ocr_engine
     from core.utils.system_check import ensure_ready
@@ -56,8 +56,12 @@ def ingest_document_file(
 
     ensure_ready()
     if _ocr_engine is None:
-        _ocr_engine = get_ocr_engine(OCR_ENGINE)
-        _ocr_engine.load(CACHE_DIR)
+        try:
+            from server.main import get_shared_ocr_engine
+            _ocr_engine = get_shared_ocr_engine()
+        except ImportError:
+            _ocr_engine = get_ocr_engine(OCR_ENGINE)
+            _ocr_engine.load(CACHE_DIR)
 
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
     extracted_text = _ocr_engine.process_document(file_path, OUTPUT_FOLDER)
@@ -96,10 +100,13 @@ def ingest_document_file(
 
     logger.info(f" Ingested document '{base_name}': {len(db_ids)} certificate record(s) ({len(updated_ids)} updated, {len(new_ids)} new).")
     return {
+        "status": "success",
         "filename": base_name,
         "source_url": source_url,
         "certificates_found": len(certificates),
+        "certificates": [cert.model_dump() for cert in certificates],
         "database_records": db_ids,
         "updated_records": updated_ids,
         "new_records": new_ids,
+        "raw_markdown": extracted_text,
     }

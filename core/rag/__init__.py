@@ -9,7 +9,7 @@ from core.rag.chunker import chunk_for_qa
 from core.rag.embeddings import get_embedding, get_embeddings_batch
 from core.rag.retriever import retrieve_relevant_chunks
 from core.rag.qa import answer_query_with_citations
-from core.rag.router import QueryIntent, RouterDecision, classify_intent
+from core.rag.unified_agent import QueryIntent, unified_tool_select
 from core.rag.sql_engine import execute_metadata_query
 from core.rag.hybrid_engine import retrieve_hybrid_context, execute_unstructured_query
 from core.rag.orchestrator import answer_compliance_query, answer_compliance_query_stream
@@ -21,8 +21,7 @@ __all__ = [
     "retrieve_relevant_chunks",
     "answer_query_with_citations",
     "QueryIntent",
-    "RouterDecision",
-    "classify_intent",
+    "unified_tool_select",
     "execute_metadata_query",
     "retrieve_hybrid_context",
     "execute_unstructured_query",
