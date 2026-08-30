@@ -479,6 +479,21 @@ def save_certificate_to_db(
         action = "Updated" if updated else "Successfully persisted"
         logger.info(f" {action} Certificate '{cert_id}' with {len(chunk_records)} chunks to PostgreSQL.")
         
+        # Log notification for PDF document extraction & persistence
+        try:
+            from schemas.extraction import NotificationItem
+            notif = NotificationItem(
+                title=f"PDF Certificate Ingested ({component})",
+                message=f"Extracted compliance certificate #{certif_number} for component '{component}' ({country}) from '{file_name}'. Authority: {authority}.",
+                category="extraction",
+                is_read=False,
+                created_at=datetime.utcnow()
+            )
+            db.add(notif)
+            db.commit()
+        except Exception as ex:
+            logger.debug(f"Error logging PDF extraction notification: {ex}")
+
         # Trigger automated backup in background thread
         from storage.backup import trigger_async_backup
         trigger_async_backup()

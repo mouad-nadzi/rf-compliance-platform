@@ -1,8 +1,488 @@
 [
   {
+    "canonical_authority": "Agence Nationale de Réglementation des Télécommunications",
+    "country": "Morocco",
+    "standard_validity_years": "infinite",
+    "aliases": [
+      "ANRT",
+      "AGENCE NATIONALE DE REGLEMENTATION DES TELECOMMUNICATIONS"
+    ],
+    "abbreviation": "ANRT"
+  },
+  {
+    "canonical_authority": "Office of the Communications Authority",
+    "country": "Hong Kong",
+    "standard_validity_years": "infinite",
+    "aliases": [
+      "OFTA",
+      "OFFICE OF THE COMMUNICATIONS AUTHORITY",
+      "OFCA"
+    ],
+    "abbreviation": "OFCA"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation de la Poste et des Communications Électroniques",
+    "country": "Algeria",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARPCE",
+      "ARPT"
+    ],
+    "abbreviation": "ARPCE"
+  },
+  {
+    "canonical_authority": "Public Services Regulatory Commission",
+    "country": "Armenia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "PSRC"
+    ],
+    "abbreviation": "PSRC"
+  },
+  {
+    "canonical_authority": "Ministry of Digital Development and Transport",
+    "country": "Azerbaijan",
+    "standard_validity_years": "3",
+    "aliases": [
+      "MDDT"
+    ],
+    "abbreviation": "MDDT"
+  },
+  {
+    "canonical_authority": "Bangladesh Telecommunication Regulatory Commission",
+    "country": "Bangladesh",
+    "standard_validity_years": "3",
+    "aliases": [
+      "BTRC"
+    ],
+    "abbreviation": "BTRC"
+  },
+  {
+    "canonical_authority": "State Commission on Radio Frequencies",
+    "country": "Belarus",
+    "standard_validity_years": "3",
+    "aliases": [
+      "BelGISS",
+      "SCRF"
+    ],
+    "abbreviation": "BelGISS"
+  },
+  {
+    "canonical_authority": "Communications Regulatory Agency",
+    "country": "Bosnia and Herzegovina",
+    "standard_validity_years": "3",
+    "aliases": [
+      "CRA",
+      "RAK"
+    ],
+    "abbreviation": "CRA"
+  },
+  {
+    "canonical_authority": "Botswana Communications Regulatory Authority",
+    "country": "Botswana",
+    "standard_validity_years": "3",
+    "aliases": [
+      "BOCRA"
+    ],
+    "abbreviation": "BOCRA"
+  },
+  {
+    "canonical_authority": "Communications Regulation Commission",
+    "country": "Bulgaria",
+    "standard_validity_years": "3",
+    "aliases": [
+      "CRC Bulgaria"
+    ],
+    "abbreviation": "CRC"
+  },
+  {
+    "canonical_authority": "Telecommunication Regulator of Cambodia",
+    "country": "Cambodia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "TRC Cambodia"
+    ],
+    "abbreviation": "TRC"
+  },
+  {
+    "canonical_authority": "Telecommunications Regulatory Board",
+    "country": "Cameroon",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ART Cameroon"
+    ],
+    "abbreviation": "ART"
+  },
+  {
+    "canonical_authority": "Croatian Regulatory Authority for Network Industries",
+    "country": "Croatia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "HAKOM"
+    ],
+    "abbreviation": "HAKOM"
+  },
+  {
+    "canonical_authority": "Department of Electronic Communications",
+    "country": "Cyprus",
+    "standard_validity_years": "3",
+    "aliases": [
+      "DEC Cyprus"
+    ],
+    "abbreviation": "DEC"
+  },
+  {
+    "canonical_authority": "Czech Telecommunication Office",
+    "country": "Czech Republic",
+    "standard_validity_years": "3",
+    "aliases": [
+      "CTU",
+      "CTO"
+    ],
+    "abbreviation": "CTU"
+  },
+  {
+    "canonical_authority": "National Telecommunication Regulatory Authority",
+    "country": "Egypt",
+    "standard_validity_years": "3",
+    "aliases": [
+      "NTRA"
+    ],
+    "abbreviation": "NTRA"
+  },
+  {
+    "canonical_authority": "Superintendencia General de Electricidad y Telecomunicaciones",
+    "country": "El Salvador",
+    "standard_validity_years": "3",
+    "aliases": [
+      "SIGET"
+    ],
+    "abbreviation": "SIGET"
+  },
+  {
+    "canonical_authority": "Consumer Protection and Technical Regulatory Authority",
+    "country": "Estonia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "TTJA"
+    ],
+    "abbreviation": "TTJA"
+  },
+  {
+    "canonical_authority": "Ethiopian Communications Authority",
+    "country": "Ethiopia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ECA Ethiopia"
+    ],
+    "abbreviation": "ECA"
+  },
+  {
+    "canonical_authority": "Hellenic Telecommunications and Post Commission",
+    "country": "Greece",
+    "standard_validity_years": "3",
+    "aliases": [
+      "EETT"
+    ],
+    "abbreviation": "EETT"
+  },
+  {
+    "canonical_authority": "Superintendencia de Telecomunicaciones",
+    "country": "Guatemala",
+    "standard_validity_years": "3",
+    "aliases": [
+      "SIT Guatemala"
+    ],
+    "abbreviation": "SIT"
+  },
+  {
+    "canonical_authority": "Comisión Nacional de Telecomunicaciones",
+    "country": "Honduras",
+    "standard_validity_years": "3",
+    "aliases": [
+      "CONATEL Honduras"
+    ],
+    "abbreviation": "CONATEL"
+  },
+  {
+    "canonical_authority": "Post and Telecom Administration",
+    "country": "Iceland",
+    "standard_validity_years": "3",
+    "aliases": [
+      "PTA Iceland",
+      "ECOI"
+    ],
+    "abbreviation": "PTA"
+  },
+  {
+    "canonical_authority": "Communications and Media Commission",
+    "country": "Iraq",
+    "standard_validity_years": "3",
+    "aliases": [
+      "CMC Iraq"
+    ],
+    "abbreviation": "CMC"
+  },
+  {
+    "canonical_authority": "Commission for Communications Regulation",
+    "country": "Ireland",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ComReg"
+    ],
+    "abbreviation": "ComReg"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation des Télécommunications/TIC de Côte d'Ivoire",
+    "country": "Ivory Coast",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARTCI"
+    ],
+    "abbreviation": "ARTCI"
+  },
+  {
+    "canonical_authority": "Spectrum Management Authority",
+    "country": "Jamaica",
+    "standard_validity_years": "3",
+    "aliases": [
+      "SMA Jamaica"
+    ],
+    "abbreviation": "SMA"
+  },
+  {
+    "canonical_authority": "Communication and Information Technology Regulatory Authority",
+    "country": "Kuwait",
+    "standard_validity_years": "3",
+    "aliases": [
+      "CITRA"
+    ],
+    "abbreviation": "CITRA"
+  },
+  {
+    "canonical_authority": "Ministry of Technology and Communications",
+    "country": "Laos",
+    "standard_validity_years": "3",
+    "aliases": [
+      "MTC Laos"
+    ],
+    "abbreviation": "MTC"
+  },
+  {
+    "canonical_authority": "Telecommunications Regulatory Authority",
+    "country": "Lebanon",
+    "standard_validity_years": "3",
+    "aliases": [
+      "TRA Lebanon"
+    ],
+    "abbreviation": "TRA"
+  },
+  {
+    "canonical_authority": "National Regulatory Agency for Electronic Communications and Information Technology",
+    "country": "Moldova",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ANRCETI"
+    ],
+    "abbreviation": "ANRCETI"
+  },
+  {
+    "canonical_authority": "Agency for Electronic Communications and Postal Services",
+    "country": "Montenegro",
+    "standard_validity_years": "3",
+    "aliases": [
+      "EKIP"
+    ],
+    "abbreviation": "EKIP"
+  },
+  {
+    "canonical_authority": "Nepal Telecommunications Authority",
+    "country": "Nepal",
+    "standard_validity_years": "3",
+    "aliases": [
+      "NTA Nepal"
+    ],
+    "abbreviation": "NTA"
+  },
+  {
+    "canonical_authority": "Rijksinspectie Digitale Infrastructuur",
+    "country": "Netherlands",
+    "standard_validity_years": "3",
+    "aliases": [
+      "RDI",
+      "Agentschap Telecom"
+    ],
+    "abbreviation": "RDI"
+  },
+  {
+    "canonical_authority": "Agency for Electronic Communications",
+    "country": "North Macedonia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "AEC Macedonia"
+    ],
+    "abbreviation": "AEC"
+  },
+  {
+    "canonical_authority": "Office of Electronic Communications",
+    "country": "Poland",
+    "standard_validity_years": "3",
+    "aliases": [
+      "UKE"
+    ],
+    "abbreviation": "UKE"
+  },
+  {
+    "canonical_authority": "Autoridade Nacional de Comunicações",
+    "country": "Portugal",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ANACOM"
+    ],
+    "abbreviation": "ANACOM"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation des Télécommunications et des Postes",
+    "country": "Senegal",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARTP Senegal"
+    ],
+    "abbreviation": "ARTP"
+  },
+  {
+    "canonical_authority": "Regulatory Agency for Electronic Communications and Postal Services",
+    "country": "Serbia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "RATEL"
+    ],
+    "abbreviation": "RATEL"
+  },
+  {
+    "canonical_authority": "Agency for Communication Networks and Services",
+    "country": "Slovenia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "AKOS"
+    ],
+    "abbreviation": "AKOS"
+  },
+  {
+    "canonical_authority": "Swedish Post and Telecom Authority",
+    "country": "Sweden",
+    "standard_validity_years": "3",
+    "aliases": [
+      "PTS Sweden"
+    ],
+    "abbreviation": "PTS"
+  },
+  {
+    "canonical_authority": "Federal Office of Communications",
+    "country": "Switzerland",
+    "standard_validity_years": "3",
+    "aliases": [
+      "BAKOM",
+      "OFCOM Switzerland"
+    ],
+    "abbreviation": "OFCOM"
+  },
+  {
+    "canonical_authority": "Tanzania Communications Regulatory Authority",
+    "country": "Tanzania",
+    "standard_validity_years": "3",
+    "aliases": [
+      "TCRA"
+    ],
+    "abbreviation": "TCRA"
+  },
+  {
+    "canonical_authority": "Information and Communication Technologies Authority",
+    "country": "Turkey",
+    "standard_validity_years": "3",
+    "aliases": [
+      "BTK"
+    ],
+    "abbreviation": "BTK"
+  },
+  {
+    "canonical_authority": "Uganda Communications Commission",
+    "country": "Uganda",
+    "standard_validity_years": "3",
+    "aliases": [
+      "UCC Uganda"
+    ],
+    "abbreviation": "UCC"
+  },
+  {
+    "canonical_authority": "National Commission for the State Regulation of Electronic Communications",
+    "country": "Ukraine",
+    "standard_validity_years": "3",
+    "aliases": [
+      "NCEC",
+      "NCCIR"
+    ],
+    "abbreviation": "NCEC"
+  },
+  {
+    "canonical_authority": "Unidad Reguladora de Servicios de Comunicaciones",
+    "country": "Uruguay",
+    "standard_validity_years": "3",
+    "aliases": [
+      "URSEC"
+    ],
+    "abbreviation": "URSEC"
+  },
+  {
+    "canonical_authority": "State Inspectorate for Supervision in Telecommunications",
+    "country": "Uzbekistan",
+    "standard_validity_years": "3",
+    "aliases": [
+      "GIS Uzbekistan"
+    ],
+    "abbreviation": "GIS"
+  },
+  {
+    "canonical_authority": "Comisión Nacional de Telecomunicaciones",
+    "country": "Venezuela",
+    "standard_validity_years": "3",
+    "aliases": [
+      "CONATEL Venezuela"
+    ],
+    "abbreviation": "CONATEL"
+  },
+  {
+    "canonical_authority": "Zambia Information and Communications Technology Authority",
+    "country": "Zambia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ZICTA"
+    ],
+    "abbreviation": "ZICTA"
+  },
+  {
+    "canonical_authority": "Postal and Telecommunications Regulatory Authority of Zimbabwe",
+    "country": "Zimbabwe",
+    "standard_validity_years": "3",
+    "aliases": [
+      "POTRAZ"
+    ],
+    "abbreviation": "POTRAZ"
+  },
+  {
+    "canonical_authority": "Telekom-Control-Kommission",
+    "country": "Austria",
+    "standard_validity_years": "3",
+    "aliases": [
+      "BMK",
+      "TKK"
+    ],
+    "abbreviation": "TKK"
+  },
+  {
     "canonical_authority": "Ente Nacional de Comunicaciones",
     "country": "Argentina",
-    "standard_validity_years": 3,
+    "standard_validity_years": "3",
     "aliases": [
       "ENACOM",
       "CNC",
@@ -11,6 +491,946 @@
       "COMISION NACIONAL DE COMUNICACIONES"
     ],
     "abbreviation": "ENACOM"
+  },
+  {
+    "canonical_authority": "European Telecommunications Standards Institute / CE Notified Bodies",
+    "country": "European Union",
+    "standard_validity_years": "infinite",
+    "aliases": [
+      "CE",
+      "RADIO EQUIPMENT DIRECTIVE",
+      "RED",
+      "EU NOTIFIED BODY",
+      "ETSI",
+      "EU Notified Body",
+      "CE MARKING"
+    ],
+    "abbreviation": "CE / ETSI"
+  },
+  {
+    "canonical_authority": "Ministry of Industry and Information Technology / State Radio Regulatory Commission",
+    "country": "China",
+    "standard_validity_years": "5",
+    "aliases": [
+      "STATE RADIO REGULATORY COMMISSION",
+      "MINISTRY OF INDUSTRY AND INFORMATION TECHNOLOGY",
+      "MIIT",
+      "SRRC",
+      "CCC"
+    ],
+    "abbreviation": "MIIT / SRRC"
+  },
+  {
+    "canonical_authority": "Directorate General of Resources and Equipment for Postal and Information Technology",
+    "country": "Indonesia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "SDPPI",
+      "KOMINFO",
+      "POSTEL",
+      "KOMDIGI",
+      "MINISTRY OF COMMUNICATION AND DIGITAL AFFAIRS"
+    ],
+    "abbreviation": "SDPPI"
+  },
+  {
+    "canonical_authority": "Telecommunication Engineering Centre / Wireless Planning & Coordination",
+    "country": "India",
+    "standard_validity_years": "5",
+    "aliases": [
+      "WPC",
+      "TEC",
+      "BIS",
+      "TELECOMMUNICATION ENGINEERING CENTRE",
+      "WIRELESS PLANNING & COORDINATION"
+    ],
+    "abbreviation": "TEC / WPC"
+  },
+  {
+    "canonical_authority": "Telecommunications and Digital Government Regulatory Authority",
+    "country": "United Arab Emirates",
+    "standard_validity_years": "3",
+    "aliases": [
+      "TRA UAE",
+      "TELECOMMUNICATIONS AND DIGITAL GOVERNMENT REGULATORY AUTHORITY",
+      "TRA",
+      "TDRA"
+    ],
+    "abbreviation": "TDRA"
+  },
+  {
+    "canonical_authority": "Ministerio de Transportes y Comunicaciones",
+    "country": "Peru",
+    "standard_validity_years": "infinite",
+    "aliases": [
+      "MINISTERIO DE TRANSPORTES Y COMUNICACIONES",
+      "OSIPTEL",
+      "MTC Peru",
+      "MTC"
+    ],
+    "abbreviation": "MTC"
+  },
+  {
+    "canonical_authority": "Communications Regulatory Commission",
+    "country": "Mongolia",
+    "standard_validity_years": null,
+    "aliases": [
+      "CRC Mongolia",
+      "CRC",
+      "CRC MONGOLIA",
+      "AUTHORITY FOR COMMUNICATIONS REGULATION AND INFORMATION TECHNOLOGIES"
+    ],
+    "abbreviation": "CRC"
+  },
+  {
+    "canonical_authority": "Telecommunications Regulatory Commission",
+    "country": "Jordan",
+    "standard_validity_years": null,
+    "aliases": [
+      "TRC",
+      "TELECOMMUNICATIONS REGULATORY COMMISSION",
+      "TRC Jordan"
+    ],
+    "abbreviation": "TRC"
+  },
+  {
+    "canonical_authority": "Communications Regulatory Authority",
+    "country": "Qatar",
+    "standard_validity_years": null,
+    "aliases": [
+      "ICTQATAR",
+      "CRA",
+      "COMMUNICATIONS REGULATORY AUTHORITY",
+      "ICTQatar",
+      "CRA Qatar"
+    ],
+    "abbreviation": "CRA"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation des Communications Électroniques et des Postes",
+    "country": "France",
+    "standard_validity_years": "infinite",
+    "aliases": [
+      "ARCEP",
+      "ARCEP FRANCE",
+      "ANFR"
+    ],
+    "abbreviation": "ARCEP"
+  },
+  {
+    "canonical_authority": "Bundesnetzagentur",
+    "country": "Germany",
+    "standard_validity_years": "infinite",
+    "aliases": [
+      "BNetzA",
+      "BUNDESNETZAGENTUR"
+    ],
+    "abbreviation": "BNetzA"
+  },
+  {
+    "canonical_authority": "National Authority for Management and Regulation in Communications",
+    "country": "Romania",
+    "standard_validity_years": "infinite",
+    "aliases": [
+      "ANCOM",
+      "NATIONAL AUTHORITY FOR MANAGEMENT AND REGULATION IN COMMUNICATIONS"
+    ],
+    "abbreviation": "ANCOM"
+  },
+  {
+    "canonical_authority": "Directorate General of Telecommunications / Ministry of Information and Communications",
+    "country": "Vietnam",
+    "standard_validity_years": null,
+    "aliases": [
+      "MIC",
+      "VIETNAM TELECOMMUNICATIONS AUTHORITY",
+      "MIC Vietnam",
+      "MINISTRY OF INFORMATION AND COMMUNICATIONS",
+      "VNPT",
+      "VNTA"
+    ],
+    "abbreviation": "MIC"
+  },
+  {
+    "canonical_authority": "Belgian Institute for Postal Services and Telecommunications",
+    "country": "Belgium",
+    "standard_validity_years": "3",
+    "aliases": [
+      "IBPT",
+      "BIPT"
+    ],
+    "abbreviation": "BIPT"
+  },
+  {
+    "canonical_authority": "Danish Energy Agency",
+    "country": "Denmark",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ENS",
+      "DEA Denmark"
+    ],
+    "abbreviation": "DEA"
+  },
+  {
+    "canonical_authority": "Finnish Transport and Communications Agency",
+    "country": "Finland",
+    "standard_validity_years": "3",
+    "aliases": [
+      "FICORA",
+      "Traficom"
+    ],
+    "abbreviation": "Traficom"
+  },
+  {
+    "canonical_authority": "Georgian National Communications Commission",
+    "country": "Georgia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ComCom",
+      "GNCC"
+    ],
+    "abbreviation": "GNCC"
+  },
+  {
+    "canonical_authority": "Ministry of Communications",
+    "country": "Israel",
+    "standard_validity_years": "3",
+    "aliases": [
+      "MoC Israel",
+      "MoC"
+    ],
+    "abbreviation": "MoC"
+  },
+  {
+    "canonical_authority": "Autorità per le Garanzie nelle Comunicazioni",
+    "country": "Italy",
+    "standard_validity_years": "3",
+    "aliases": [
+      "MiSE",
+      "AGCOM"
+    ],
+    "abbreviation": "AGCOM"
+  },
+  {
+    "canonical_authority": "Ministry of Digital Development, Innovations and Aerospace Industry",
+    "country": "Kazakhstan",
+    "standard_validity_years": "3",
+    "aliases": [
+      "Kazakhstan RF",
+      "MDDIAI"
+    ],
+    "abbreviation": "MDDIAI"
+  },
+  {
+    "canonical_authority": "Norwegian Communications Authority",
+    "country": "Norway",
+    "standard_validity_years": "3",
+    "aliases": [
+      "NPT",
+      "Nkom"
+    ],
+    "abbreviation": "Nkom"
+  },
+  {
+    "canonical_authority": "Regulatory Authority for Electronic Communications and Postal Services",
+    "country": "Slovakia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "TUSR",
+      "RU Slovakia"
+    ],
+    "abbreviation": "RU"
+  },
+  {
+    "canonical_authority": "Secretaría de Estado de Telecomunicaciones e Infraestructuras Digitales",
+    "country": "Spain",
+    "standard_validity_years": "3",
+    "aliases": [
+      "SETSI",
+      "SETELECO"
+    ],
+    "abbreviation": "SETELECO"
+  },
+  {
+    "canonical_authority": "Agence Nationale des Fréquences",
+    "country": "Tunisia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "CERT Tunisia",
+      "ANF"
+    ],
+    "abbreviation": "ANF"
+  },
+  {
+    "canonical_authority": "Instituto Nacional das Comunicações de Angola",
+    "country": "Angola",
+    "standard_validity_years": "3",
+    "aliases": [
+      "INACOM"
+    ],
+    "abbreviation": "INACOM"
+  },
+  {
+    "canonical_authority": "Antigua and Barbuda Telecommunications Division",
+    "country": "Ant.and Barb",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ABTD",
+      "Antigua and Barbuda"
+    ],
+    "abbreviation": "ABTD"
+  },
+  {
+    "canonical_authority": "Directie Telecommunicatie Zaken Aruba",
+    "country": "Aruba",
+    "standard_validity_years": "3",
+    "aliases": [
+      "DTZ"
+    ],
+    "abbreviation": "DTZ"
+  },
+  {
+    "canonical_authority": "Utilities Regulation and Competition Authority",
+    "country": "Bahamas",
+    "standard_validity_years": "3",
+    "aliases": [
+      "URCA"
+    ],
+    "abbreviation": "URCA"
+  },
+  {
+    "canonical_authority": "Ministry of Innovation, Science and Smart Technology",
+    "country": "Barbados",
+    "standard_validity_years": "3",
+    "aliases": [
+      "MISST",
+      "TU"
+    ],
+    "abbreviation": "MISST"
+  },
+  {
+    "canonical_authority": "Public Utilities Commission",
+    "country": "Belize",
+    "standard_validity_years": "3",
+    "aliases": [
+      "PUC",
+      "PUC Belize"
+    ],
+    "abbreviation": "PUC"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation des Communications Électroniques et de la Poste",
+    "country": "Benin",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARCEP Benin"
+    ],
+    "abbreviation": "ARCEP"
+  },
+  {
+    "canonical_authority": "Regulatory Authority of Bermuda",
+    "country": "Bermuda",
+    "standard_validity_years": "3",
+    "aliases": [
+      "RA Bermuda",
+      "BRA"
+    ],
+    "abbreviation": "RA"
+  },
+  {
+    "canonical_authority": "Rijksinspectie Digitale Infrastructuur",
+    "country": "Bonaire, Saint Eustatius and Saba (Netherland)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "RDI",
+      "Agentschap Telecom"
+    ],
+    "abbreviation": "RDI"
+  },
+  {
+    "canonical_authority": "Authority for Info-communications Technology Industry of Brunei Darussalam",
+    "country": "Brunei",
+    "standard_validity_years": "3",
+    "aliases": [
+      "AITI"
+    ],
+    "abbreviation": "AITI"
+  },
+  {
+    "canonical_authority": "Agence de Régulation et de Contrôle des Télécommunications",
+    "country": "Burundi",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARCT"
+    ],
+    "abbreviation": "ARCT"
+  },
+  {
+    "canonical_authority": "Agência de Regulação Multissectorial da Economia",
+    "country": "Cap Verde",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARME",
+      "Cape Verde"
+    ],
+    "abbreviation": "ARME"
+  },
+  {
+    "canonical_authority": "Utility Regulation and Competition Office",
+    "country": "Cayman Islands",
+    "standard_validity_years": "3",
+    "aliases": [
+      "OfReg",
+      "ICTA"
+    ],
+    "abbreviation": "OfReg"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation des Communications Électroniques et des Postes",
+    "country": "Central African Republic",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARCEP CAR"
+    ],
+    "abbreviation": "ARCEP"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation des Communications Électroniques et des Postes du Tchad",
+    "country": "Chad",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARCEP Chad"
+    ],
+    "abbreviation": "ARCEP"
+  },
+  {
+    "canonical_authority": "Autorité Nationale de Régulation des TIC",
+    "country": "Comoros",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ANRTIC"
+    ],
+    "abbreviation": "ANRTIC"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation des Postes et Télécommunications",
+    "country": "Congo",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARPCE Congo",
+      "ARPTC"
+    ],
+    "abbreviation": "ARPCE"
+  },
+  {
+    "canonical_authority": "Ministerio de Comunicaciones - Unidades de Homologación",
+    "country": "Cuba",
+    "standard_validity_years": "3",
+    "aliases": [
+      "RCMC",
+      "MINCOM"
+    ],
+    "abbreviation": "RCMC"
+  },
+  {
+    "canonical_authority": "Bureau Telecommunicatie & Post",
+    "country": "Curaçao (Netherland)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "BT&P",
+      "TA Curaçao"
+    ],
+    "abbreviation": "BT&P"
+  },
+  {
+    "canonical_authority": "Ministère de la Communication, chargé des Postes et des Télécommunications",
+    "country": "Djibouti",
+    "standard_validity_years": "3",
+    "aliases": [
+      "MCPT",
+      "MCCPT"
+    ],
+    "abbreviation": "MCPT"
+  },
+  {
+    "canonical_authority": "National Telecommunications Regulatory Commission",
+    "country": "Dominica",
+    "standard_validity_years": "3",
+    "aliases": [
+      "NTRC Dominica"
+    ],
+    "abbreviation": "NTRC"
+  },
+  {
+    "canonical_authority": "Eswatini Communications Commission",
+    "country": "Eswatini (Swaziland)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ESCCOM",
+      "Swaziland"
+    ],
+    "abbreviation": "ESCCOM"
+  },
+  {
+    "canonical_authority": "Telecommunications Authority of Fiji",
+    "country": "Fiji",
+    "standard_validity_years": "3",
+    "aliases": [
+      "TAF Fiji"
+    ],
+    "abbreviation": "TAF"
+  },
+  {
+    "canonical_authority": "Agence Nationale des Fréquences",
+    "country": "French Polynesia (France PTOM)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ANFR Polynesia",
+      "ANRF"
+    ],
+    "abbreviation": "ANFR"
+  },
+  {
+    "canonical_authority": "Agence Nationale des Fréquences",
+    "country": "French Southern and Antartic lands (France)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ANFR TAF"
+    ],
+    "abbreviation": "ANFR"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation des Communications Électroniques et des Postes",
+    "country": "Gabon",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARCEP Gabon",
+      "AARCEP"
+    ],
+    "abbreviation": "ARCEP"
+  },
+  {
+    "canonical_authority": "Public Utilities Regulatory Authority",
+    "country": "Gambia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "PURA Gambia"
+    ],
+    "abbreviation": "PURA"
+  },
+  {
+    "canonical_authority": "National Telecommunications Regulatory Commission",
+    "country": "Grenada",
+    "standard_validity_years": "3",
+    "aliases": [
+      "NTRC Grenada"
+    ],
+    "abbreviation": "NTRC"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation des Postes et Télécommunications",
+    "country": "Guinea",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARPT Guinea"
+    ],
+    "abbreviation": "ARPT"
+  },
+  {
+    "canonical_authority": "Autoridade Reguladora Nacional de las Tecnologias de Informação e Comunicação",
+    "country": "Guinea Bissau",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARN Bissau"
+    ],
+    "abbreviation": "ARN"
+  },
+  {
+    "canonical_authority": "Telecommunications Agency Guyana",
+    "country": "Guyana",
+    "standard_validity_years": "3",
+    "aliases": [
+      "TAG",
+      "NFMU"
+    ],
+    "abbreviation": "TAG"
+  },
+  {
+    "canonical_authority": "Conseil National des Télécommunications",
+    "country": "Haiti",
+    "standard_validity_years": "3",
+    "aliases": [
+      "CONATEL Haiti",
+      "CNT"
+    ],
+    "abbreviation": "CONATEL"
+  },
+  {
+    "canonical_authority": "Communications Regulatory Authority of Iran",
+    "country": "Iran",
+    "standard_validity_years": "3",
+    "aliases": [
+      "CRA Iran"
+    ],
+    "abbreviation": "CRA"
+  },
+  {
+    "canonical_authority": "Regulatory Authority of Electronic and Postal Communications",
+    "country": "Kosovo",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARKEP"
+    ],
+    "abbreviation": "ARKEP"
+  },
+  {
+    "canonical_authority": "State Agency of Communications under the Cabinet of Ministers",
+    "country": "Kyrgyzstan",
+    "standard_validity_years": "3",
+    "aliases": [
+      "SEIC",
+      "KG RF"
+    ],
+    "abbreviation": "SAC"
+  },
+  {
+    "canonical_authority": "Lesotho Communications Authority",
+    "country": "Lesotho",
+    "standard_validity_years": "3",
+    "aliases": [
+      "LCA Lesotho"
+    ],
+    "abbreviation": "LCA"
+  },
+  {
+    "canonical_authority": "Liberia Telecommunications Authority",
+    "country": "Liberia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "LTA Liberia"
+    ],
+    "abbreviation": "LTA"
+  },
+  {
+    "canonical_authority": "General Authority of Communications and Informatics",
+    "country": "Libya",
+    "standard_validity_years": "3",
+    "aliases": [
+      "GACI",
+      "GDRA",
+      "ACI"
+    ],
+    "abbreviation": "GACI"
+  },
+  {
+    "canonical_authority": "Agency for Electronic Communications",
+    "country": "Macedonia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "AEC",
+      "AEK"
+    ],
+    "abbreviation": "AEC"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation des Technologies de Communication",
+    "country": "Madagascar",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARTEC Madagascar"
+    ],
+    "abbreviation": "ARTEC"
+  },
+  {
+    "canonical_authority": "Malawi Communications Regulatory Authority",
+    "country": "Malawi",
+    "standard_validity_years": "3",
+    "aliases": [
+      "MACRA"
+    ],
+    "abbreviation": "MACRA"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation des Télécommunications et des Postes",
+    "country": "Mali",
+    "standard_validity_years": "3",
+    "aliases": [
+      "AMRTP Mali"
+    ],
+    "abbreviation": "AMRTP"
+  },
+  {
+    "canonical_authority": "Agence Nationale des Fréquences",
+    "country": "Martinique (France DROM)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ANFR Martinique"
+    ],
+    "abbreviation": "ANFR"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation de Mauritanie",
+    "country": "Mauritania",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARE Mauritania",
+      "CNR"
+    ],
+    "abbreviation": "ARE"
+  },
+  {
+    "canonical_authority": "Information and Communication Technologies Authority",
+    "country": "Mauritius",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ICTA Mauritius"
+    ],
+    "abbreviation": "ICTA"
+  },
+  {
+    "canonical_authority": "Direction des Développement des Usages Numériques",
+    "country": "Monaco",
+    "standard_validity_years": "3",
+    "aliases": [
+      "DDUN Monaco",
+      "MNAS"
+    ],
+    "abbreviation": "DDUN"
+  },
+  {
+    "canonical_authority": "Financial Services Commission / Regulatory Body",
+    "country": "Montserrat (UK)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "Montserrat"
+    ],
+    "abbreviation": "FSC"
+  },
+  {
+    "canonical_authority": "Instituto Nacional das Comunicações de Moçambique",
+    "country": "Mozambique",
+    "standard_validity_years": "3",
+    "aliases": [
+      "INCM",
+      "CRAN"
+    ],
+    "abbreviation": "INCM"
+  },
+  {
+    "canonical_authority": "Agence Nationale des Fréquences",
+    "country": "New Caledonia (France PTOM)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ANFR New Caledonia"
+    ],
+    "abbreviation": "ANFR"
+  },
+  {
+    "canonical_authority": "Instituto Nicaragüense de Telecomunicaciones y Correos",
+    "country": "Nicaragua",
+    "standard_validity_years": "3",
+    "aliases": [
+      "TELCOR"
+    ],
+    "abbreviation": "TELCOR"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation des Communications Électroniques et des Postes",
+    "country": "Niger",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARCEP Niger"
+    ],
+    "abbreviation": "ARCEP"
+  },
+  {
+    "canonical_authority": "Ministry of Telecom & Information Technology",
+    "country": "Palestine",
+    "standard_validity_years": "3",
+    "aliases": [
+      "MTIT Palestine"
+    ],
+    "abbreviation": "MTIT"
+  },
+  {
+    "canonical_authority": "National Information and Communications Technology Authority",
+    "country": "Papua",
+    "standard_validity_years": "3",
+    "aliases": [
+      "NICTA Papua"
+    ],
+    "abbreviation": "NICTA"
+  },
+  {
+    "canonical_authority": "Federal Communications Commission",
+    "country": "Puerto Rico (USA)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "FCC Puerto Rico"
+    ],
+    "abbreviation": "FCC"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation de la Poste et des Télécommunications du Congo",
+    "country": "Rep. Dem. Congo",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ARPTC DRC"
+    ],
+    "abbreviation": "ARPTC"
+  },
+  {
+    "canonical_authority": "Agence Nationale des Fréquences",
+    "country": "Saint-Barthelemy (France)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ANFR St Barthelemy"
+    ],
+    "abbreviation": "ANFR"
+  },
+  {
+    "canonical_authority": "Department of Information Communications Technology",
+    "country": "Seychelles",
+    "standard_validity_years": "3",
+    "aliases": [
+      "NATCOM Seychelles"
+    ],
+    "abbreviation": "DICT"
+  },
+  {
+    "canonical_authority": "National Telecommunications Commission",
+    "country": "Sierra Leone",
+    "standard_validity_years": "3",
+    "aliases": [
+      "NATCOM Sierra Leone"
+    ],
+    "abbreviation": "NATCOM"
+  },
+  {
+    "canonical_authority": "National Communications Authority of Somalia",
+    "country": "Somalia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "NCA Somalia"
+    ],
+    "abbreviation": "NCA"
+  },
+  {
+    "canonical_authority": "National Telecommunications Regulatory Commission",
+    "country": "St. LUCIA",
+    "standard_validity_years": "3",
+    "aliases": [
+      "NTRC St Lucia"
+    ],
+    "abbreviation": "NTRC"
+  },
+  {
+    "canonical_authority": "Telecommunications and Post Regulatory Authority",
+    "country": "Sudan",
+    "standard_validity_years": "3",
+    "aliases": [
+      "TPRA Sudan"
+    ],
+    "abbreviation": "TPRA"
+  },
+  {
+    "canonical_authority": "Syrian Telecommunications Regulatory Authority",
+    "country": "Syria",
+    "standard_validity_years": "3",
+    "aliases": [
+      "SYTRA Syria"
+    ],
+    "abbreviation": "SYTRA"
+  },
+  {
+    "canonical_authority": "Communications Service under the Government of Tajikistan",
+    "country": "Tajikistan",
+    "standard_validity_years": "3",
+    "aliases": [
+      "Tajikistan CS"
+    ],
+    "abbreviation": "CST"
+  },
+  {
+    "canonical_authority": "Radio Spectrum Management",
+    "country": "Tokelau (New Zealand)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "RSM Tokelau"
+    ],
+    "abbreviation": "RSM"
+  },
+  {
+    "canonical_authority": "Ministry of Meteorology, Energy, Information, Environment, Climate Change and Communications",
+    "country": "Tonga",
+    "standard_validity_years": "3",
+    "aliases": [
+      "MEIDECC"
+    ],
+    "abbreviation": "MEIDECC"
+  },
+  {
+    "canonical_authority": "Telecommunications Authority of Trinidad and Tobago",
+    "country": "Trinidad and Tobago",
+    "standard_validity_years": "3",
+    "aliases": [
+      "TATT"
+    ],
+    "abbreviation": "TATT"
+  },
+  {
+    "canonical_authority": "Telecommunications Commission",
+    "country": "Turks and Caicos Islands (UK)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "TCI TC"
+    ],
+    "abbreviation": "TCI TC"
+  },
+  {
+    "canonical_authority": "Post and Telecommunications Department",
+    "country": "Union of Myanmar",
+    "standard_validity_years": "3",
+    "aliases": [
+      "PTD Myanmar"
+    ],
+    "abbreviation": "PTD"
+  },
+  {
+    "canonical_authority": "Office of Communications",
+    "country": "United Kingdom (UK)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "OFCOM UK"
+    ],
+    "abbreviation": "OFCOM"
+  },
+  {
+    "canonical_authority": "Federal Communications Commission",
+    "country": "USA",
+    "standard_validity_years": "3",
+    "aliases": [
+      "FCC USA"
+    ],
+    "abbreviation": "FCC"
+  },
+  {
+    "canonical_authority": "Agence Nationale des Fréquences",
+    "country": "Wallis and Futuna Islands (France)",
+    "standard_validity_years": "3",
+    "aliases": [
+      "ANFR Wallis"
+    ],
+    "abbreviation": "ANFR"
+  },
+  {
+    "canonical_authority": "Public Telecommunication Corporation",
+    "country": "Yemen",
+    "standard_validity_years": "3",
+    "aliases": [
+      "PTC Yemen"
+    ],
+    "abbreviation": "PTC"
   },
   {
     "canonical_authority": "Autoridad de Regulación y Fiscalización de Telecomunicaciones y Transportes",
@@ -61,31 +1481,6 @@
     "abbreviation": "ISED"
   },
   {
-    "canonical_authority": "European Telecommunications Standards Institute / Notified Bodies",
-    "country": "European Union",
-    "standard_validity_years": "infinite",
-    "aliases": [
-      "CE",
-      "RED",
-      "RADIO EQUIPMENT DIRECTIVE",
-      "CE MARKING",
-      "EU NOTIFIED BODY"
-    ],
-    "abbreviation": "CE"
-  },
-  {
-    "canonical_authority": "Ministry of Industry and Information Technology",
-    "country": "China",
-    "standard_validity_years": 5,
-    "aliases": [
-      "MIIT",
-      "SRRC",
-      "STATE RADIO REGULATORY COMMISSION",
-      "MINISTRY OF INDUSTRY AND INFORMATION TECHNOLOGY"
-    ],
-    "abbreviation": "MIIT"
-  },
-  {
     "canonical_authority": "Ministry of Internal Affairs and Communications",
     "country": "Japan",
     "standard_validity_years": "infinite",
@@ -124,7 +1519,7 @@
   {
     "canonical_authority": "Infocomm Media Development Authority",
     "country": "Singapore",
-    "standard_validity_years": 3,
+    "standard_validity_years": "3",
     "aliases": [
       "IMDA",
       "INFOCOMM MEDIA DEVELOPMENT AUTHORITY",
@@ -176,7 +1571,7 @@
   {
     "canonical_authority": "Malaysian Communications and Multimedia Commission",
     "country": "Malaysia",
-    "standard_validity_years": 5,
+    "standard_validity_years": "5",
     "aliases": [
       "MCMC",
       "SIRIM",
@@ -195,46 +1590,9 @@
     "abbreviation": "NBTC"
   },
   {
-    "canonical_authority": "Ministry of Communication and Digital Affairs",
-    "country": "Indonesia",
-    "standard_validity_years": 3,
-    "aliases": [
-      "SDPPI",
-      "POSTEL",
-      "KOMDIGI",
-      "KOMINFO",
-      "MINISTRY OF COMMUNICATION AND DIGITAL AFFAIRS"
-    ],
-    "abbreviation": "SDPPI"
-  },
-  {
-    "canonical_authority": "Telecommunication Engineering Centre / Bureau of Indian Standards",
-    "country": "India",
-    "standard_validity_years": 5,
-    "aliases": [
-      "TEC",
-      "BIS",
-      "WPC",
-      "WIRELESS PLANNING & COORDINATION",
-      "TELECOMMUNICATION ENGINEERING CENTRE"
-    ],
-    "abbreviation": "TEC"
-  },
-  {
-    "canonical_authority": "Telecommunications Regulatory Authority",
-    "country": "United Arab Emirates",
-    "standard_validity_years": 3,
-    "aliases": [
-      "TDRA",
-      "TRA",
-      "TELECOMMUNICATIONS AND DIGITAL GOVERNMENT REGULATORY AUTHORITY"
-    ],
-    "abbreviation": "TDRA"
-  },
-  {
     "canonical_authority": "Communications, Space & Technology Commission",
     "country": "Saudi Arabia",
-    "standard_validity_years": 2,
+    "standard_validity_years": "2",
     "aliases": [
       "CST",
       "CITC",
@@ -256,23 +1614,12 @@
   {
     "canonical_authority": "Comisión Nacional de Telecomunicaciones",
     "country": "Paraguay",
-    "standard_validity_years": 5,
+    "standard_validity_years": "5",
     "aliases": [
       "CONATEL",
       "COMISION NACIONAL DE TELECOMUNICACIONES"
     ],
     "abbreviation": "CONATEL"
-  },
-  {
-    "canonical_authority": "Organismo Supervisor de Inversión Privada en Telecomunicaciones / Ministerio de Transportes y Comunicaciones",
-    "country": "Peru",
-    "standard_validity_years": "infinite",
-    "aliases": [
-      "MTC",
-      "OSIPTEL",
-      "MINISTERIO DE TRANSPORTES Y COMUNICACIONES"
-    ],
-    "abbreviation": "MTC"
   },
   {
     "canonical_authority": "Subsecretaría de Telecomunicaciones",
@@ -338,27 +1685,6 @@
     "abbreviation": "CA"
   },
   {
-    "canonical_authority": "Agence Nationale de Réglementation des Télécommunications",
-    "country": "Morocco",
-    "standard_validity_years": "infinite",
-    "aliases": [
-      "ANRT",
-      "AGENCE NATIONALE DE REGLEMENTATION DES TELECOMMUNICATIONS"
-    ],
-    "abbreviation": "ANRT"
-  },
-  {
-    "canonical_authority": "Authority for Communications Regulation and Information Technologies",
-    "country": "Mongolia",
-    "standard_validity_years": null,
-    "aliases": [
-      "CRC",
-      "CRC MONGOLIA",
-      "AUTHORITY FOR COMMUNICATIONS REGULATION AND INFORMATION TECHNOLOGIES"
-    ],
-    "abbreviation": "CRC"
-  },
-  {
     "canonical_authority": "Telecommunication Regulatory Commission of Sri Lanka",
     "country": "Sri Lanka",
     "standard_validity_years": null,
@@ -379,30 +1705,9 @@
     "abbreviation": "PTA"
   },
   {
-    "canonical_authority": "National Telecommunications Regulatory Commission",
-    "country": "Jordan",
-    "standard_validity_years": null,
-    "aliases": [
-      "TRC",
-      "TELECOMMUNICATIONS REGULATORY COMMISSION"
-    ],
-    "abbreviation": "TRC"
-  },
-  {
-    "canonical_authority": "Supreme Council of Information and Communication Technology",
-    "country": "Qatar",
-    "standard_validity_years": null,
-    "aliases": [
-      "CRA",
-      "ICTQATAR",
-      "COMMUNICATIONS REGULATORY AUTHORITY"
-    ],
-    "abbreviation": "CRA"
-  },
-  {
     "canonical_authority": "Telecommunications Regulatory Authority",
     "country": "Bahrain",
-    "standard_validity_years": 3,
+    "standard_validity_years": "3",
     "aliases": [
       "TRA",
       "TELECOMMUNICATIONS REGULATORY AUTHORITY OF BAHRAIN"
@@ -431,26 +1736,6 @@
     "abbreviation": "ARCEP"
   },
   {
-    "canonical_authority": "Autorité de Régulation des Communications Électroniques, des Postes et de la Distribution de la Presse",
-    "country": "France",
-    "standard_validity_years": "infinite",
-    "aliases": [
-      "ARCEP",
-      "ARCEP FRANCE"
-    ],
-    "abbreviation": "ARCEP"
-  },
-  {
-    "canonical_authority": "Bundesnetzagentur",
-    "country": "Germany",
-    "standard_validity_years": "infinite",
-    "aliases": [
-      "BNetzA",
-      "BUNDESNETZAGENTUR"
-    ],
-    "abbreviation": "BNetzA"
-  },
-  {
     "canonical_authority": "Office of Communications",
     "country": "United Kingdom",
     "standard_validity_years": "infinite",
@@ -473,16 +1758,6 @@
     "abbreviation": "ROSCOMNADZOR"
   },
   {
-    "canonical_authority": "National Authority for Management and Regulation in Communications",
-    "country": "Romania",
-    "standard_validity_years": "infinite",
-    "aliases": [
-      "ANCOM",
-      "NATIONAL AUTHORITY FOR MANAGEMENT AND REGULATION IN COMMUNICATIONS"
-    ],
-    "abbreviation": "ANCOM"
-  },
-  {
     "canonical_authority": "National Media and Infocommunications Authority",
     "country": "Hungary",
     "standard_validity_years": "infinite",
@@ -491,29 +1766,6 @@
       "NATIONAL MEDIA AND INFOCOMMUNICATIONS AUTHORITY"
     ],
     "abbreviation": "NMHH"
-  },
-  {
-    "canonical_authority": "Office of Communications Authority",
-    "country": "Hong Kong",
-    "standard_validity_years": "infinite",
-    "aliases": [
-      "OFCA",
-      "OFTA",
-      "OFFICE OF THE COMMUNICATIONS AUTHORITY"
-    ],
-    "abbreviation": "OFCA"
-  },
-  {
-    "canonical_authority": "Directorate General of Telecommunications",
-    "country": "Vietnam",
-    "standard_validity_years": null,
-    "aliases": [
-      "MIC",
-      "VNTA",
-      "VIETNAM TELECOMMUNICATIONS AUTHORITY",
-      "MINISTRY OF INFORMATION AND COMMUNICATIONS"
-    ],
-    "abbreviation": "MIC"
   },
   {
     "canonical_authority": "Superintendencia de Telecomunicaciones",
@@ -544,5 +1796,143 @@
       "INSTITUTO DOMINICANO DE LAS TELECOMUNICACIONES"
     ],
     "abbreviation": "INDOTEL"
+  },
+  {
+    "canonical_authority": "European Telecommunications Standards Institute / Notified Bodies",
+    "country": "European Union",
+    "standard_validity_years": "infinite",
+    "aliases": [
+      "CE",
+      "RED",
+      "RADIO EQUIPMENT DIRECTIVE",
+      "CE MARKING",
+      "EU NOTIFIED BODY"
+    ],
+    "abbreviation": "CE"
+  },
+  {
+    "canonical_authority": "Ministry of Industry and Information Technology",
+    "country": "China",
+    "standard_validity_years": "5",
+    "aliases": [
+      "MIIT",
+      "SRRC",
+      "STATE RADIO REGULATORY COMMISSION",
+      "MINISTRY OF INDUSTRY AND INFORMATION TECHNOLOGY"
+    ],
+    "abbreviation": "MIIT"
+  },
+  {
+    "canonical_authority": "Ministry of Communication and Digital Affairs",
+    "country": "Indonesia",
+    "standard_validity_years": "3",
+    "aliases": [
+      "SDPPI",
+      "POSTEL",
+      "KOMDIGI",
+      "KOMINFO",
+      "MINISTRY OF COMMUNICATION AND DIGITAL AFFAIRS"
+    ],
+    "abbreviation": "SDPPI"
+  },
+  {
+    "canonical_authority": "Telecommunication Engineering Centre / Bureau of Indian Standards",
+    "country": "India",
+    "standard_validity_years": "5",
+    "aliases": [
+      "TEC",
+      "BIS",
+      "WPC",
+      "WIRELESS PLANNING & COORDINATION",
+      "TELECOMMUNICATION ENGINEERING CENTRE"
+    ],
+    "abbreviation": "TEC"
+  },
+  {
+    "canonical_authority": "Telecommunications Regulatory Authority",
+    "country": "United Arab Emirates",
+    "standard_validity_years": "3",
+    "aliases": [
+      "TDRA",
+      "TRA",
+      "TELECOMMUNICATIONS AND DIGITAL GOVERNMENT REGULATORY AUTHORITY"
+    ],
+    "abbreviation": "TDRA"
+  },
+  {
+    "canonical_authority": "Organismo Supervisor de Inversión Privada en Telecomunicaciones / Ministerio de Transportes y Comunicaciones",
+    "country": "Peru",
+    "standard_validity_years": "infinite",
+    "aliases": [
+      "MTC",
+      "OSIPTEL",
+      "MINISTERIO DE TRANSPORTES Y COMUNICACIONES"
+    ],
+    "abbreviation": "MTC"
+  },
+  {
+    "canonical_authority": "Authority for Communications Regulation and Information Technologies",
+    "country": "Mongolia",
+    "standard_validity_years": null,
+    "aliases": [
+      "CRC",
+      "CRC MONGOLIA",
+      "AUTHORITY FOR COMMUNICATIONS REGULATION AND INFORMATION TECHNOLOGIES"
+    ],
+    "abbreviation": "CRC"
+  },
+  {
+    "canonical_authority": "National Telecommunications Regulatory Commission",
+    "country": "Jordan",
+    "standard_validity_years": null,
+    "aliases": [
+      "TRC",
+      "TELECOMMUNICATIONS REGULATORY COMMISSION"
+    ],
+    "abbreviation": "TRC"
+  },
+  {
+    "canonical_authority": "Supreme Council of Information and Communication Technology",
+    "country": "Qatar",
+    "standard_validity_years": null,
+    "aliases": [
+      "CRA",
+      "ICTQATAR",
+      "COMMUNICATIONS REGULATORY AUTHORITY"
+    ],
+    "abbreviation": "CRA"
+  },
+  {
+    "canonical_authority": "Autorité de Régulation des Communications Électroniques, des Postes et de la Distribution de la Presse",
+    "country": "France",
+    "standard_validity_years": "infinite",
+    "aliases": [
+      "ARCEP",
+      "ARCEP FRANCE"
+    ],
+    "abbreviation": "ARCEP"
+  },
+  {
+    "canonical_authority": "Office of Communications Authority",
+    "country": "Hong Kong",
+    "standard_validity_years": "infinite",
+    "aliases": [
+      "OFCA",
+      "OFTA",
+      "OFFICE OF THE COMMUNICATIONS AUTHORITY"
+    ],
+    "abbreviation": "OFCA"
+  },
+  {
+    "canonical_authority": "Directorate General of Telecommunications",
+    "country": "Vietnam",
+    "standard_validity_years": null,
+    "aliases": [
+      "MIC",
+      "VNTA",
+      "VIETNAM TELECOMMUNICATIONS AUTHORITY",
+      "MINISTRY OF INFORMATION AND COMMUNICATIONS"
+    ],
+    "abbreviation": "MIC"
   }
 ]

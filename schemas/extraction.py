@@ -9,6 +9,7 @@ Defines:
 
 from typing import Optional
 from datetime import datetime
+import uuid
 from pydantic import BaseModel, Field
 
 from sqlalchemy import Column, String, Text, Integer, Date, DateTime, ForeignKey, Boolean
@@ -148,3 +149,26 @@ class AgentMemory(Base):
     fact_text = Column(Text, nullable=False, comment="Persisted long-term fact or user directive")
     source_session_id = Column(String(100), nullable=True, comment="Optional session ID where memory originated")
     created_at = Column(DateTime, default=datetime.utcnow, comment="Timestamp when memory was recorded")
+
+
+class RecycleBinItem(Base):
+    __tablename__ = "recycle_bin"
+    __table_args__ = {"extend_existing": True}
+
+    id = Column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex, comment="Recycle bin item primary key")
+    title = Column(String(255), nullable=False, comment="Display title for deleted item")
+    table_name = Column(String(100), nullable=False, comment="Original table name")
+    record_data = Column(Text, nullable=False, comment="JSON encoded record payload")
+    deleted_at = Column(DateTime, default=datetime.utcnow, comment="Timestamp of deletion")
+
+
+class NotificationItem(Base):
+    __tablename__ = "notifications"
+    __table_args__ = {"extend_existing": True}
+
+    id = Column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex, comment="Notification item primary key")
+    title = Column(String(255), nullable=False, comment="Short notification title")
+    message = Column(Text, nullable=False, comment="Notification description text")
+    category = Column(String(50), default="standardization", comment="Category: standardization, import, system")
+    is_read = Column(Boolean, default=False, comment="Whether notification has been read")
+    created_at = Column(DateTime, default=datetime.utcnow, comment="Notification timestamp")

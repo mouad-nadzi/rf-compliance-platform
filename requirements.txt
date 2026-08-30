@@ -41,7 +41,6 @@ uvicorn
 python-multipart
 httpx
 requests
-streamlit
 apscheduler
 # Headless browser for JS-rendered document portals (SCRAPER_FETCHER="playwright").
 # Requires `playwright install chromium` + system deps in the runtime image.

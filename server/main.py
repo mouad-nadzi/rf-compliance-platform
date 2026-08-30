@@ -22,13 +22,14 @@ import json
 import logging
 import os
 import tempfile
+import time
 import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Depends
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Depends, Body
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
@@ -211,6 +212,54 @@ def _persist_chat_session_frozen(session_id: str, frozen: bool) -> None:
 # API Lifespan (Startup / Shutdown)
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _seed_table_schema_memories():
+    """Ensure all core tables have their Table Schema Profiles registered in Long-Term Memory (agent_memories)."""
+    import storage.database as db
+    from schemas.extraction import AgentMemory
+    from datetime import datetime
+    import json
+
+    tables = [
+        {
+            'table_name': 'RF Certificates',
+            'target_fields': ['component', 'supplier', 'country', 'certif_number', 'authority', 'issue_date', 'exp_date', 'cert_link'],
+            'description': 'Main database table storing Radio Frequency homologation certificates, equipment models, suppliers, regulatory bodies, issue/expiration dates, and document URLs.'
+        },
+        {
+            'table_name': 'Authorities',
+            'target_fields': ['canonical_authority', 'abbreviation', 'country', 'standard_validity_years', 'website_url'],
+            'description': 'Master lookup table storing global regulatory bodies (e.g. ENTE NACIONAL DE COMUNICACIONES, ANATEL, ATT, FCC) and standard validity terms.'
+        },
+        {
+            'table_name': 'Suppliers',
+            'target_fields': ['canonical_supplier', 'aliases', 'headquarters_country', 'notes'],
+            'description': 'Master lookup table storing foreign tier-1 automotive suppliers (e.g. Valeo, Bosch, Aptiv, Continental, Denso) and brand aliases.'
+        },
+        {
+            'table_name': 'Compliance Sources',
+            'target_fields': ['name', 'url', 'description', 'active'],
+            'description': 'Autonomous ingestion source portals and regulatory web sources monitored for compliance updates.'
+        },
+        {
+            'table_name': 'Agent Memories',
+            'target_fields': ['memory_key', 'fact_text', 'source_session_id', 'created_at'],
+            'description': 'Long-term memory store keeping user preferences, table schema profiles, and compliance rules.'
+        }
+    ]
+
+    try:
+        with db.get_db_session() as session:
+            for t in tables:
+                key = f'table_schema:{t["table_name"].lower()}'
+                existing = session.query(AgentMemory).filter(AgentMemory.memory_key == key).first()
+                if not existing:
+                    t['registered_at'] = datetime.utcnow().isoformat()
+                    mem = AgentMemory(memory_key=key, fact_text=json.dumps(t))
+                    session.add(mem)
+            session.commit()
+    except Exception as ex:
+        logger.debug(f"Warning seeding table schema memories: {ex}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -254,6 +303,9 @@ async def lifespan(app: FastAPI):
     from core.rag.embeddings import get_embedding_model
     get_embedding_model()
 
+    # Pre-seed Long-Term Memory profiles for all existing core tables
+    _seed_table_schema_memories()
+
     logger.info("OCR and LLM engines resident in VRAM; embedding model in RAM.")
 
     # Start the autonomous background scheduler (APScheduler AsyncIOScheduler).
@@ -293,12 +345,16 @@ from server.config import FILES_STORAGE_DIR as _FILES_STORAGE_DIR
 os.makedirs(_FILES_STORAGE_DIR, exist_ok=True)
 app.mount("/files", StaticFiles(directory=_FILES_STORAGE_DIR), name="uploaded_files")
 
+# Mount Vite frontend assets
+if os.path.exists("frontend/dist/assets"):
+    app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="frontend-assets")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Endpoints
 # ──────────────────────────────────────────────────────────────────────────────
 
-@app.get("/")
+@app.get("/api/v1/health")
 async def health_check():
     """Health check endpoint to verify API connection status."""
     from server.config import OCR_ENGINE, LLM_ENGINE
@@ -328,7 +384,7 @@ async def system_init():
 
 
 @app.post("/api/v1/parse")
-async def parse_document(file: UploadFile = File(...)):
+def parse_document(file: UploadFile = File(...)):
     """
     Accepts a single document file (PDF or image), runs it through the full pipeline:
     OCR  Boundary Detection  Split  Per-Certificate Extraction.
@@ -348,20 +404,10 @@ async def parse_document(file: UploadFile = File(...)):
         # 1. Securely save the incoming upload to a temporary file AND persistent storage
         file_extension = os.path.splitext(file.filename)[1]
         temp_fd, temp_file_path = tempfile.mkstemp(suffix=file_extension)
-        content = await file.read()
+        content = file.file.read()
 
         with os.fdopen(temp_fd, "wb") as f:
             f.write(content)
-
-        # Copy to permanent file storage for static serving
-        from server.config import FILES_STORAGE_DIR, PUBLIC_API_URL
-        safe_fname = os.path.basename(file.filename or "upload")
-        persistent_path = os.path.join(FILES_STORAGE_DIR, "parse", safe_fname)
-        os.makedirs(os.path.dirname(persistent_path), exist_ok=True)
-        shutil.copy2(temp_file_path, persistent_path)
-        file_public_url = f"{PUBLIC_API_URL}/files/parse/{safe_fname}"
-
-        logger.info(f"  Processing uploaded file: {file.filename}")
 
         # Copy to permanent file storage for static serving
         from server.config import FILES_STORAGE_DIR, PUBLIC_API_URL
@@ -488,6 +534,8 @@ def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
                 continue
 
             manifest["current_file"] = name
+            manifest["phase"] = "ocr"
+            manifest["sub_phase"] = f"GLM-OCR scanning document pages: {name}"
             _save()
 
             md_path = os.path.join(OCR_CACHE_DIR, f"{_file_hash(name)}.md")
@@ -506,6 +554,10 @@ def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
                     shutil.copy2(src_path, dest_storage)
                     entry["file_url"] = f"{PUBLIC_API_URL}/files/{batch_id}/{name}"
                     entry["ocr_ok"] = True
+                    manifest["ocr_done"] += 1
+                    manifest["phase"] = "extract"
+                    manifest["sub_phase"] = f"Qwen LLM extracting fields: {name}"
+                    _save()
                 except Exception as e:
                     entry["status"] = "failed"
                     entry["error"] = str(e)
@@ -513,18 +565,25 @@ def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
                     logger.error(f"  OCR failed for '{name}': {e}")
                     _save()
                     continue
+            else:
+                manifest["phase"] = "extract"
+                manifest["sub_phase"] = f"Qwen LLM extracting fields: {name}"
+                _save()
 
             # ── Step 2: Extraction + persistence (LLM co-resident) ──────────
             try:
                 with open(md_path, "r", encoding="utf-8") as f:
                     extracted_text = f.read()
                 cert = extract_certificate_data(extracted_text, name)
+                manifest["phase"] = "saving"
+                manifest["sub_phase"] = f"Persisting certificate to database: {name}"
+                _save()
+
                 file_url = entry.get("file_url") or f"/files/{batch_id}/{name}"
                 cert.cert_link = file_url
                 rec = save_certificate_to_db(cert, extracted_text, name)
                 entry["status"] = "extracted"
                 entry["certificate_id"] = rec.certificate_id
-                manifest["ocr_done"] += 1
                 manifest["extract_done"] += 1
                 logger.info(f"  Extracted + persisted: {name} -> {rec.certificate_id}")
             except Exception as e:
@@ -535,6 +594,7 @@ def _run_batch(batch_id: str, upload_dir: str, file_names: list[str]) -> None:
             _save()
 
         manifest["phase"] = "done"
+        manifest["sub_phase"] = "Ingestion Complete!"
         manifest["current_file"] = None
         _save()
     except Exception as e:
@@ -640,9 +700,18 @@ async def batch_status_current():
     )
     if not manifests:
         return {"phase": "idle", "running": False}
-    with open(manifests[0], "r", encoding="utf-8") as f:
+
+    latest_path = manifests[0]
+    mtime = os.path.getmtime(latest_path)
+    is_running = bool(_batch_thread and _batch_thread.is_alive())
+
+    # If no batch is running and last batch finished > 12s ago, report idle
+    if not is_running and (time.time() - mtime > 12):
+        return {"phase": "idle", "running": False}
+
+    with open(latest_path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
-    manifest["running"] = bool(_batch_thread and _batch_thread.is_alive())
+    manifest["running"] = is_running
     return manifest
 
 
@@ -998,7 +1067,7 @@ async def delete_supplier(supp_id: int, db: Session = Depends(get_db)):
 
 @app.put("/api/v1/certificates/{cert_id}")
 async def update_certificate(cert_id: str, payload: dict, db: Session = Depends(get_db)):
-    """Updates editable fields of an existing certificate."""
+    """Updates editable fields of an existing certificate with automatic LLM standardization check."""
     from schemas.extraction import CertificateMetadata
     from datetime import date
     from core.extractor import NO_EXPIRY_DATE, is_no_expiry_marker
@@ -1006,6 +1075,13 @@ async def update_certificate(cert_id: str, payload: dict, db: Session = Depends(
         record = db.query(CertificateMetadata).filter(CertificateMetadata.certificate_id == cert_id).first()
         if not record:
             raise HTTPException(status_code=404, detail="Certificate not found")
+
+        # Automatically pass manual cell edits through LLM standardization check
+        try:
+            payload = llm_standardize_row(payload)
+        except Exception as ex:
+            logger.debug(f"LLM standardization check for manual edit skipped: {ex}")
+
         for field in ("component", "supplier", "country", "certif_number", "authority"):
             if field in payload and payload[field] is not None:
                 setattr(record, field, payload[field])
@@ -1054,10 +1130,605 @@ async def delete_certificate(cert_id: str, db: Session = Depends(get_db)):
         logger.error(f" Error deleting certificate {cert_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/v1/certificates/batch-delete")
+async def batch_delete_certificates(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Batch deletes multiple certificates from PostgreSQL and preserves ALL deleted records in PostgreSQL Recycle Bin."""
+    from schemas.extraction import CertificateMetadata, RecycleBinItem
+    import json, uuid
+
+    ids = payload.get("ids", [])
+    if not ids:
+        return {"status": "success", "count": 0}
+    try:
+        # Fetch full records before deletion so ALL records are preserved in Recycle Bin
+        records_to_delete = db.query(CertificateMetadata).filter(CertificateMetadata.certificate_id.in_(ids)).all()
+
+        recycle_items = []
+        for r in records_to_delete:
+            rec_data = {
+                "certificate_id": r.certificate_id,
+                "component": r.component,
+                "supplier": r.supplier,
+                "country": r.country,
+                "certif_number": r.certif_number,
+                "authority": r.authority,
+                "issue_date": str(r.issue_date) if r.issue_date else None,
+                "exp_date": str(r.exp_date) if r.exp_date else None,
+                "cert_link": r.cert_link
+            }
+            recycle_items.append(RecycleBinItem(
+                id=uuid.uuid4().hex,
+                title=f"{r.component} ({r.certif_number or 'N/A'})",
+                table_name="RF Certificates",
+                record_data=json.dumps(rec_data)
+            ))
+
+        db.add_all(recycle_items)
+
+        # Execute single fast SQL deletion
+        deleted_count = db.query(CertificateMetadata).filter(CertificateMetadata.certificate_id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
+
+        from storage.backup import export_database_to_sql
+        export_database_to_sql()
+        logger.info(f"Batch deleted {deleted_count} certificate records and preserved ALL {len(recycle_items)} items in PostgreSQL Recycle Bin")
+        return {"status": "success", "count": deleted_count}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error in batch certificate deletion: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/recycle-bin")
+async def get_recycle_bin_items(db: Session = Depends(get_db)):
+    """Fetches all deleted records preserved in PostgreSQL Recycle Bin."""
+    from schemas.extraction import RecycleBinItem
+    import json
+    try:
+        items = db.query(RecycleBinItem).order_by(RecycleBinItem.deleted_at.desc()).all()
+        result = []
+        for item in items:
+            try: data_obj = json.loads(item.record_data)
+            except Exception: data_obj = {}
+            result.append({
+                "id": item.id,
+                "title": item.title,
+                "tableName": item.table_name,
+                "data": data_obj,
+                "deletedAt": item.deleted_at.isoformat() if item.deleted_at else ''
+            })
+        return {"status": "success", "items": result}
+    except Exception as e:
+        logger.error(f"Error fetching recycle bin items: {e}")
+        return {"status": "error", "items": []}
+
+@app.post("/api/v1/recycle-bin/restore/{item_id}")
+async def restore_recycle_bin_item(item_id: str, db: Session = Depends(get_db)):
+    """Restores an item from PostgreSQL Recycle Bin back to its original table."""
+    from schemas.extraction import RecycleBinItem, CertificateMetadata
+    import json, uuid
+    from datetime import datetime
+    try:
+        item = db.query(RecycleBinItem).filter(RecycleBinItem.id == item_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Recycle item not found")
+
+        rec_data = json.loads(item.record_data)
+
+        if item.table_name in ["RF Certificates", "certificates"]:
+            def parse_d(val):
+                if not val or str(val).strip() in ['—', 'None', 'null', '']: return None
+                try: return datetime.strptime(str(val).strip()[:10], '%Y-%m-%d').date()
+                except: return None
+
+            cert = CertificateMetadata(
+                certificate_id=rec_data.get("certificate_id") or uuid.uuid4().hex,
+                component=rec_data.get("component", ""),
+                supplier=rec_data.get("supplier", ""),
+                country=rec_data.get("country", ""),
+                certif_number=rec_data.get("certif_number", ""),
+                authority=rec_data.get("authority", ""),
+                issue_date=parse_d(rec_data.get("issue_date")),
+                exp_date=parse_d(rec_data.get("exp_date")),
+                cert_link=rec_data.get("cert_link", "")
+            )
+            db.merge(cert)
+
+        db.delete(item)
+        db.commit()
+        return {"status": "success", "restored_id": item_id}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error restoring recycle bin item {item_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/v1/recycle-bin/{item_id}")
+async def delete_recycle_bin_item(item_id: str, db: Session = Depends(get_db)):
+    """Permanently deletes an item from PostgreSQL Recycle Bin."""
+    from schemas.extraction import RecycleBinItem
+    try:
+        db.query(RecycleBinItem).filter(RecycleBinItem.id == item_id).delete()
+        db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/v1/recycle-bin")
+async def empty_recycle_bin_api(db: Session = Depends(get_db)):
+    """Empties all items from PostgreSQL Recycle Bin."""
+    from schemas.extraction import RecycleBinItem
+    try:
+        db.query(RecycleBinItem).delete()
+        db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
 from fastapi.responses import Response, StreamingResponse
 import csv
 import io
 from schemas.extraction import CertificateExtractionSchema, CertificateMetadata
+
+@app.post("/api/v1/certificates")
+async def create_or_save_certificate(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Save or create a certificate record with flexible column header mapping."""
+    import uuid
+    from datetime import datetime
+    try:
+        cert_id = payload.get("id") or payload.get("certificate_id") or uuid.uuid4().hex
+
+        def parse_d(val):
+            if not val or str(val).strip() in ['—', 'None', 'null', '']: return None
+            val_str = str(val).strip()
+            if val_str.replace('.', '', 1).isdigit():
+                try:
+                    num = float(val_str)
+                    if 1000 < num < 100000:
+                        from datetime import timedelta
+                        return (datetime(1899, 12, 30) + timedelta(days=num)).date()
+                except Exception:
+                    pass
+            try: return datetime.strptime(val_str[:10], '%Y-%m-%d').date()
+            except Exception: pass
+            try:
+                from dateutil import parser as date_parser
+                return date_parser.parse(val_str, dayfirst=True).date()
+            except Exception: pass
+            for fmt in ('%d-%b-%y', '%d-%b-%Y', '%b-%d-%y', '%b-%d-%Y', '%d/%m/%Y', '%d/%m/%y', '%m/%d/%Y', '%m/%d/%y', '%Y/%m/%d', '%d-%m-%Y', '%d-%m-%y'):
+                try: return datetime.strptime(val_str, fmt).date()
+                except Exception: pass
+            return None
+
+        cert = CertificateMetadata(
+            certificate_id=str(cert_id),
+            component=str(payload.get("component") or payload.get("Component") or payload.get("name") or "").strip(),
+            supplier=str(payload.get("supplier") or payload.get("Supplier") or payload.get("canonical_supplier") or "").strip(),
+            country=str(payload.get("country") or payload.get("Country") or "").strip(),
+            certif_number=str(payload.get("certif_number") or payload.get("Certif Number") or payload.get("H-27922") or "").strip(),
+            authority=str(payload.get("authority") or payload.get("Authority") or payload.get("canonical_authority") or "").strip(),
+            issue_date=parse_d(payload.get("issue_date") or payload.get("Issue Date")),
+            exp_date=parse_d(payload.get("exp_date") or payload.get("expiration_date") or payload.get("Expiration Date") or payload.get("Exp Date")),
+            cert_link=str(payload.get("cert_link") or payload.get("PDF Document Link") or payload.get("url") or '').strip()
+        )
+        db.merge(cert)
+        db.commit()
+        return {"status": "success", "certificate_id": cert.certificate_id}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error saving certificate: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def llm_standardize_row(raw_data: dict) -> dict:
+    """Uses LLM (Qwen) natural language intelligence to standardize certificate cell values without hardcoded domain prompts or manual string rules."""
+    from core.llm import generate_json
+    import json
+
+    system_prompt = (
+        "You are a broad schema-agnostic database data standardizer. "
+        "Standardize the provided raw record cell values based on natural language semantics and data types (clean brand names, Title Case English countries, formal entity names, ISO YYYY-MM-DD dates, valid URLs). "
+        "Return ONLY a valid JSON dictionary containing the standardized fields."
+    )
+    user_prompt = f"Raw Certificate Record: {json.dumps(raw_data)}"
+
+    try:
+        raw_res = generate_json(system_prompt, user_prompt, disable_thinking=True, max_tokens=512)
+        start = raw_res.find('{')
+        end = raw_res.rfind('}') + 1
+        if start != -1 and end > start:
+            std = json.loads(raw_res[start:end])
+            return {**raw_data, **std}
+    except Exception as e:
+        logger.warning(f"LLM row standardization warning: {e}")
+    return raw_data
+
+@app.post("/api/v1/certificates/batch")
+async def batch_save_certificates(rows: list = Body(...), db: Session = Depends(get_db)):
+    """Batch save multiple certificate records into PostgreSQL in a single transaction with 100% LLM row standardization."""
+    import uuid
+    from datetime import datetime
+
+    try:
+        def parse_d(val):
+            if not val or str(val).strip() in ['—', 'None', 'null', '']: return None
+            val_str = str(val).strip()
+            if val_str.replace('.', '', 1).isdigit():
+                try:
+                    num = float(val_str)
+                    if 1000 < num < 100000:
+                        from datetime import timedelta
+                        return (datetime(1899, 12, 30) + timedelta(days=num)).date()
+                except Exception:
+                    pass
+            try: return datetime.strptime(val_str[:10], '%Y-%m-%d').date()
+            except Exception: pass
+            try:
+                from dateutil import parser as date_parser
+                return date_parser.parse(val_str, dayfirst=True).date()
+            except Exception: pass
+            for fmt in ('%d-%b-%y', '%d-%b-%Y', '%b-%d-%y', '%b-%d-%Y', '%d/%m/%Y', '%d/%m/%y', '%m/%d/%Y', '%m/%d/%y', '%Y/%m/%d', '%d-%m-%Y', '%d-%m-%y'):
+                try: return datetime.strptime(val_str, fmt).date()
+                except Exception: pass
+            return None
+
+        # Pre-cache AuthorityLookup and SupplierLookup maps for fast in-memory matching
+        from storage.models import AuthorityLookup, SupplierLookup
+        from schemas.extraction import NotificationItem
+
+        authority_lookups = db.query(AuthorityLookup).all()
+        country_to_auth_map = {}
+        auth_to_country_map = {}
+        for al in authority_lookups:
+            if al.country:
+                auth_target = al.abbreviation if al.abbreviation else al.canonical_authority
+                country_to_auth_map[al.country.strip().lower()] = auth_target
+                if al.abbreviation:
+                    auth_to_country_map[al.abbreviation.strip().lower()] = al.country
+                if al.canonical_authority:
+                    auth_to_country_map[al.canonical_authority.strip().lower()] = al.country
+                if isinstance(al.aliases, list):
+                    for alias in al.aliases:
+                        if alias:
+                            auth_to_country_map[alias.strip().lower()] = al.country
+
+        supplier_lookups = db.query(SupplierLookup).all()
+        alias_to_supp_map = {}
+        for sl in supplier_lookups:
+            if sl.canonical_supplier:
+                alias_to_supp_map[sl.canonical_supplier.strip().lower()] = sl.canonical_supplier
+                if isinstance(sl.aliases, list):
+                    for alias in sl.aliases:
+                        if alias:
+                            alias_to_supp_map[alias.strip().lower()] = sl.canonical_supplier
+
+        new_certs = []
+        autofilled_events_count = 0
+
+        for payload in rows:
+            if not isinstance(payload, dict): continue
+            cert_id = payload.get("id") or payload.get("certificate_id") or uuid.uuid4().hex
+
+            # Capture original raw values before LLM / memory standardization
+            orig_auth = str(payload.get("authority") or payload.get("Authority") or payload.get("canonical_authority") or "").strip()
+            orig_supp = str(payload.get("supplier") or payload.get("Supplier") or payload.get("canonical_supplier") or "").strip()
+            orig_ctry = str(payload.get("country") or payload.get("Country") or "").strip()
+
+            std_payload = payload
+            if len(rows) <= 10:
+                std_payload = llm_standardize_row(payload)
+
+            raw_comp = str(std_payload.get("component") or std_payload.get("Component") or std_payload.get("name") or "Unknown").strip()
+            raw_supp = str(std_payload.get("supplier") or std_payload.get("Supplier") or std_payload.get("canonical_supplier") or "").strip()
+            raw_ctry = str(std_payload.get("country") or std_payload.get("Country") or "").strip()
+            raw_cert_num = str(std_payload.get("certif_number") or std_payload.get("Certif Number") or std_payload.get("H-27922") or "").strip()
+            raw_auth = str(std_payload.get("authority") or std_payload.get("Authority") or std_payload.get("canonical_authority") or "").strip()
+            raw_issue = str(std_payload.get("issue_date") or std_payload.get("Issue Date") or '').strip()
+            raw_exp = str(std_payload.get("exp_date") or std_payload.get("expiration_date") or std_payload.get("Expiration Date") or std_payload.get("Exp Date") or '').strip()
+            raw_link = str(std_payload.get("cert_link") or std_payload.get("PDF Document Link") or std_payload.get("url") or '').strip()
+
+            autofilled = []
+
+            # Primary Rule: Derive Country from Authority if Country is empty
+            if (not raw_ctry or raw_ctry in ('—', 'N/A', 'Unknown')) and raw_auth:
+                auth_key = raw_auth.lower()
+                if auth_key in auth_to_country_map:
+                    inferred_ctry = auth_to_country_map[auth_key]
+                    if inferred_ctry:
+                        raw_ctry = inferred_ctry
+                        autofilled.append(f'Country: "{raw_ctry}" (derived from Authority "{raw_auth}")')
+
+            # Complementary Rule: Derive Authority from Country if Authority is empty
+            if (not raw_auth or raw_auth in ('—', 'N/A', 'Unknown')) and raw_ctry:
+                ctry_key = raw_ctry.lower()
+                if ctry_key in country_to_auth_map:
+                    inferred_auth = country_to_auth_map[ctry_key]
+                    if inferred_auth:
+                        raw_auth = inferred_auth
+                        autofilled.append(f'Authority: "{raw_auth}" (derived from Country "{raw_ctry}")')
+
+            # Smart Auto-Fill for empty Supplier: check SupplierLookup map
+            if (not raw_supp or raw_supp in ('—', 'N/A', 'Unknown')) and raw_comp:
+                comp_key = raw_comp.lower()
+                if comp_key in alias_to_supp_map:
+                    raw_supp = alias_to_supp_map[comp_key]
+                    autofilled.append(f'Supplier: "{raw_supp}"')
+
+            # Check if authority, supplier, or country was originally empty but got filled by LLM / memory
+            if (not orig_auth or orig_auth in ('—', 'N/A')) and raw_auth and raw_auth not in ('—', 'N/A'):
+                if not any(a.startswith('Authority:') for a in autofilled):
+                    autofilled.append(f'Authority: "{raw_auth}"')
+            if (not orig_supp or orig_supp in ('—', 'Unknown')) and raw_supp and raw_supp not in ('—', 'Unknown'):
+                if not any(a.startswith('Supplier:') for a in autofilled):
+                    autofilled.append(f'Supplier: "{raw_supp}"')
+            if (not orig_ctry or orig_ctry in ('—', 'Unknown')) and raw_ctry and raw_ctry not in ('—', 'Unknown'):
+                if not any(a.startswith('Country:') for a in autofilled):
+                    autofilled.append(f'Country: "{raw_ctry}"')
+
+            # Log notification ONLY if a genuine empty cell was auto-filled!
+            if autofilled:
+                autofilled_events_count += 1
+                try:
+                    notif = NotificationItem(
+                        title=f'AI Auto-Filled Empty Cell ({raw_comp})',
+                        message=f'AI auto-filled empty cell(s) for component "{raw_comp}": {", ".join(autofilled)} based on Authority Lookups & Long-Term Memory.',
+                        category="standardization",
+                        is_read=False,
+                        created_at=datetime.utcnow()
+                    )
+                    db.add(notif)
+                except Exception as ex:
+                    logger.debug(f"Error logging auto-fill notification: {ex}")
+
+            cert = CertificateMetadata(
+                certificate_id=str(cert_id),
+                component=raw_comp or "",
+                supplier=raw_supp or "",
+                country=raw_ctry or "",
+                certif_number=raw_cert_num or "",
+                authority=raw_auth or "",
+                issue_date=parse_d(raw_issue),
+                exp_date=parse_d(raw_exp),
+                cert_link=raw_link
+            )
+            new_certs.append(cert)
+
+        for c in new_certs:
+            db.merge(c)
+        db.commit()
+
+        return {"status": "success", "count": len(new_certs), "autofilled_notifications": autofilled_events_count}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error in batch certificate save: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/notifications")
+async def list_notifications(db: Session = Depends(get_db)):
+    """Returns all system & AI standardization notifications."""
+    from schemas.extraction import NotificationItem
+    items = db.query(NotificationItem).order_by(NotificationItem.created_at.desc()).limit(50).all()
+    unread_count = db.query(NotificationItem).filter(NotificationItem.is_read == False).count()
+    return {
+        "unread_count": unread_count,
+        "notifications": [
+            {
+                "id": n.id,
+                "title": n.title,
+                "message": n.message,
+                "category": n.category,
+                "is_read": n.is_read,
+                "created_at": n.created_at.strftime("%b %d, %Y %H:%M") if n.created_at else None
+            }
+            for n in items
+        ]
+    }
+
+
+@app.post("/api/v1/notifications/mark-read")
+async def mark_notifications_read(db: Session = Depends(get_db)):
+    """Marks all unread notifications as read."""
+    from schemas.extraction import NotificationItem
+    db.query(NotificationItem).filter(NotificationItem.is_read == False).update({"is_read": True})
+    db.commit()
+    return {"status": "success"}
+
+
+@app.delete("/api/v1/notifications/clear")
+async def clear_notifications(db: Session = Depends(get_db)):
+    """Clears all system notifications."""
+    from schemas.extraction import NotificationItem
+    db.query(NotificationItem).delete()
+    db.commit()
+    return {"status": "success"}
+
+def get_or_create_table_schema_memory(db: Session, table_name: str, target_fields: list, sample_row: dict, allow_new_columns: bool = False) -> tuple[dict, list]:
+    """
+    Retrieves or updates a table's schema profile in Long-Term Memory (agent_memories table).
+    If new columns are detected, it requires explicit allow_new_columns permission to expand memory!
+    Returns (profile, unmapped_columns).
+    """
+    from schemas.extraction import AgentMemory
+    import json
+    from datetime import datetime
+
+    memory_key = f"table_schema:{table_name.strip().lower()}"
+    existing_mem = db.query(AgentMemory).filter(AgentMemory.memory_key == memory_key).first()
+
+    current_fields = target_fields if target_fields else list(sample_row.keys())
+
+    if existing_mem:
+        try:
+            profile = json.loads(existing_mem.fact_text)
+            stored_fields = set(profile.get("target_fields", []))
+            incoming_fields = set(current_fields)
+
+            # Detect extra/unmapped columns
+            unmapped = list(incoming_fields - stored_fields)
+
+            if unmapped:
+                if allow_new_columns:
+                    # User granted explicit permission to add new column(s)!
+                    updated_fields = sorted(list(stored_fields.union(incoming_fields)))
+                    profile["target_fields"] = updated_fields
+                    profile["sample_formatting"] = {**profile.get("sample_formatting", {}), **sample_row}
+                    profile["last_updated"] = datetime.utcnow().isoformat()
+
+                    existing_mem.fact_text = json.dumps(profile)
+                    db.commit()
+                    logger.info(f"User granted permission: Added new column(s) {unmapped} for table '{table_name}' to Long-Term Memory!")
+                    return profile, []
+                else:
+                    # Permission denied / not yet granted: Keep target_fields restricted to existing stored_fields
+                    logger.info(f"Unmapped column(s) {unmapped} detected for table '{table_name}'. Mapping strictly to existing columns.")
+                    return profile, unmapped
+
+            return profile, []
+        except Exception as ex:
+            logger.debug(f"Error parsing existing table memory: {ex}")
+
+    # If brand new table, construct and store table schema memory
+    schema_profile = {
+        "table_name": table_name,
+        "target_fields": current_fields,
+        "sample_formatting": sample_row,
+        "registered_at": datetime.utcnow().isoformat()
+    }
+    try:
+        new_mem = AgentMemory(
+            memory_key=memory_key,
+            fact_text=json.dumps(schema_profile)
+        )
+        db.add(new_mem)
+        db.commit()
+        logger.info(f"Automatically registered brand-new table schema profile '{table_name}' in Long-Term Memory!")
+    except Exception as ex:
+        db.rollback()
+        logger.debug(f"Warning saving table schema memory for '{table_name}': {ex}")
+
+    return schema_profile, []
+
+@app.post("/api/v1/databases/map-headers")
+@app.post("/api/v1/certificates/map-headers")
+async def llm_map_spreadsheet_headers(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Table-Agnostic LLM Alignment Engine (Qwen):
+    1. For existing tables: Fetches table schema and sample records from Long-Term Memory (agent_memories & DB), then maps headers and standardizes cell text.
+    2. If incoming file has new unmapped columns, maps strictly to existing columns unless allow_new_columns=True permission is passed.
+    """
+    from core.llm import generate_json
+    import json
+
+    table_name = payload.get("table_name", "RF Certificates")
+    headers = payload.get("headers", [])
+    sample_row = payload.get("sample_row", {})
+    target_fields = payload.get("target_fields", [])
+    is_new_table = payload.get("is_new_table", False)
+    allow_new_columns = payload.get("allow_new_columns", False)
+
+    # 1. Retrieve or update table schema profile in Long-Term Memory (agent_memories) with permission check
+    table_memory, unmapped_cols = get_or_create_table_schema_memory(db, table_name, target_fields, sample_row, allow_new_columns=allow_new_columns)
+    effective_target_fields = table_memory.get("target_fields", target_fields)
+
+    # 2. Fetch 2-3 existing sample rows from PostgreSQL for reference
+    db_samples = []
+    if not is_new_table:
+        try:
+            if table_name in ["RF Certificates", "certificates"]:
+                from schemas.extraction import CertificateMetadata
+                rows = db.query(CertificateMetadata).limit(3).all()
+                db_samples = [{
+                    "component": r.component, "supplier": r.supplier, "country": r.country,
+                    "certif_number": r.certif_number, "authority": r.authority,
+                    "issue_date": str(r.issue_date) if r.issue_date else None,
+                    "exp_date": str(r.exp_date) if r.exp_date else None,
+                    "cert_link": r.cert_link
+                } for r in rows]
+            elif table_name in ["Authorities", "authorities"]:
+                from storage.database import AuthorityModel
+                rows = db.query(AuthorityModel).limit(3).all()
+                db_samples = [{"canonical_authority": r.canonical_authority, "abbreviation": r.abbreviation, "country": r.country} for r in rows]
+            elif table_name in ["Suppliers", "suppliers"]:
+                from storage.database import SupplierModel
+                rows = db.query(SupplierModel).limit(3).all()
+                db_samples = [{"canonical_supplier": r.canonical_supplier, "aliases": r.aliases} for r in rows]
+        except Exception as ex:
+            logger.debug(f"Could not fetch existing DB samples for table '{table_name}': {ex}")
+
+    # Pure, schema-agnostic prompts where Long-Term Memory is the sole source of truth
+    if len(db_samples) > 0 or (target_fields and len(target_fields) > 0 and not is_new_table):
+        # WORKFLOW 1: EXISTING TABLE
+        system_prompt = (
+            f"You are a broad schema-agnostic database alignment AI for table '{table_name}'. "
+            "Step 1: Analyze the table's Long-Term Memory profile and existing sample database records to understand how data is formatted and standardized in this table. "
+            "Step 2: Map the incoming spreadsheet column headers to the target database fields. "
+            "Step 3: Standardize incoming cell values to match the formatting style of the sample database records. "
+            "Return ONLY a valid JSON object: {\"mapping\": {\"target_key\": \"exact_incoming_header\"}, \"standardized_sample\": {...}}"
+        )
+        user_prompt = (
+            f"Table Name: {table_name}\n"
+            f"Long-Term Memory Schema Profile: {json.dumps(table_memory)}\n"
+            f"Target Fields: {effective_target_fields}\n"
+            f"Existing DB Sample Records (Reference Style): {json.dumps(db_samples)}\n"
+            f"Incoming Spreadsheet Headers: {headers}\n"
+            f"Incoming Sample Row: {json.dumps(sample_row)}"
+        )
+    else:
+        # WORKFLOW 2: BRAND NEW TABLE
+        system_prompt = (
+            f"You are a broad schema-agnostic data standardizer for a brand new database table '{table_name}'. "
+            "Because this is a brand new table, there is NO column mapping required. "
+            "Analyze the incoming columns and sample data. Infer each column's meaning and standardize cell text where applicable (e.g. clean company names, Title Case English countries, ISO YYYY-MM-DD dates, valid URLs). "
+            "Return ONLY a valid JSON object: {\"standardized_sample\": {...}}"
+        )
+        user_prompt = (
+            f"New Table Name: {table_name}\n"
+            f"Long-Term Memory Profile (Newly Registered): {json.dumps(table_memory)}\n"
+            f"Incoming Columns: {headers}\n"
+            f"Incoming Sample Row: {json.dumps(sample_row)}"
+        )
+
+    try:
+        raw_json = generate_json(system_prompt, user_prompt, disable_thinking=True, max_tokens=512)
+        start = raw_json.find('{')
+        end = raw_json.rfind('}') + 1
+        if start != -1 and end > start:
+            res_obj = json.loads(raw_json[start:end])
+            return {
+                "status": "success",
+                "mapping": res_obj.get("mapping", {}),
+                "standardized_sample": res_obj.get("standardized_sample", sample_row),
+                "unmapped_columns": unmapped_cols,
+                "permission_required": bool(unmapped_cols and not allow_new_columns)
+            }
+        return {
+            "status": "success",
+            "mapping": {},
+            "standardized_sample": sample_row,
+            "unmapped_columns": unmapped_cols,
+            "permission_required": bool(unmapped_cols and not allow_new_columns)
+        }
+    except Exception as e:
+        logger.error(f"LLM universal header mapping error: {e}")
+        return {"status": "error", "detail": str(e), "mapping": {}, "standardized_sample": sample_row}
+
+@app.get("/api/v1/agent/busy")
+async def check_agent_busy():
+    """Check if the LLM inference engine is currently executing a task."""
+    from core.llm import _INFERENCE_LOCK
+    is_busy = False
+    try:
+        if hasattr(_INFERENCE_LOCK, "locked"):
+            is_busy = _INFERENCE_LOCK.locked()
+        else:
+            acquired = _INFERENCE_LOCK.acquire(blocking=False)
+            if acquired:
+                _INFERENCE_LOCK.release()
+            else:
+                is_busy = True
+    except:
+        pass
+    return {"is_busy": is_busy}
 
 @app.post("/api/v1/certificates/manual")
 async def add_certificate_manual(cert_data: CertificateExtractionSchema, db: Session = Depends(get_db)):
@@ -2352,6 +3023,27 @@ async def import_schema_table_file(table_name: str, file: UploadFile = File(...)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SPA Catch-all Route
+# ──────────────────────────────────────────────────────────────────────────────
+
+from fastapi.responses import FileResponse
+from fastapi import Request
+
+@app.get("/{full_path:path}")
+async def serve_spa(request: Request, full_path: str):
+    if full_path.startswith("api/") or full_path.startswith("files/"):
+        raise HTTPException(status_code=404, detail="Not found")
+    
+    file_path = os.path.join("frontend", "dist", full_path)
+    if full_path and os.path.isfile(file_path):
+        return FileResponse(file_path)
+
+    index_path = os.path.join("frontend", "dist", "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "Frontend not built yet."}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CLI Entry Point (For running locally)

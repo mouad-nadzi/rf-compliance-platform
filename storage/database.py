@@ -78,6 +78,7 @@ def init_db() -> bool:
 
         # Create tables
         logger.info("Creating database tables if not exist...")
+        from schemas.extraction import CertificateMetadata, Source, AgentMemory, RecycleBinItem
         Base.metadata.create_all(bind=engine)
 
         # Seed lookup tables from knowledge assets if needed
@@ -93,20 +94,6 @@ def init_db() -> bool:
             seed_base_identity_memories()
         except Exception as mem_err:
             logger.warning(f"Base memory seeding skipped/failed: {mem_err}")
-
-        # Auto-restore from db_backup.sql if database is empty but backup file exists
-        try:
-            from storage.backup import DEFAULT_BACKUP_PATH, restore_database_from_sql
-            from schemas.extraction import CertificateMetadata
-            session = SessionLocal()
-            cert_count = session.query(CertificateMetadata).count()
-            session.close()
-
-            if cert_count == 0 and DEFAULT_BACKUP_PATH.exists():
-                logger.info(f"Database is empty. Automatically restoring from {DEFAULT_BACKUP_PATH}...")
-                restore_database_from_sql(DEFAULT_BACKUP_PATH)
-        except Exception as restore_err:
-            logger.warning(f"Auto-restoration check failed: {restore_err}")
 
         logger.info("Database initialized successfully with pgvector & lookup support.")
         return True
