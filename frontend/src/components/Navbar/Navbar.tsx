@@ -1,13 +1,27 @@
 import { useState, useEffect, useRef } from 'react';
-import { NavLink } from 'react-router-dom';
-import { Bell, CheckCheck, Trash2 } from 'lucide-react';
+import { NavLink, useLocation } from 'react-router-dom';
+import { Bell, CheckCheck, Trash2, Settings } from 'lucide-react';
 import { api } from '../../api';
 import './Navbar.css';
 
+interface RecycleItem {
+  id: string;
+  title: string;
+  tableName: string;
+  data: any;
+  deletedAt: string;
+}
+
 const Navbar = () => {
+  const location = useLocation();
   const [unreadCount, setUnreadCount] = useState(0);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
+
+  // Global Recycle Bin State & Unseen Items Count (for Settings icon badge)
+  const [recycleItems, setRecycleItems] = useState<RecycleItem[]>([]);
+  const [unseenRecycleCount, setUnseenRecycleCount] = useState(0);
+
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const fetchNotifications = async () => {
@@ -20,13 +34,61 @@ const Navbar = () => {
     }
   };
 
+  const fetchRecycleBin = async () => {
+    try {
+      const items: RecycleItem[] = await api.getRecycleBinItems();
+      setRecycleItems(items);
+
+      let seenIds: string[] = [];
+      try {
+        seenIds = JSON.parse(localStorage.getItem('seen_recycle_item_ids') || '[]');
+      } catch {
+        seenIds = [];
+      }
+      const seenSet = new Set(seenIds);
+
+      if (window.location.pathname === '/settings') {
+        const allIds = items.map(item => item.id);
+        localStorage.setItem('seen_recycle_item_ids', JSON.stringify(allIds));
+        setUnseenRecycleCount(0);
+      } else {
+        const unseen = items.filter(item => !seenSet.has(item.id));
+        setUnseenRecycleCount(unseen.length);
+      }
+    } catch (err) {
+      console.error("Error fetching recycle bin items:", err);
+    }
+  };
+
   useEffect(() => {
     fetchNotifications();
-    const interval = setInterval(fetchNotifications, 10000);
-    return () => clearInterval(interval);
+    fetchRecycleBin();
+
+    const interval = setInterval(() => {
+      fetchNotifications();
+      fetchRecycleBin();
+    }, 10000);
+
+    const handleRefreshRecycle = () => fetchRecycleBin();
+    window.addEventListener('refresh-recycle-bin', handleRefreshRecycle);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('refresh-recycle-bin', handleRefreshRecycle);
+    };
   }, []);
 
-  // Close dropdown on outside click
+  useEffect(() => {
+    if (location.pathname === '/settings') {
+      if (recycleItems.length > 0) {
+        const allIds = recycleItems.map(item => item.id);
+        localStorage.setItem('seen_recycle_item_ids', JSON.stringify(allIds));
+      }
+      setUnseenRecycleCount(0);
+    }
+  }, [location.pathname, recycleItems]);
+
+  // Close dropdowns on outside click
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -41,7 +103,6 @@ const Navbar = () => {
     const nextState = !showNotifications;
     setShowNotifications(nextState);
     if (nextState) {
-      // Automatically mark notifications read and clear red badge counter when user clicks the notification bell
       setUnreadCount(0);
       setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
       try {
@@ -109,8 +170,63 @@ const Navbar = () => {
         </NavLink>
       </nav>
       
-      {/* Right: Notification Bell & User Admin Badge */}
-      <div className="navbar-actions" ref={dropdownRef} style={{ position: 'relative', gap: '0.75rem' }}>
+      {/* Right: Settings, Notifications & User Admin Badge */}
+      <div className="navbar-actions" ref={dropdownRef} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        
+        {/* Settings Icon Button */}
+        <NavLink
+          to="/settings"
+          onClick={() => {
+            if (recycleItems.length > 0) {
+              const allIds = recycleItems.map(item => item.id);
+              localStorage.setItem('seen_recycle_item_ids', JSON.stringify(allIds));
+            }
+            setUnseenRecycleCount(0);
+          }}
+          className={({ isActive }) => `notification-bell-btn ${isActive ? 'active' : ''}`}
+          title="Settings & Global Recycle Bin"
+          style={{
+            position: 'relative',
+            width: '40px',
+            height: '40px',
+            borderRadius: '50%',
+            backgroundColor: 'var(--bg-body)',
+            border: '1px solid var(--border-color)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--brand-blue)',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease-in-out',
+            textDecoration: 'none'
+          }}
+        >
+          <Settings size={20} />
+          {unseenRecycleCount > 0 && (
+            <span
+              style={{
+                position: 'absolute',
+                top: '-2px',
+                right: '-2px',
+                backgroundColor: '#ef4444',
+                color: '#ffffff',
+                fontSize: '0.7rem',
+                fontWeight: 700,
+                borderRadius: '10px',
+                padding: '0.1rem 0.35rem',
+                minWidth: '18px',
+                height: '18px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 2px 5px rgba(239, 68, 68, 0.4)'
+              }}
+            >
+              {unseenRecycleCount > 99 ? '99+' : unseenRecycleCount}
+            </span>
+          )}
+        </NavLink>
+
         {/* Circular Notification Bell Button */}
         <button
           onClick={handleToggleNotifications}
@@ -156,6 +272,8 @@ const Navbar = () => {
             </span>
           )}
         </button>
+
+
 
         {/* Notification Popup Dropdown Box */}
         {showNotifications && (

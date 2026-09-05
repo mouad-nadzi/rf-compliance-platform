@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Search, Download, Plus, Trash2, Save, Upload, CheckCircle2, AlertCircle, ExternalLink, XCircle, ArrowUpDown, ArrowUp, ArrowDown, X, FileText, RotateCcw, Loader2 } from 'lucide-react';
+import { Search, Download, Plus, Trash2, Save, Upload, CheckCircle2, AlertCircle, ExternalLink, XCircle, ArrowUpDown, ArrowUp, ArrowDown, X, FileText, Loader2, MoreVertical } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { api } from '../api';
 import { useLayoutContext } from '../components/Layout/AppLayout';
@@ -10,22 +10,17 @@ type FilterRow = {
   value: string;
 };
 
-type RecycleItem = {
-  id: string;
-  title: string;
-  tableName: string;
-  data: any;
-  deletedAt: string;
-};
-
 const DatabasesView = () => {
-  const { selectedTable } = useLayoutContext();
+  const { selectedTable, setSelectedTable } = useLayoutContext();
+
+  const isCoreTable = ["RF Certificates", "Authorities", "Suppliers", "Sources", "Agent Memories"].includes(selectedTable);
 
   // All tables (including RF Certificates) have full editing & deletion capabilities
   const isExcelGridTable = selectedTable !== "None";
 
   // Data Grid State
   const [gridData, setGridData] = useState<any[]>([]);
+  const [customTableCols, setCustomTableCols] = useState<any[]>([]);
   const [selectedRowIds, setSelectedRowIds] = useState<Set<number>>(new Set());
   const [dirtyRowIndices, setDirtyRowIndices] = useState<Set<number>>(new Set());
 
@@ -43,9 +38,12 @@ const DatabasesView = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [restoringId, setRestoringId] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [progress, setProgress] = useState<{ current: number; total: number; percent: number; statusText: string } | null>(null);
+
+  // 3-dots Menu Dropdown State
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
 
   // Search & Filter state
   const [globalSearch, setGlobalSearch] = useState('');
@@ -56,21 +54,27 @@ const DatabasesView = () => {
   const [importedFiles, setImportedFiles] = useState<{ id: string; name: string; count: number }[]>([]);
   const [pendingImportRows, setPendingImportRows] = useState<any[]>([]);
   const [fileProcessingStatus, setFileProcessingStatus] = useState<string | null>(null);
+  const [lastImportStats, setLastImportStats] = useState<{ total: number; newCount: number; skippedCount: number; fileName: string } | null>(null);
 
-  // Recycle Bin State (persisted in localStorage)
-  const [showRecycleDrawer, setShowRecycleDrawer] = useState(false);
-  const [recycleBin, setRecycleBin] = useState<RecycleItem[]>(() => {
-    try {
-      const stored = localStorage.getItem('rf_compliance_recycle_bin');
-      return stored ? JSON.parse(stored) : [];
-    } catch {
-      return [];
-    }
-  });
+  // Close 3-dots menu on click outside
+  useEffect(() => {
+    const handleClickOutsideMore = (event: MouseEvent) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(event.target as Node)) {
+        setShowMoreMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutsideMore);
+    return () => document.removeEventListener('mousedown', handleClickOutsideMore);
+  }, []);
 
   // Fetch Table Data based on selected table (resets drawer & filters on table change, restores unsaved draft session)
+  const fetchIdRef = useRef(0);
+
   const fetchTableData = useCallback(async () => {
+    const fetchId = ++fetchIdRef.current;
+    
     setLoading(true);
+    setGridData([]);
     setSaveStatus(null);
     setProgress(null);
     setDirtyRowIndices(new Set());
@@ -78,10 +82,12 @@ const DatabasesView = () => {
     setSortConfig(null);
     setShowImportDrawer(false);
     setImportedFiles([]);
+    setLastImportStats(null);
     setGlobalSearch('');
     setFilterRows([]);
     try {
       let rows: any[] = [];
+      let fetchedCols: any[] = [];
       if (selectedTable === "RF Certificates") {
         rows = await api.getCertificates();
       } else if (selectedTable === "Authorities") {
@@ -93,8 +99,14 @@ const DatabasesView = () => {
       } else if (selectedTable === "Agent Memories") {
         rows = await api.getMemories();
       } else {
-        rows = await api.getCustomTableRows(selectedTable);
+        const data = await api.getCustomTableRows(selectedTable);
+        rows = data.records || [];
+        fetchedCols = data.columns || [];
       }
+      
+      // If selectedTable changed while we were fetching, ignore this stale response
+      if (fetchId !== fetchIdRef.current) return;
+
       const fetchedRows = Array.isArray(rows) ? rows : [];
 
       // Always clear any legacy draft key so page refresh reflects true PostgreSQL database state
@@ -102,12 +114,16 @@ const DatabasesView = () => {
       localStorage.removeItem(draftKey);
 
       setGridData(fetchedRows);
+      setCustomTableCols(fetchedCols);
       setImportedFiles([]);
     } catch (err) {
+      if (fetchId !== fetchIdRef.current) return;
       console.error("Error fetching table data:", err);
       setGridData([]);
     } finally {
-      setLoading(false);
+      if (fetchId === fetchIdRef.current) {
+        setLoading(false);
+      }
     }
   }, [selectedTable]);
 
@@ -126,6 +142,25 @@ const DatabasesView = () => {
     window.addEventListener('refresh-table-data', handleRefresh);
     return () => window.removeEventListener('refresh-table-data', handleRefresh);
   }, [fetchTableData]);
+
+  const handleFileUploadRef = useRef<any>(null);
+  useEffect(() => {
+    handleFileUploadRef.current = handleFileUpload;
+  });
+
+  useEffect(() => {
+    const handleSidebarImport = (e: any) => {
+      const file = e.detail?.file;
+      if (file && handleFileUploadRef.current) {
+        handleFileUploadRef.current({
+          target: { files: [file] },
+          preventDefault: () => {}
+        });
+      }
+    };
+    window.addEventListener('sidebar-import-file', handleSidebarImport);
+    return () => window.removeEventListener('sidebar-import-file', handleSidebarImport);
+  }, []);
 
   // Auto-dismiss status toast banner after 4.5 seconds
   useEffect(() => {
@@ -265,20 +300,6 @@ const toggleSelectAll = () => {
   }
 };
 
-  // Fetch Recycle Bin items from PostgreSQL backend
-  const fetchRecycleBin = useCallback(async () => {
-    try {
-      const items = await api.getRecycleBinItems();
-      setRecycleBin(items);
-    } catch (e) {
-      console.warn("Could not fetch recycle bin items from DB", e);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchRecycleBin();
-  }, [fetchRecycleBin]);
-
   // Delete Selected Rows (Moves to PostgreSQL Recycle Bin)
   const handleDeleteSelectedRows = async () => {
     if (selectedRowIds.size === 0) return;
@@ -306,6 +327,7 @@ const toggleSelectAll = () => {
             else if (selectedTable === "Suppliers") await api.deleteSupplier(targetId);
             else if (selectedTable === "Sources") await api.deleteSource(targetId);
             else if (selectedTable === "Agent Memories") await api.deleteMemory(targetId);
+            else await api.deleteCustomTableRow(selectedTable, targetId);
           }
           deletedCount++;
         }
@@ -314,7 +336,7 @@ const toggleSelectAll = () => {
       setSelectedRowIds(new Set());
       if (selectedTable) localStorage.removeItem(`rf_draft_${selectedTable}`);
       setSaveStatus({ message: `Successfully moved ${deletedCount} record(s) to Recycle Bin!`, type: 'success' });
-      await fetchRecycleBin();
+      window.dispatchEvent(new Event('refresh-recycle-bin'));
       await fetchTableData();
     } catch (err: any) {
       setSaveStatus({ message: `Error deleting records: ${err.message || 'Operation failed'}`, type: 'error' });
@@ -323,50 +345,34 @@ const toggleSelectAll = () => {
     }
   };
 
-  // Restore Item from PostgreSQL Recycle Bin
-  const handleRestoreRecycleItem = async (item: RecycleItem) => {
-    setRestoringId(item.id);
+  // Drop Dynamic Custom Table (Soft-deletes table and records to global Recycle Bin)
+  const handleDropCustomTable = async () => {
+    if (isCoreTable) return;
+    if (!window.confirm(`Move custom dynamic table "${selectedTable}" to global Recycle Bin?`)) return;
+
     try {
-      await api.restoreRecycleBinItem(item.id);
-      await fetchRecycleBin();
-      setSaveStatus({ message: `Restored "${item.title}" back to ${item.tableName}!`, type: 'success' });
-      if (selectedTable === item.tableName) await fetchTableData();
+      const tableNameToDrop = selectedTable;
+      await api.deleteCustomTable(tableNameToDrop);
+      if (setSelectedTable) setSelectedTable('RF Certificates');
+      window.dispatchEvent(new Event('refresh-custom-tables'));
+      window.dispatchEvent(new Event('refresh-recycle-bin'));
     } catch (err: any) {
-      setSaveStatus({ message: `Error restoring record: ${err.message}`, type: 'error' });
-    } finally {
-      setRestoringId(null);
-    }
-  };
-
-  // Permanently Delete Item from PostgreSQL Recycle Bin
-  const handlePermanentDeleteRecycleItem = async (itemId: string) => {
-    try {
-      await api.deleteRecycleBinItem(itemId);
-      await fetchRecycleBin();
-    } catch (e) {
-      console.error("Error deleting recycle item", e);
-    }
-  };
-
-  // Empty All Items in PostgreSQL Recycle Bin
-  const handleEmptyRecycleBin = async () => {
-    if (!window.confirm("Are you sure you want to permanently delete all items in the Recycle Bin?")) return;
-    try {
-      await api.emptyRecycleBinApi();
-      await fetchRecycleBin();
-      setSaveStatus({ message: "Recycle Bin emptied.", type: 'success' });
-    } catch (e: any) {
-      setSaveStatus({ message: `Error emptying Recycle Bin: ${e.message}`, type: 'error' });
+      alert(`Failed to drop table: ${err.message || 'Error occurred'}`);
     }
   };
 
   const cancelRequestedRef = useRef(false);
 
   // Save Changes to Database with Live Progress Bar & Abort Capability
-  const handleSaveChangesToDatabase = async () => {
+  const handleSaveChangesToDatabase = async (rowsToSaveOverride?: any[]) => {
     cancelRequestedRef.current = false;
-    const dirtyGridRows = Array.from(dirtyRowIndices).map(i => gridData[i]).filter(Boolean);
-    const rowsToSave = [...pendingImportRows, ...dirtyGridRows];
+    let rowsToSave: any[] = [];
+    if (rowsToSaveOverride) {
+      rowsToSave = rowsToSaveOverride;
+    } else {
+      const dirtyGridRows = Array.from(dirtyRowIndices).map(i => gridData[i]).filter(Boolean);
+      rowsToSave = [...pendingImportRows, ...dirtyGridRows];
+    }
 
     if (rowsToSave.length === 0) {
       setSaveStatus({ message: "No changes to save.", type: 'success' });
@@ -410,7 +416,36 @@ const toggleSelectAll = () => {
           await api.batchSaveCertificates(chunk);
           savedCount += chunk.length;
         }
+      } else if (!isCoreTable) {
+        // Batch saving for Custom Dynamic Tables
+        const CHUNK_SIZE = 10;
+        for (let i = 0; i < total; i += CHUNK_SIZE) {
+          if (cancelRequestedRef.current) {
+            setSaveStatus({ message: `Import / Save operation cancelled by user. Saved ${savedCount} of ${total} records.`, type: 'error' });
+            break;
+          }
+
+          const chunk = rowsToSave.slice(i, i + CHUNK_SIZE);
+          const chunkEndIndex = Math.min(i + CHUNK_SIZE, total);
+          const pct = Math.round((chunkEndIndex / total) * 100);
+
+          setProgress({
+            current: chunkEndIndex,
+            total,
+            percent: pct,
+            statusText: `Processing file... (${pct}%)`
+          });
+
+          try {
+            await api.batchSaveCustomTableRows(selectedTable, chunk);
+            savedCount += chunk.length;
+          } catch (e: any) {
+            console.error("Error batch saving custom table rows:", e);
+            failedCount += chunk.length;
+          }
+        }
       } else {
+        // Individual saving for core lookup tables
         for (let i = 0; i < total; i++) {
           if (cancelRequestedRef.current) {
             setSaveStatus({ message: `Import / Save operation cancelled by user. Saved ${savedCount} of ${total} records.`, type: 'error' });
@@ -419,9 +454,7 @@ const toggleSelectAll = () => {
 
           const row = rowsToSave[i];
           try {
-            if (selectedTable === "RF Certificates") {
-              await api.saveCertificateRow(row);
-            } else if (selectedTable === "Authorities") {
+            if (selectedTable === "Authorities") {
               const aliasesArr = Array.isArray(row.aliases) ? row.aliases : (String(row.aliases || '').split(',').map(s => s.trim()).filter(Boolean));
               await api.saveAuthorityRow({ ...row, aliases: aliasesArr });
             } else if (selectedTable === "Suppliers") {
@@ -520,7 +553,7 @@ const formatExcelDate = (val: any): string => {
   return str;
 };
 
-  // Import Excel / CSV Files (Multi-file Support + Silent Duplicate Rejection)
+  // Import Excel / CSV Files (Multi-file Support + Explicit Duplicate Reporting)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
@@ -537,6 +570,10 @@ const formatExcelDate = (val: any): string => {
 
     let newlyAddedFilesCount = 0;
     let newlyAddedRowsCount = 0;
+    let totalSkippedDuplicatesCount = 0;
+    let totalParsedRowsCount = 0;
+    let lastFileName = '';
+
     const newFileEntries: { id: string; name: string; count: number }[] = [];
     const allNewRows: any[] = [];
 
@@ -545,6 +582,7 @@ const formatExcelDate = (val: any): string => {
 
     for (const file of validFiles) {
       fileIdx++;
+      lastFileName = file.name;
       setFileProcessingStatus(`Processing file ${fileIdx} of ${totalFilesCount} (${file.name})...`);
       const fileId = 'file_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
 
@@ -562,11 +600,13 @@ const formatExcelDate = (val: any): string => {
         const rawImportedRows: any[] = XLSX.utils.sheet_to_json(ws, { raw: false, dateNF: 'yyyy-mm-dd' });
 
         if (rawImportedRows.length > 0) {
+          totalParsedRowsCount += rawImportedRows.length;
           const sampleRow = rawImportedRows[0] || {};
           const headers = Object.keys(sampleRow);
           
-          // Request dynamic LLM header mapping from backend for selected table
+          // Request dynamic LLM header mapping & supplier lookups from backend
           let llmMapping: Record<string, string> = {};
+          let suppMap: Record<string, string> = {};
           try {
             const targetFields = columnsMeta.map((c: any) => String(c.key));
             const mapRes = await api.mapSpreadsheetHeaders(headers, sampleRow, selectedTable, targetFields);
@@ -576,6 +616,27 @@ const formatExcelDate = (val: any): string => {
           } catch (e) {
             console.warn("LLM header mapping request failed, using fallback mapper", e);
           }
+
+          try {
+            const suppList = await api.getSuppliers();
+            if (Array.isArray(suppList)) {
+              for (const s of suppList) {
+                if (s.canonical_supplier) {
+                  const canon = String(s.canonical_supplier).trim();
+                  suppMap[canon.toLowerCase()] = canon;
+                  if (Array.isArray(s.aliases)) {
+                    for (const alias of s.aliases) {
+                      if (alias) suppMap[String(alias).trim().toLowerCase()] = canon;
+                    }
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.warn("Could not load supplier lookups for client canonicalization", e);
+          }
+
+          const targetFields = columnsMeta.map((c: any) => String(c.key));
 
           const importedRows = rawImportedRows.map(r => {
             if (!r || typeof r !== 'object') return r;
@@ -588,42 +649,77 @@ const formatExcelDate = (val: any): string => {
               return undefined;
             };
 
-            const comp = getLlmVal('component') ?? r.component ?? r.Component ?? r.name;
-            const supp = getLlmVal('supplier') ?? r.supplier ?? r.Supplier ?? r.canonical_supplier;
-            const ctry = getLlmVal('country') ?? r.country ?? r.Country;
-            const certNo = getLlmVal('certif_number') ?? r.certif_number ?? r['Certif Number'];
-            const auth = getLlmVal('authority') ?? r.authority ?? r.Authority ?? r.canonical_authority;
-            const issueD = formatExcelDate(getLlmVal('issue_date') ?? r.issue_date ?? r['Issue Date']);
-            const expD = formatExcelDate(getLlmVal('exp_date') ?? r.exp_date ?? r.expiration_date ?? r['Expiration Date'] ?? r['Exp Date']);
-            const certL = getLlmVal('cert_link') ?? r.cert_link ?? r['PDF Document Link'] ?? r.url;
+            if (selectedTable === 'RF Certificates' || selectedTable === 'certificates') {
+              const comp = getLlmVal('component') ?? r.component ?? r.Component ?? r.name;
+              const rawSuppVal = getLlmVal('supplier') ?? r.supplier ?? r.Supplier ?? r.canonical_supplier;
+              const ctry = getLlmVal('country') ?? r.country ?? r.Country;
+              const certNo = getLlmVal('certif_number') ?? r.certif_number ?? r['Certif Number'];
+              const auth = getLlmVal('authority') ?? r.authority ?? r.Authority ?? r.canonical_authority;
+              const issueD = formatExcelDate(getLlmVal('issue_date') ?? r.issue_date ?? r['Issue Date']);
+              const expD = formatExcelDate(getLlmVal('exp_date') ?? r.exp_date ?? r.expiration_date ?? r['Expiration Date'] ?? r['Exp Date']);
+              const certL = getLlmVal('cert_link') ?? r.cert_link ?? r['PDF Document Link'] ?? r.url;
 
-            return {
-              ...r,
-              component: comp !== undefined ? String(comp).trim() : '',
-              supplier: supp !== undefined ? String(supp).trim() : '',
-              country: ctry !== undefined ? String(ctry).trim() : '',
-              certif_number: certNo !== undefined ? String(certNo).trim() : '',
-              authority: auth !== undefined ? String(auth).trim() : '',
-              issue_date: issueD,
-              exp_date: expD,
-              cert_link: certL !== undefined ? String(certL).trim() : ''
-            };
+              let suppStr = rawSuppVal !== undefined ? String(rawSuppVal).trim() : '';
+              if (suppStr && suppMap[suppStr.toLowerCase()]) {
+                suppStr = suppMap[suppStr.toLowerCase()];
+              } else if (suppStr) {
+                for (const [aliasKey, canonTarget] of Object.entries(suppMap)) {
+                  if (aliasKey.length >= 3 && suppStr.toLowerCase().includes(aliasKey)) {
+                    suppStr = canonTarget;
+                    break;
+                  }
+                }
+              }
+
+              return {
+                ...r,
+                component: comp !== undefined ? String(comp).trim() : '',
+                supplier: suppStr,
+                country: ctry !== undefined ? String(ctry).trim() : '',
+                certif_number: certNo !== undefined ? String(certNo).trim() : '',
+                authority: auth !== undefined ? String(auth).trim() : '',
+                issue_date: issueD,
+                exp_date: expD,
+                cert_link: certL !== undefined ? String(certL).trim() : ''
+              };
+            } else {
+              // Custom Dynamic Tables mapping
+              const dynamicRow: any = { ...r };
+              for (const tf of targetFields) {
+                const llmVal = getLlmVal(tf);
+                if (llmVal !== undefined) {
+                   dynamicRow[tf] = llmVal;
+                } else if (r[tf] !== undefined) {
+                   dynamicRow[tf] = r[tf];
+                }
+              }
+              return dynamicRow;
+            }
           });
 
-          const existingSignatures = new Set(
-            [...gridData, ...allNewRows].map(r => {
+          const getSig = (r: any) => {
+            if (selectedTable === 'RF Certificates' || selectedTable === 'certificates') {
               const primary = (r.certif_number || r.component || r.canonical_authority || r.canonical_supplier || r.url || r.memory_key || r.name || '').toString().trim().toLowerCase();
               const secondary = (r.country || r.supplier || r.authority || '').toString().trim().toLowerCase();
               return `${primary}::${secondary}`;
-            }).filter(sig => sig !== '::')
+            } else {
+               // For custom tables, generate signature from dynamic target fields
+               const vals = targetFields.map(tf => (r[tf] || '').toString().trim().toLowerCase());
+               return vals.join('::');
+            }
+          };
+
+          const existingSignatures = new Set(
+            [...gridData, ...allNewRows].map(getSig).filter(sig => sig.replace(/:/g, '') !== '')
           );
 
           const uniqueRows = importedRows.filter(r => {
-            const primary = (r.certif_number || r.component || r.canonical_authority || r.canonical_supplier || r.url || r.memory_key || r.name || '').toString().trim().toLowerCase();
-            const secondary = (r.country || r.supplier || r.authority || '').toString().trim().toLowerCase();
-            const sig = `${primary}::${secondary}`;
-            return sig === '::' || !existingSignatures.has(sig);
+            const sig = getSig(r);
+            return sig.replace(/:/g, '') === '' || !existingSignatures.has(sig);
           });
+
+          const fileDuplicatesCount = rawImportedRows.length - uniqueRows.length;
+          totalSkippedDuplicatesCount += fileDuplicatesCount;
 
           if (uniqueRows.length > 0) {
             const rowsWithFlags = uniqueRows.map(r => ({
@@ -647,12 +743,28 @@ const formatExcelDate = (val: any): string => {
 
     setFileProcessingStatus(null);
 
+    setLastImportStats({
+      total: totalParsedRowsCount,
+      newCount: newlyAddedRowsCount,
+      skippedCount: totalSkippedDuplicatesCount,
+      fileName: validFiles.length === 1 ? lastFileName : `${validFiles.length} files`
+    });
+
     if (allNewRows.length > 0) {
-      setPendingImportRows(prev => [...allNewRows, ...prev]);
-      setImportedFiles(prev => [...prev, ...newFileEntries]);
-      setSaveStatus({ message: `${newlyAddedFilesCount} file(s) queued for import (${newlyAddedRowsCount} rows). Review preview in Import Drawer and click "Save Changes to Database" to commit to PostgreSQL.`, type: 'success' });
+      // Auto-start saving process without requiring manual click
+      setShowImportDrawer(false);
+      await handleSaveChangesToDatabase(allNewRows);
+      
+      const duplicateNote = totalSkippedDuplicatesCount > 0 ? ` (${totalSkippedDuplicatesCount} duplicate row(s) skipped)` : '';
+      setSaveStatus({
+        message: `${newlyAddedFilesCount} file(s) processed: ${newlyAddedRowsCount} new row(s) successfully imported${duplicateNote}.`,
+        type: 'success'
+      });
     } else {
-      setSaveStatus({ message: `No new unique rows found in selected file(s).`, type: 'success' });
+      setSaveStatus({
+        message: `Import completed: All ${totalParsedRowsCount} row(s) in selected file(s) are duplicates of existing records and were skipped.`,
+        type: 'success'
+      });
     }
 
     setProgress({
@@ -732,12 +844,17 @@ const columnsMeta = useMemo(() => {
     ];
   }
   // Custom Tables
-  if (gridData.length > 0) {
-    const keys = Object.keys(gridData[0]).filter(k => k !== '_isNew' && k !== 'id');
-    return keys.map(k => ({ key: k, label: k.replace(/_/g, ' ').toUpperCase(), defaultWidth: 180 }));
+  if (customTableCols.length > 0) {
+    return customTableCols
+      .filter(c => c.column_name !== 'id' && c.column_name !== 'created_at')
+      .map(c => ({ 
+        key: c.column_name, 
+        label: c.column_name.replace(/_/g, ' ').toUpperCase(), 
+        defaultWidth: 180 
+      }));
   }
   return [{ key: 'name', label: 'Name', defaultWidth: 200 }];
-}, [selectedTable, gridData]);
+}, [selectedTable, customTableCols]);
 
 // Filtered & Sorted Grid Data
 const filteredGridData = useMemo(() => {
@@ -805,7 +922,7 @@ return (
               <button
                 className="btn btn-primary"
                 style={{ fontSize: '0.85rem', backgroundColor: '#10b981', borderColor: '#059669' }}
-                onClick={handleSaveChangesToDatabase}
+                onClick={() => handleSaveChangesToDatabase()}
                 disabled={saving}
               >
                 <Save size={16} /> {saving ? 'Saving...' : 'Save Changes to Database'}
@@ -821,139 +938,161 @@ return (
             </>
           )}
 
-          {/* Delete Selected Rows */}
+          {/* Selection Action Buttons (Delete Selected, Export Selected, Clear Selection) */}
           {selectedRowIds.size > 0 && (
-            <button
-              className="btn btn-secondary"
-              style={{ fontSize: '0.85rem', color: 'var(--error)', borderColor: 'var(--error)' }}
-              onClick={handleDeleteSelectedRows}
-              disabled={saving || deleting}
-            >
-              <Trash2 size={14} /> {deleting ? 'Deleting...' : `Delete Selected (${selectedRowIds.size})`}
-            </button>
-          )}
-
-          {/* + Add Row */}
-          {isExcelGridTable && (
-            <button
-              className="btn btn-secondary"
-              style={{ fontSize: '0.85rem' }}
-              onClick={handleAddRow}
-            >
-              <Plus size={14} /> Add Row
-            </button>
-          )}
-
-          {/* Import Excel / CSV Button */}
-          <button
-            className="btn btn-secondary"
-            style={{ fontSize: '0.85rem' }}
-            onClick={() => setShowImportDrawer(!showImportDrawer)}
-          >
-            <Download size={14} /> Import Excel / CSV
-          </button>
-
-          {/* Export Excel (.xlsx) */}
-          <button
-            className="btn btn-secondary"
-            style={{ fontSize: '0.85rem' }}
-            onClick={handleExportExcel}
-            disabled={gridData.length === 0}
-          >
-            <Upload size={14} /> {selectedRowIds.size > 0 ? `Export Selected (${selectedRowIds.size})` : 'Export Excel'}
-          </button>
-
-          {/* Recycle Bin Button (Always visible) */}
-          <button
-            className="btn btn-secondary"
-            style={{ fontSize: '0.85rem' }}
-            onClick={() => setShowRecycleDrawer(!showRecycleDrawer)}
-          >
-            <Trash2 size={14} /> Recycle Bin ({recycleBin.length})
-          </button>
-        </div>
-      </div>
-
-      {/* Recycle Bin Drawer */}
-      {showRecycleDrawer && (
-        <div style={{ backgroundColor: 'var(--bg-body)', padding: '1rem', borderRadius: '8px', border: '1.5px dashed #f59e0b', display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#b45309', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <Trash2 size={16} /> RECYCLE BIN ({recycleBin.length} DELETED RECORDS)
-            </span>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              {recycleBin.length > 0 && (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  style={{ padding: '0.2rem 0.55rem', fontSize: '0.75rem', color: '#ef4444', borderColor: '#ef4444' }}
-                  onClick={handleEmptyRecycleBin}
-                >
-                  Empty Recycle Bin
-                </button>
-              )}
+            <>
               <button
-                type="button"
                 className="btn btn-secondary"
-                style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}
-                onClick={() => setShowRecycleDrawer(false)}
+                style={{ fontSize: '0.85rem', color: 'var(--error)', borderColor: 'var(--error)' }}
+                onClick={handleDeleteSelectedRows}
+                disabled={saving || deleting}
               >
-                Close
+                <Trash2 size={14} /> {deleting ? 'Deleting...' : `Delete Selected (${selectedRowIds.size})`}
               </button>
-            </div>
-          </div>
 
-          {recycleBin.length === 0 ? (
-            <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '0.5rem 0' }}>Recycle Bin is empty.</p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', maxHeight: '220px', overflowY: 'auto' }}>
-              {recycleBin.map(item => (
-                <div
-                  key={item.id}
+              <button
+                className="btn btn-secondary"
+                style={{ fontSize: '0.85rem' }}
+                onClick={handleExportExcel}
+                disabled={saving || deleting}
+              >
+                <Upload size={14} /> Export Selected ({selectedRowIds.size})
+              </button>
+
+              <button
+                className="btn btn-secondary"
+                style={{ fontSize: '0.85rem' }}
+                onClick={() => setSelectedRowIds(new Set())}
+                disabled={saving || deleting}
+                title="Clear all selected rows"
+              >
+                <X size={14} /> Clear Selection
+              </button>
+            </>
+          )}
+
+          {/* 3-Dots Action Menu Dropdown (Add Row, Import, Export) */}
+          <div ref={moreMenuRef} style={{ position: 'relative' }}>
+            <button
+              className="btn btn-secondary"
+              style={{
+                fontSize: '0.85rem',
+                padding: '0.45rem 0.65rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: showMoreMenu ? 'rgba(36, 56, 129, 0.12)' : 'var(--bg-surface)',
+                borderColor: showMoreMenu ? 'var(--brand-blue)' : 'var(--border-color)'
+              }}
+              onClick={() => setShowMoreMenu(prev => !prev)}
+              title="Table Actions Menu"
+            >
+              <MoreVertical size={18} />
+            </button>
+
+            {showMoreMenu && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: '115%',
+                  right: 0,
+                  backgroundColor: 'var(--bg-surface)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  boxShadow: '0 10px 25px rgba(0, 0, 0, 0.18)',
+                  zIndex: 999,
+                  minWidth: '200px',
+                  padding: '0.35rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.25rem'
+                }}
+              >
+                {isExcelGridTable && (
+                  <button
+                    className="btn btn-secondary"
+                    style={{
+                      border: 'none',
+                      justifyContent: 'flex-start',
+                      fontSize: '0.82rem',
+                      padding: '0.45rem 0.75rem',
+                      width: '100%',
+                      backgroundColor: 'transparent'
+                    }}
+                    onClick={() => {
+                      setShowMoreMenu(false);
+                      handleAddRow();
+                    }}
+                  >
+                    <Plus size={14} /> Add Row
+                  </button>
+                )}
+
+                <button
+                  className="btn btn-secondary"
                   style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    padding: '0.5rem 0.75rem',
-                    backgroundColor: 'var(--bg-surface)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '6px',
-                    fontSize: '0.82rem'
+                    border: 'none',
+                    justifyContent: 'flex-start',
+                    fontSize: '0.82rem',
+                    padding: '0.45rem 0.75rem',
+                    width: '100%',
+                    backgroundColor: 'transparent'
+                  }}
+                  onClick={() => {
+                    setShowMoreMenu(false);
+                    setShowImportDrawer(prev => !prev);
                   }}
                 >
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
-                    <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{item.title}</span>
-                    <span style={{ fontSize: '0.74rem', color: 'var(--text-tertiary)' }}>
-                      Table: {item.tableName} • Deleted: {item.deletedAt}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                  <Download size={14} /> Import Excel / CSV
+                </button>
+
+                <button
+                  className="btn btn-secondary"
+                  style={{
+                    border: 'none',
+                    justifyContent: 'flex-start',
+                    fontSize: '0.82rem',
+                    padding: '0.45rem 0.75rem',
+                    width: '100%',
+                    backgroundColor: 'transparent'
+                  }}
+                  disabled={gridData.length === 0}
+                  onClick={() => {
+                    setShowMoreMenu(false);
+                    handleExportExcel();
+                  }}
+                >
+                  <Upload size={14} /> {selectedRowIds.size > 0 ? `Export Selected (${selectedRowIds.size})` : 'Export Excel'}
+                </button>
+
+                {!isCoreTable && (
+                  <>
+                    <div style={{ height: '1px', backgroundColor: 'var(--border-color)', margin: '0.25rem 0' }} />
                     <button
-                      type="button"
                       className="btn btn-secondary"
-                      style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem', color: '#10b981', borderColor: '#10b981' }}
-                      onClick={() => handleRestoreRecycleItem(item)}
-                      disabled={restoringId === item.id}
-                      title="Restore record back to database table"
+                      style={{
+                        border: 'none',
+                        justifyContent: 'flex-start',
+                        fontSize: '0.82rem',
+                        padding: '0.45rem 0.75rem',
+                        width: '100%',
+                        backgroundColor: 'transparent',
+                        color: 'var(--error)'
+                      }}
+                      onClick={() => {
+                        setShowMoreMenu(false);
+                        handleDropCustomTable();
+                      }}
                     >
-                      <RotateCcw size={12} /> {restoringId === item.id ? 'Restoring...' : 'Restore'}
+                      <Trash2 size={14} color="var(--error)" /> Drop Table
                     </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem', color: '#ef4444', borderColor: '#ef4444' }}
-                      onClick={() => handlePermanentDeleteRecycleItem(item.id)}
-                      title="Permanently delete from Recycle Bin"
-                    >
-                      <X size={12} /> Delete
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         </div>
-      )}
+      </div>
 
       {/* File Processing Banner with Spinning Loader Animation */}
       {fileProcessingStatus && (
@@ -1048,6 +1187,37 @@ return (
             style={{ fontSize: '0.85rem' }}
           />
 
+          {/* Alert Banner for Duplicate Statistics */}
+          {lastImportStats && lastImportStats.skippedCount > 0 && (
+            <div style={{
+              backgroundColor: lastImportStats.newCount === 0 ? 'rgba(239, 68, 68, 0.08)' : 'rgba(234, 179, 8, 0.1)',
+              border: `1px solid ${lastImportStats.newCount === 0 ? '#ef4444' : '#eab308'}`,
+              color: lastImportStats.newCount === 0 ? '#b91c1c' : '#a16207',
+              padding: '0.55rem 0.85rem',
+              borderRadius: '6px',
+              fontSize: '0.82rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '0.5rem',
+              marginTop: '0.25rem'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <AlertCircle size={16} />
+                <span>
+                  {lastImportStats.newCount === 0
+                    ? `All ${lastImportStats.total} row(s) in "${lastImportStats.fileName}" already exist in PostgreSQL and were skipped (0 new rows queued).`
+                    : `Duplicate Notice: ${lastImportStats.skippedCount} duplicate row(s) out of ${lastImportStats.total} in "${lastImportStats.fileName}" were automatically skipped.`}
+                </span>
+              </div>
+              <X
+                size={14}
+                style={{ cursor: 'pointer', opacity: 0.7 }}
+                onClick={() => setLastImportStats(null)}
+              />
+            </div>
+          )}
+
           {/* Queued Imported File Badges with X Remove Icon */}
           {importedFiles.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.25rem', paddingTop: '0.5rem', borderTop: '1px dashed var(--border-color)' }}>
@@ -1099,33 +1269,32 @@ return (
                 <table style={{ width: '100%', fontSize: '0.78rem', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr style={{ backgroundColor: 'rgba(36, 56, 129, 0.05)', color: 'var(--brand-blue)', textAlign: 'left' }}>
-                      <th style={{ padding: '0.4rem 0.6rem', borderBottom: '1px solid var(--border-color)' }}>Component</th>
-                      <th style={{ padding: '0.4rem 0.6rem', borderBottom: '1px solid var(--border-color)' }}>Supplier</th>
-                      <th style={{ padding: '0.4rem 0.6rem', borderBottom: '1px solid var(--border-color)' }}>Country</th>
-                      <th style={{ padding: '0.4rem 0.6rem', borderBottom: '1px solid var(--border-color)' }}>Certif #</th>
-                      <th style={{ padding: '0.4rem 0.6rem', borderBottom: '1px solid var(--border-color)' }}>Authority</th>
-                      <th style={{ padding: '0.4rem 0.6rem', borderBottom: '1px solid var(--border-color)' }}>Issue Date</th>
-                      <th style={{ padding: '0.4rem 0.6rem', borderBottom: '1px solid var(--border-color)' }}>Exp Date</th>
-                      <th style={{ padding: '0.4rem 0.6rem', borderBottom: '1px solid var(--border-color)' }}>PDF Link</th>
+                      {columnsMeta.map(col => (
+                        <th key={col.key} style={{ padding: '0.4rem 0.6rem', borderBottom: '1px solid var(--border-color)' }}>{col.label}</th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
                     {pendingImportRows.slice(0, 5).map((row, idx) => (
                       <tr key={idx} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                        <td style={{ padding: '0.35rem 0.6rem', fontWeight: 600 }}>{row.component || row.Component || '—'}</td>
-                        <td style={{ padding: '0.35rem 0.6rem' }}>{row.supplier || row.Supplier || '—'}</td>
-                        <td style={{ padding: '0.35rem 0.6rem' }}>{row.country || row.Country || '—'}</td>
-                        <td style={{ padding: '0.35rem 0.6rem' }}>{row.certif_number || row['Certif Number'] || '—'}</td>
-                        <td style={{ padding: '0.35rem 0.6rem' }}>{row.authority || row.Authority || '—'}</td>
-                        <td style={{ padding: '0.35rem 0.6rem', color: row.issue_date ? '#10b981' : '#94a3b8' }}>{row.issue_date || '—'}</td>
-                        <td style={{ padding: '0.35rem 0.6rem', color: row.exp_date ? '#10b981' : '#94a3b8' }}>{row.exp_date || '—'}</td>
-                        <td style={{ padding: '0.35rem 0.6rem', maxWidth: '150px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {row.cert_link ? (
-                            <a href={row.cert_link} target="_blank" rel="noreferrer" style={{ color: 'var(--brand-blue)', textDecoration: 'underline' }}>
-                              {row.cert_link}
-                            </a>
-                          ) : '—'}
-                        </td>
+                        {columnsMeta.map(col => {
+                          const val = row[col.key] || row[col.label] || row[col.key.replace(/_/g, ' ')] || row[col.key.replace(/ /g, '_')] || '—';
+                          const isLink = col.key.toLowerCase().includes('link') || col.key.toLowerCase().includes('url');
+                          
+                          if (isLink && val !== '—') {
+                            return (
+                              <td key={col.key} style={{ padding: '0.35rem 0.6rem', maxWidth: '150px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                <a href={String(val)} target="_blank" rel="noreferrer" style={{ color: 'var(--brand-blue)', textDecoration: 'underline' }}>{String(val)}</a>
+                              </td>
+                            );
+                          }
+                          
+                          return (
+                            <td key={col.key} style={{ padding: '0.35rem 0.6rem' }}>
+                              {String(val)}
+                            </td>
+                          );
+                        })}
                       </tr>
                     ))}
                   </tbody>
@@ -1278,7 +1447,7 @@ return (
                         </span>
 
                         {/* Sort Indicator Arrow */}
-                        {isSorted ? (
+                        {sortConfig && sortConfig.key === col.key ? (
                           sortConfig.direction === 'asc' ? <ArrowUp size={14} color="var(--brand-blue)" /> : <ArrowDown size={14} color="var(--brand-blue)" />
                         ) : (
                           <ArrowUpDown size={12} color="var(--text-tertiary)" style={{ opacity: 0.5 }} />
@@ -1351,25 +1520,28 @@ return (
                     {columnsMeta.map(col => {
                       const cellVal = item[col.key] ?? '';
 
-                      if (col.key === 'cert_link') {
+                      if (col.key === 'cert_link' || col.key.toLowerCase().includes('link') || col.key.toLowerCase().includes('url') || col.key.toLowerCase().includes('email')) {
+                        const isEmail = col.key.toLowerCase().includes('email');
+                        const href = isEmail ? `mailto:${cellVal}` : String(cellVal);
                         return (
                           <td key={col.key} style={{ padding: '0.55rem 0.75rem', borderRight: '1px solid var(--border-color)' }}>
                             {cellVal ? (
                               <a
-                                href={String(cellVal)}
-                                target="_blank"
+                                href={href}
+                                target={isEmail ? undefined : "_blank"}
                                 rel="noreferrer"
-                                title="Open Document PDF"
+                                title={isEmail ? "Send Email" : "Open Link"}
                                 style={{
                                   color: 'var(--brand-blue)',
-                                  fontWeight: 600,
+                                  fontWeight: 500,
                                   display: 'inline-flex',
                                   alignItems: 'center',
                                   gap: '0.35rem',
-                                  textDecoration: 'none'
+                                  textDecoration: 'underline'
                                 }}
                               >
-                                <ExternalLink size={14} /> View Document
+                                {!isEmail && <ExternalLink size={14} />}
+                                {isEmail ? String(cellVal) : "View Link"}
                               </a>
                             ) : (
                               <span className="text-tertiary">—</span>

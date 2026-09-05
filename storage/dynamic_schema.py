@@ -23,6 +23,9 @@ CORE_PLATFORM_TABLES = {
     "supplier_lookups",
     "sources",
     "agent_memories",
+    "notifications",
+    "recycle_bin",
+    "recycle_bin_records",
 }
 INTERNAL_ENGINE_TABLES = {
     "alembic_version",
@@ -300,11 +303,32 @@ def insert_dynamic_record(table_name: str, record: Dict[str, Any]) -> Dict[str, 
 
 def delete_dynamic_record(table_name: str, record_id: int) -> bool:
     """
-    Delete a record by ID from a dynamic table.
+    Delete a record by ID from a dynamic table and move it to the Recycle Bin.
     """
     clean_table = sanitize_identifier(table_name)
-    sql = text(f"DELETE FROM {clean_table} WHERE id = :record_id;")
+    from schemas.extraction import RecycleBinItem
+    import json, uuid
+    from datetime import datetime
+    
     with get_db_session() as db:
+        # Fetch first
+        fetch_sql = text(f"SELECT * FROM {clean_table} WHERE id = :record_id;")
+        row_proxy = db.execute(fetch_sql, {"record_id": int(record_id)}).first()
+        if not row_proxy:
+            return False
+            
+        row_dict = dict(row_proxy._mapping)
+        
+        rec_item = RecycleBinItem(
+            id=uuid.uuid4().hex,
+            title=f"Record #{record_id} ({clean_table})",
+            table_name=f"__TABLE__:{clean_table}",
+            record_data=json.dumps(row_dict, default=str),
+            deleted_at=datetime.utcnow()
+        )
+        db.add(rec_item)
+        
+        sql = text(f"DELETE FROM {clean_table} WHERE id = :record_id;")
         res = db.execute(sql, {"record_id": int(record_id)})
         return res.rowcount > 0
 

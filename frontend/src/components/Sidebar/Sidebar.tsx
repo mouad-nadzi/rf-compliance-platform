@@ -89,6 +89,8 @@ const Sidebar = ({
   const [showNewTableModal, setShowNewTableModal] = useState(false);
   const [newTableName, setNewTableName] = useState('');
   const [newTableCols, setNewTableCols] = useState('');
+  const [selectedImportFile, setSelectedImportFile] = useState<File | null>(null);
+  const [creatingTable, setCreatingTable] = useState(false);
 
   // Ingest Documents State
   const [ingestFiles, setIngestFiles] = useState<File[]>([]);
@@ -164,6 +166,7 @@ const Sidebar = ({
   const handleImportTableFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setSelectedImportFile(file);
 
     const rawName = file.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ");
     const cleanTableName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
@@ -189,17 +192,47 @@ const Sidebar = ({
     reader.readAsBinaryString(file);
   };
 
-  const handleCreateCustomTable = (e: React.FormEvent) => {
+  const handleCreateCustomTable = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTableName.trim()) return;
     const cleanedName = newTableName.trim();
-    if (!customTables.includes(cleanedName)) {
-      setCustomTables([...customTables, cleanedName]);
+    setCreatingTable(true);
+
+    try {
+      const columns = newTableCols
+        .split(',')
+        .map(c => c.trim())
+        .filter(Boolean)
+        .map(col => ({ name: col, type: 'VARCHAR' }));
+
+      await api.createCustomTable(cleanedName, columns);
+
+      // Do NOT do raw backend import. Instead, pass the file to DatabasesView for AI standardizing!
+      const fileToImport = selectedImportFile;
+
+      if (!customTables.includes(cleanedName)) {
+        setCustomTables(prev => [...prev, cleanedName]);
+      }
+      setSelectedTable(cleanedName);
+
+      setNewTableName('');
+      setNewTableCols('');
+      setSelectedImportFile(null);
+      setShowNewTableModal(false);
+
+      window.dispatchEvent(new Event('refresh-table-data'));
+      
+      if (fileToImport) {
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('sidebar-import-file', { detail: { file: fileToImport } }));
+        }, 300);
+      }
+    } catch (err: any) {
+      console.error("Failed to create custom dynamic table:", err);
+      alert(`Error creating dynamic table: ${err.message || 'Server error'}`);
+    } finally {
+      setCreatingTable(false);
     }
-    setSelectedTable(cleanedName);
-    setNewTableName('');
-    setNewTableCols('');
-    setShowNewTableModal(false);
   };
 
   // Check server for active batch on mount and poll REAL server status
@@ -542,8 +575,14 @@ const Sidebar = ({
                   onChange={e => setNewTableCols(e.target.value)}
                 />
                 <div style={{ display: 'flex', gap: '0.4rem' }}>
-                  <button type="submit" className="btn btn-primary" style={{ flex: 1, fontSize: '0.75rem', padding: '0.3rem' }}>
-                    Create
+                  <button type="submit" className="btn btn-primary" style={{ flex: 1, fontSize: '0.75rem', padding: '0.3rem', justifyContent: 'center' }} disabled={creatingTable}>
+                    {creatingTable ? (
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                        <Loader2 size={12} className="spin-icon" /> Creating...
+                      </span>
+                    ) : (
+                      'Create'
+                    )}
                   </button>
                   <button type="button" className="btn btn-secondary" style={{ fontSize: '0.75rem', padding: '0.3rem' }} onClick={() => setShowNewTableModal(false)}>
                     Cancel
@@ -558,14 +597,14 @@ const Sidebar = ({
             {isOpen && (
               <div style={{ marginBottom: '0.25rem' }}>
                 <button 
-                  className="btn btn-primary" 
-                  style={{ width: '100%', fontSize: '0.8rem', padding: '0.45rem', justifyContent: 'center' }}
+                  className="btn btn-secondary" 
+                  style={{ width: '100%', fontSize: '0.8rem', padding: '0.45rem', justifyContent: 'center', backgroundColor: '#ffffff', color: 'var(--brand-blue)', border: '1px solid var(--border-color)', fontWeight: 600 }}
                   onClick={() => {
                     if (setActiveSessionId) setActiveSessionId(null);
                     window.dispatchEvent(new Event('new-chat-session'));
                   }}
                 >
-                  <PlusCircle size={14} /> New Chat
+                  <PlusCircle size={14} color="var(--brand-blue)" /> New Chat
                 </button>
               </div>
             )}

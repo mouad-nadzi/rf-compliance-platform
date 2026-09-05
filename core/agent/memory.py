@@ -72,15 +72,37 @@ def get_active_memories(category: Optional[str] = None, limit: int = 50) -> List
 
 def delete_agent_memory(memory_id: int) -> bool:
     """
-    Deletes a long-term memory record by ID.
+    Deletes a long-term memory record by moving it to the Recycle Bin.
     """
+    import json
+    import uuid
+    from datetime import datetime
+    from schemas.extraction import RecycleBinItem
+    
     try:
         with get_db_session() as session:
             row = session.query(AgentMemory).filter(AgentMemory.id == memory_id).first()
             if not row:
                 return False
+                
+            # Soft-delete to Recycle Bin
+            rec_item = RecycleBinItem(
+                id=uuid.uuid4().hex,
+                title=f"Agent Memory: {row.memory_key}",
+                table_name="agent_memories",
+                record_data=json.dumps({
+                    "id": row.id,
+                    "memory_key": row.memory_key,
+                    "fact_text": row.fact_text,
+                    "source_session_id": row.source_session_id,
+                    "created_at": row.created_at.isoformat() if row.created_at else None
+                }),
+                deleted_at=datetime.utcnow()
+            )
+            session.add(rec_item)
+            
             session.delete(row)
-            logger.info(f" Deleted long-term memory id={memory_id}.")
+            logger.info(f" Moved long-term memory id={memory_id} to Recycle Bin.")
             return True
     except Exception as exc:
         logger.error(f" Failed to delete long-term memory id={memory_id}: {exc}")
@@ -108,11 +130,15 @@ def format_memories_for_prompt(limit: int = 20) -> str:
 DEFAULT_IDENTITY_MEMORIES = [
     {
         "memory_key": "identity",
-        "fact_text": "You are the Automotive RF Certificate Compliance Assistant, an expert AI regulatory agent. Your mission is to assist compliance engineers in searching, extracting, auditing, and managing automotive telecommunications certificates (FCC, ENACOM, ANATEL, ATT, CE, BNetzA, ICASA, etc.).",
+        "fact_text": "You are the Automotive RF Compliance Intelligence Assistant for Stellantis. You are a warm, executive, professional AI assistant built to simplify global radio-frequency homologation, component certificate management, and regulatory compliance.",
     },
     {
         "memory_key": "tone_and_format",
-        "fact_text": "Maintain a direct, precise, executive, evidence-based, and professional tone. Always cite source documents and database records accurately without fabricating claims.",
+        "fact_text": "Always communicate in a clear, executive, user-friendly, and business-focused tone. Strictly avoid internal developer jargon (such as SQL, vector search, RRF, regex, ORM, endpoints, parsers) when addressing users. Focus on real-world business capabilities: answering compliance queries, searching component certificates, processing PDF/Excel uploads, auto-filling regulatory authorities, and tracking expirations.",
+    },
+    {
+        "memory_key": "platform_capabilities",
+        "fact_text": "Your capabilities include: 1) Answering natural-language compliance questions about vehicle component certificates, global authorities, and expiration dates. 2) Instantly searching and filtering compliance tables across suppliers, components, countries, and authorities. 3) Automatically processing uploaded PDF certificates and Excel spreadsheets to extract and verify data. 4) Auto-completing missing country or regulatory authority information. 5) Discovering and monitoring supplier compliance documentation.",
     },
 ]
 
@@ -133,5 +159,12 @@ def seed_base_identity_memories() -> None:
                     )
                     session.add(row)
                     logger.info(f" Seeded base memory [{item['memory_key']}]: {item['fact_text'][:60]}...")
+                else:
+                    # Update existing system seed memory if fact text changed
+                    existing_row = session.query(AgentMemory).filter(AgentMemory.memory_key == item["memory_key"]).first()
+                    if existing_row and existing_row.fact_text != item["fact_text"]:
+                        existing_row.fact_text = item["fact_text"]
+                        logger.info(f" Updated base memory [{item['memory_key']}]: {item['fact_text'][:60]}...")
+            session.commit()
     except Exception as exc:
         logger.warning(f" Could not seed base identity memories: {exc}")

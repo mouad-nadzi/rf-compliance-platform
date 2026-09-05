@@ -253,8 +253,15 @@ def _seed_table_schema_memories():
                 key = f'table_schema:{t["table_name"].lower()}'
                 existing = session.query(AgentMemory).filter(AgentMemory.memory_key == key).first()
                 if not existing:
-                    t['registered_at'] = datetime.utcnow().isoformat()
-                    mem = AgentMemory(memory_key=key, fact_text=json.dumps(t))
+                    now_iso = datetime.utcnow().isoformat()
+                    schema_data = {
+                        "table_name": t["table_name"],
+                        "description": t["description"],
+                        "target_fields": t["target_fields"],
+                        "registered_at": now_iso,
+                        "last_updated": now_iso
+                    }
+                    mem = AgentMemory(memory_key=key, fact_text=json.dumps(schema_data))
                     session.add(mem)
             session.commit()
     except Exception as ex:
@@ -1025,10 +1032,23 @@ async def update_supplier(supp_id: int, payload: dict, db: Session = Depends(get
 async def delete_authority(auth_id: int, db: Session = Depends(get_db)):
     """Deletes an authority lookup reference entry."""
     from storage.models import AuthorityLookup
+    from schemas.extraction import RecycleBinItem
+    import json, uuid
+    from datetime import datetime
     try:
         record = db.query(AuthorityLookup).filter(AuthorityLookup.id == auth_id).first()
         if not record:
             raise HTTPException(status_code=404, detail="Authority not found")
+            
+        rec_item = RecycleBinItem(
+            id=uuid.uuid4().hex,
+            title=f"Authority: {record.canonical_authority}",
+            table_name="authority_lookups",
+            record_data=json.dumps({"id": record.id, "canonical_authority": record.canonical_authority, "abbreviation": record.abbreviation, "country": record.country}, default=str),
+            deleted_at=datetime.utcnow()
+        )
+        db.add(rec_item)
+        
         db.delete(record)
         db.commit()
         from storage.backup import export_database_to_sql
@@ -1045,10 +1065,23 @@ async def delete_authority(auth_id: int, db: Session = Depends(get_db)):
 async def delete_supplier(supp_id: int, db: Session = Depends(get_db)):
     """Deletes a supplier lookup reference entry."""
     from storage.models import SupplierLookup
+    from schemas.extraction import RecycleBinItem
+    import json, uuid
+    from datetime import datetime
     try:
         record = db.query(SupplierLookup).filter(SupplierLookup.id == supp_id).first()
         if not record:
             raise HTTPException(status_code=404, detail="Supplier not found")
+            
+        rec_item = RecycleBinItem(
+            id=uuid.uuid4().hex,
+            title=f"Supplier: {record.canonical_supplier}",
+            table_name="supplier_lookups",
+            record_data=json.dumps({"id": record.id, "canonical_supplier": record.canonical_supplier, "aliases": record.aliases}, default=str),
+            deleted_at=datetime.utcnow()
+        )
+        db.add(rec_item)
+        
         db.delete(record)
         db.commit()
         from storage.backup import export_database_to_sql
@@ -1110,11 +1143,33 @@ async def update_certificate(cert_id: str, payload: dict, db: Session = Depends(
 @app.delete("/api/v1/certificates/{cert_id}")
 async def delete_certificate(cert_id: str, db: Session = Depends(get_db)):
     """Deletes a certificate and its associated chunks from PostgreSQL."""
-    from schemas.extraction import CertificateMetadata
+    from schemas.extraction import CertificateMetadata, RecycleBinItem
+    import json, uuid
+    from datetime import datetime
     try:
         record = db.query(CertificateMetadata).filter(CertificateMetadata.certificate_id == cert_id).first()
         if not record:
             raise HTTPException(status_code=404, detail="Certificate not found")
+        
+        rec_data = {
+            "certificate_id": record.certificate_id,
+            "component": record.component,
+            "supplier": record.supplier,
+            "country": record.country,
+            "certif_number": record.certif_number,
+            "authority": record.authority,
+            "issue_date": record.issue_date.isoformat() if record.issue_date else None,
+            "exp_date": record.exp_date.isoformat() if record.exp_date else None,
+            "cert_link": record.cert_link
+        }
+        rec_item = RecycleBinItem(
+            id=uuid.uuid4().hex,
+            title=f"Certificate: {record.certif_number or record.certificate_id}",
+            table_name="certificates",
+            record_data=json.dumps(rec_data, default=str),
+            deleted_at=datetime.utcnow()
+        )
+        db.add(rec_item)
         
         db.delete(record)
         db.commit()
@@ -1203,8 +1258,8 @@ async def get_recycle_bin_items(db: Session = Depends(get_db)):
 
 @app.post("/api/v1/recycle-bin/restore/{item_id}")
 async def restore_recycle_bin_item(item_id: str, db: Session = Depends(get_db)):
-    """Restores an item from PostgreSQL Recycle Bin back to its original table."""
-    from schemas.extraction import RecycleBinItem, CertificateMetadata
+    """Restores an item (or full dynamic table) from PostgreSQL Recycle Bin back to the database."""
+    from schemas.extraction import RecycleBinItem, CertificateMetadata, AuthorityLookup, SupplierLookup, Source, AgentMemory
     import json, uuid
     from datetime import datetime
     try:
@@ -1212,9 +1267,34 @@ async def restore_recycle_bin_item(item_id: str, db: Session = Depends(get_db)):
         if not item:
             raise HTTPException(status_code=404, detail="Recycle item not found")
 
-        rec_data = json.loads(item.record_data)
+        try:
+            rec_data = json.loads(item.record_data)
+        except Exception:
+            rec_data = {}
 
-        if item.table_name in ["RF Certificates", "certificates"]:
+        # ── Case 1: Full Dynamic Custom Table Restoration ─────────────────────
+        if rec_data.get("is_table") or item.table_name.startswith("__TABLE__:"):
+            from storage import dynamic_schema
+            tbl_name = rec_data.get("table_name") or item.table_name.replace("__TABLE__:", "")
+            raw_cols = rec_data.get("columns", [])
+            cols_to_create = []
+            for c in raw_cols:
+                cname = c.get("column_name") or c.get("name")
+                ctype = c.get("data_type") or c.get("type", "VARCHAR")
+                if cname and cname not in ("id", "created_at"):
+                    cols_to_create.append({"name": cname, "type": ctype})
+            
+            dynamic_schema.create_custom_table(tbl_name, cols_to_create)
+            records = rec_data.get("records", [])
+            if records:
+                dynamic_schema.bulk_insert_dynamic_records(tbl_name, records)
+            
+            db.delete(item)
+            db.commit()
+            return {"status": "success", "restored_id": item_id, "restored_table": tbl_name}
+
+        # ── Case 2: Individual RF Certificate Restoration ─────────────────────
+        elif item.table_name in ["RF Certificates", "certificates"]:
             def parse_d(val):
                 if not val or str(val).strip() in ['—', 'None', 'null', '']: return None
                 try: return datetime.strptime(str(val).strip()[:10], '%Y-%m-%d').date()
@@ -1232,6 +1312,49 @@ async def restore_recycle_bin_item(item_id: str, db: Session = Depends(get_db)):
                 cert_link=rec_data.get("cert_link", "")
             )
             db.merge(cert)
+
+        # ── Case 3: Authority Restoration ─────────────────────────────────────
+        elif item.table_name in ["Authorities", "authorities", "authority_lookups"]:
+            auth = AuthorityLookup(
+                canonical_authority=rec_data.get("canonical_authority", ""),
+                abbreviation=rec_data.get("abbreviation", ""),
+                country=rec_data.get("country", ""),
+                standard_validity_years=rec_data.get("standard_validity_years", 5),
+                aliases=rec_data.get("aliases", [])
+            )
+            db.merge(auth)
+
+        # ── Case 4: Supplier Restoration ──────────────────────────────────────
+        elif item.table_name in ["Suppliers", "suppliers", "supplier_lookups"]:
+            supp = SupplierLookup(
+                canonical_supplier=rec_data.get("canonical_supplier", ""),
+                aliases=rec_data.get("aliases", [])
+            )
+            db.merge(supp)
+
+        # ── Case 5: Source Restoration ────────────────────────────────────────
+        elif item.table_name in ["Sources", "sources"]:
+            src = Source(
+                url=rec_data.get("url", ""),
+                description=rec_data.get("description", ""),
+                active=rec_data.get("active", True),
+                cookie_header=rec_data.get("cookie_header", "")
+            )
+            db.merge(src)
+
+        # ── Case 6: Agent Memory Restoration ──────────────────────────────────
+        elif item.table_name in ["Agent Memories", "memories", "agent_memories"]:
+            mem = AgentMemory(
+                memory_key=rec_data.get("memory_key", "preference"),
+                fact_text=rec_data.get("fact_text", ""),
+                source_session_id=rec_data.get("source_session_id")
+            )
+            db.merge(mem)
+
+        # ── Case 7: Single Row Custom Table Record Restoration ────────────────
+        else:
+            from storage import dynamic_schema
+            dynamic_schema.insert_dynamic_record(item.table_name, rec_data)
 
         db.delete(item)
         db.commit()
@@ -1300,10 +1423,23 @@ async def create_or_save_certificate(payload: dict = Body(...), db: Session = De
                 except Exception: pass
             return None
 
+        raw_supp_val = str(payload.get("supplier") or payload.get("Supplier") or payload.get("canonical_supplier") or "").strip()
+        if raw_supp_val and raw_supp_val not in ('—', 'N/A', 'Unknown'):
+            from storage.models import SupplierLookup
+            supplier_lookups = db.query(SupplierLookup).all()
+            supp_norm = raw_supp_val.lower()
+            for sl in supplier_lookups:
+                if sl.canonical_supplier:
+                    canon_norm = sl.canonical_supplier.strip().lower()
+                    alias_norms = [a.strip().lower() for a in (sl.aliases or []) if a]
+                    if supp_norm == canon_norm or supp_norm in alias_norms or any(a in supp_norm for a in alias_norms if len(a) >= 3):
+                        raw_supp_val = sl.canonical_supplier
+                        break
+
         cert = CertificateMetadata(
             certificate_id=str(cert_id),
             component=str(payload.get("component") or payload.get("Component") or payload.get("name") or "").strip(),
-            supplier=str(payload.get("supplier") or payload.get("Supplier") or payload.get("canonical_supplier") or "").strip(),
+            supplier=raw_supp_val,
             country=str(payload.get("country") or payload.get("Country") or "").strip(),
             certif_number=str(payload.get("certif_number") or payload.get("Certif Number") or payload.get("H-27922") or "").strip(),
             authority=str(payload.get("authority") or payload.get("Authority") or payload.get("canonical_authority") or "").strip(),
@@ -1325,14 +1461,16 @@ def llm_standardize_row(raw_data: dict) -> dict:
     import json
 
     system_prompt = (
-        "You are a broad schema-agnostic database data standardizer. "
-        "Standardize the provided raw record cell values based on natural language semantics and data types (clean brand names, Title Case English countries, formal entity names, ISO YYYY-MM-DD dates, valid URLs). "
-        "Return ONLY a valid JSON dictionary containing the standardized fields."
+        "You are an intelligent data standardization agent. For each column, independently infer its semantic data type "
+        "(e.g., Name, Phone Number, Email, Date, Boolean, Categorical). Once inferred, automatically apply the strictest globally "
+        "accepted standard format for that type (e.g., E.164 for phones without spaces/dashes, ISO 8601 for dates, Title Case for proper nouns). "
+        "If any cell's value structurally fails to meet the standard format of its inferred type, or if it is empty/whitespace/'N/A', "
+        "you MUST output null for that cell. Return ONLY a valid JSON dictionary containing the standardized fields."
     )
-    user_prompt = f"Raw Certificate Record: {json.dumps(raw_data)}"
+    user_prompt = f"Raw Record: {json.dumps(raw_data)}"
 
     try:
-        raw_res = generate_json(system_prompt, user_prompt, disable_thinking=True, max_tokens=512)
+        raw_res = generate_json(system_prompt, user_prompt, disable_thinking=True, max_tokens=1024)
         start = raw_res.find('{')
         end = raw_res.rfind('}') + 1
         if start != -1 and end > start:
@@ -1341,6 +1479,50 @@ def llm_standardize_row(raw_data: dict) -> dict:
     except Exception as e:
         logger.warning(f"LLM row standardization warning: {e}")
     return raw_data
+
+def llm_standardize_batch(rows: list) -> list:
+    """Uses LLM to standardize multiple rows simultaneously via AI Diffing for maximum performance."""
+    if not rows:
+        return []
+    
+    from core.llm import generate_json
+    import json
+
+    # Attach temporary IDs so the LLM can reference which row it is correcting
+    payload_rows = [{"_temp_id": str(i), **row} for i, row in enumerate(rows)]
+
+    system_prompt = (
+        "You are an intelligent data standardization agent. You will be provided with a JSON array of records, each containing a '_temp_id'. "
+        "Use the JSON keys (e.g., 'phone', 'email', 'firstname') to determine the strict intended data type for each column. "
+        "Automatically apply the strictest globally accepted standard format for that intended type (e.g., E.164 for phones without spaces/dashes, "
+        "ISO 8601 for dates, Title Case for proper nouns). "
+        "CRITICAL ENFORCEMENT: If a cell's value fundamentally mismatches its column's intended type (e.g., an email address inside a 'phone' column), "
+        "you MUST output null for that cell. HOWEVER, if the misplaced value belongs in another existing column in that row (e.g., moving the misplaced email "
+        "into the 'email' column), you should rescue the data by moving it to the correct column in your output. If no appropriate target column exists, simply nullify it. "
+        "Empty strings, whitespace, and 'N/A' must always be null.\n\n"
+        "Do NOT output the entire spreadsheet. Return ONLY a single JSON object where the keys are the '_temp_id' "
+        "strings, and the values are objects containing ONLY the specific fields that you corrected, moved, or changed to null. If a field or an entire row "
+        "is already perfectly standard, OMIT IT COMPLETELY from your output to save tokens."
+    )
+    user_prompt = f"Raw Records: {json.dumps(payload_rows)}"
+
+    try:
+        raw_res = generate_json(system_prompt, user_prompt, disable_thinking=True, max_tokens=8192)
+        start = raw_res.find('{')
+        end = raw_res.rfind('}') + 1
+        if start != -1 and end > start:
+            diff_dict = json.loads(raw_res[start:end])
+            if isinstance(diff_dict, dict):
+                # Apply the diff back to the original rows
+                std_rows = []
+                for i, row in enumerate(rows):
+                    changes = diff_dict.get(str(i), {})
+                    std_rows.append({**row, **changes})
+                return std_rows
+    except Exception as e:
+        logger.warning(f"LLM batch standardization diff warning: {e}")
+    
+    return rows
 
 @app.post("/api/v1/certificates/batch")
 async def batch_save_certificates(rows: list = Body(...), db: Session = Depends(get_db)):
@@ -1446,12 +1628,25 @@ async def batch_save_certificates(rows: list = Body(...), db: Session = Depends(
                         raw_auth = inferred_auth
                         autofilled.append(f'Authority: "{raw_auth}" (derived from Country "{raw_ctry}")')
 
-            # Smart Auto-Fill for empty Supplier: check SupplierLookup map
+            # Always canonicalize Supplier if provided, using SupplierLookup alias map
+            if raw_supp and raw_supp not in ('—', 'N/A', 'Unknown'):
+                supp_key = raw_supp.lower()
+                if supp_key in alias_to_supp_map:
+                    raw_supp = alias_to_supp_map[supp_key]
+                else:
+                    for alias_key, canon_val in alias_to_supp_map.items():
+                        if len(alias_key) >= 3 and alias_key in supp_key:
+                            raw_supp = canon_val
+                            break
+
+            # Smart Auto-Fill for empty Supplier: check if component name contains supplier alias
             if (not raw_supp or raw_supp in ('—', 'N/A', 'Unknown')) and raw_comp:
                 comp_key = raw_comp.lower()
-                if comp_key in alias_to_supp_map:
-                    raw_supp = alias_to_supp_map[comp_key]
-                    autofilled.append(f'Supplier: "{raw_supp}"')
+                for alias_key, canon_val in alias_to_supp_map.items():
+                    if len(alias_key) >= 3 and alias_key in comp_key:
+                        raw_supp = canon_val
+                        autofilled.append(f'Supplier: "{raw_supp}" (derived from Component "{raw_comp}")')
+                        break
 
             # Check if authority, supplier, or country was originally empty but got filled by LLM / memory
             if (not orig_auth or orig_auth in ('—', 'N/A')) and raw_auth and raw_auth not in ('—', 'N/A'):
@@ -1570,9 +1765,14 @@ def get_or_create_table_schema_memory(db: Session, table_name: str, target_field
                 if allow_new_columns:
                     # User granted explicit permission to add new column(s)!
                     updated_fields = sorted(list(stored_fields.union(incoming_fields)))
-                    profile["target_fields"] = updated_fields
-                    profile["sample_formatting"] = {**profile.get("sample_formatting", {}), **sample_row}
-                    profile["last_updated"] = datetime.utcnow().isoformat()
+                    now_iso = datetime.utcnow().isoformat()
+                    profile = {
+                        "table_name": profile.get("table_name", table_name),
+                        "description": profile.get("description", f"Database table for {table_name}."),
+                        "target_fields": updated_fields,
+                        "registered_at": profile.get("registered_at", now_iso),
+                        "last_updated": now_iso
+                    }
 
                     existing_mem.fact_text = json.dumps(profile)
                     db.commit()
@@ -1588,11 +1788,13 @@ def get_or_create_table_schema_memory(db: Session, table_name: str, target_field
             logger.debug(f"Error parsing existing table memory: {ex}")
 
     # If brand new table, construct and store table schema memory
+    now_iso = datetime.utcnow().isoformat()
     schema_profile = {
         "table_name": table_name,
+        "description": f"User defined dynamic database table for {table_name}.",
         "target_fields": current_fields,
-        "sample_formatting": sample_row,
-        "registered_at": datetime.utcnow().isoformat()
+        "registered_at": now_iso,
+        "last_updated": now_iso
     }
     try:
         new_mem = AgentMemory(
@@ -1677,9 +1879,9 @@ async def llm_map_spreadsheet_headers(payload: dict = Body(...), db: Session = D
         # WORKFLOW 2: BRAND NEW TABLE
         system_prompt = (
             f"You are a broad schema-agnostic data standardizer for a brand new database table '{table_name}'. "
-            "Because this is a brand new table, there is NO column mapping required. "
-            "Analyze the incoming columns and sample data. Infer each column's meaning and standardize cell text where applicable (e.g. clean company names, Title Case English countries, ISO YYYY-MM-DD dates, valid URLs). "
-            "Return ONLY a valid JSON object: {\"standardized_sample\": {...}}"
+            "Step 1: Map the incoming spreadsheet column headers to themselves (1:1 mapping) to provide the frontend with necessary routing keys. "
+            "Step 2: Analyze the incoming columns and sample data. Infer each column's meaning and standardize cell text where applicable (e.g. clean company names, Title Case English countries, ISO YYYY-MM-DD dates, valid URLs). "
+            "Return ONLY a valid JSON object: {\"mapping\": {\"incoming_header\": \"incoming_header\"}, \"standardized_sample\": {...}}"
         )
         user_prompt = (
             f"New Table Name: {table_name}\n"
@@ -2507,11 +2709,23 @@ def update_source(source_id: int, payload: dict, db: Session = Depends(get_db)):
 @app.delete("/api/v1/sources/{source_id}")
 def delete_source(source_id: int, db: Session = Depends(get_db)):
     """Deletes a scraper source."""
-    from schemas.extraction import Source
+    from schemas.extraction import Source, RecycleBinItem
+    import json, uuid
+    from datetime import datetime
 
     row = db.query(Source).filter(Source.id == source_id).first()
     if row is None:
         raise HTTPException(status_code=404, detail=f"Source {source_id} not found.")
+        
+    rec_item = RecycleBinItem(
+        id=uuid.uuid4().hex,
+        title=f"Source: {row.url}",
+        table_name="sources",
+        record_data=json.dumps({"id": row.id, "url": row.url, "description": row.description, "active": row.active}, default=str),
+        deleted_at=datetime.utcnow()
+    )
+    db.add(rec_item)
+    
     db.delete(row)
     db.commit()
     logger.info(f" Deleted scraper source id={source_id}.")
@@ -2892,26 +3106,58 @@ def list_schema_tables():
 
 
 @app.post("/api/v1/schema/tables")
-def create_schema_table(payload: dict):
-    """Creates a new custom database table."""
+def create_schema_table(payload: dict, db: Session = Depends(get_db)):
+    """Creates a new custom database table and registers its schema in AgentMemory."""
     from storage import dynamic_schema
     table_name = str((payload or {}).get("table_name") or "").strip()
     columns = (payload or {}).get("columns") or []
     if not table_name:
         raise HTTPException(status_code=422, detail="'table_name' is required.")
     try:
-        return dynamic_schema.create_custom_table(table_name, columns)
+        res = dynamic_schema.create_custom_table(table_name, columns)
+        
+        # Eagerly register to Long-Term Memory
+        target_fields = [c.get("name") for c in columns if c.get("name")]
+        sample_row = {tf: "" for tf in target_fields}
+        get_or_create_table_schema_memory(db, table_name, target_fields, sample_row, allow_new_columns=True)
+        
+        return res
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.delete("/api/v1/schema/tables/{table_name}")
-def drop_schema_table(table_name: str):
-    """Drops a custom dynamic database table."""
+def drop_schema_table(table_name: str, db: Session = Depends(get_db)):
+    """Drops a custom dynamic database table (moves table schema & records to Recycle Bin first)."""
     from storage import dynamic_schema
+    from schemas.extraction import RecycleBinItem
+    import json, uuid
+    from datetime import datetime
+
     try:
-        return dynamic_schema.drop_custom_table(table_name)
+        columns = dynamic_schema.get_table_columns(table_name)
+        records = dynamic_schema.fetch_dynamic_records(table_name, limit=50000)
+
+        rec_item = RecycleBinItem(
+            id=uuid.uuid4().hex,
+            title=f"Dynamic Table: {table_name}",
+            table_name=f"__TABLE__:{table_name}",
+            record_data=json.dumps({
+                "is_table": True,
+                "table_name": table_name,
+                "columns": columns,
+                "records": records,
+                "record_count": len(records),
+            }, default=str),
+            deleted_at=datetime.utcnow()
+        )
+        db.add(rec_item)
+        db.commit()
+
+        dynamic_schema.drop_custom_table(table_name)
+        return {"status": "success", "table_name": table_name, "message": f"Table '{table_name}' moved to Recycle Bin.", "recycle_id": rec_item.id}
     except Exception as exc:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -2965,17 +3211,34 @@ def fetch_schema_table_data(table_name: str, limit: int = 500):
 
 
 @app.post("/api/v1/schema/tables/{table_name}/data")
-def insert_schema_table_data(table_name: str, payload: dict):
+def insert_schema_table_data(table_name: str, payload: dict = Body(...)):
     """Inserts a row into a dynamic custom table."""
     from storage import dynamic_schema
     try:
-        return dynamic_schema.insert_dynamic_record(table_name, payload or {})
+        std_payload = llm_standardize_row(payload or {})
+        record_id = dynamic_schema.create_dynamic_record(table_name, std_payload)
+        return {"status": "success", "id": record_id}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/schema/tables/{table_name}/data/batch")
+async def batch_insert_schema_table_data(table_name: str, rows: list = Body(...)):
+    """Batch inserts multiple rows into a dynamic custom table with bulk LLM standardization."""
+    from storage import dynamic_schema
+    try:
+        if not rows:
+            return {"status": "success", "imported_count": 0}
+        
+        std_rows = llm_standardize_batch(rows)
+        imported_count = dynamic_schema.bulk_insert_dynamic_records(table_name, std_rows)
+        return {"status": "success", "imported_count": imported_count}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.delete("/api/v1/schema/tables/{table_name}/data/{record_id}")
-def delete_schema_table_data(table_name: str, record_id: int):
+def delete_schema_table_data(table_name: str, record_id: str):
     """Deletes a row by ID from a dynamic custom table."""
     from storage import dynamic_schema
     try:
@@ -2992,7 +3255,8 @@ def update_schema_table_data(table_name: str, record_id: int, payload: dict):
     """Updates a record in a custom dynamic table."""
     from storage import dynamic_schema
     try:
-        success = dynamic_schema.update_dynamic_record(table_name, record_id, payload or {})
+        std_payload = llm_standardize_row(payload or {})
+        success = dynamic_schema.update_dynamic_record(table_name, record_id, std_payload)
         if not success:
             raise HTTPException(status_code=404, detail=f"Record {record_id} not found.")
         return {"status": "success", "id": record_id}

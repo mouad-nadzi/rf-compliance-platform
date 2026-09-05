@@ -105,7 +105,7 @@ def _casual_conversation_reply(user_query: str, history_text: str = "") -> str:
     Uses a lightweight LLM call (disable_thinking) against a dedicated casual
     prompt; falls back to a canned greeting if generation fails. Stateless.
     """
-    from core.prompts import CASUAL_CONVERSATION_SYSTEM_PROMPT
+    from core.prompts import config_casual_conversation_system_prompt
     from core.llm import generate_json
 
     try:
@@ -113,7 +113,7 @@ def _casual_conversation_reply(user_query: str, history_text: str = "") -> str:
             f"{history_text}\n\n" if history_text else ""
         ) + f"USER MESSAGE: {user_query}\n\nReturn ONLY the raw JSON output matching the schema."
         raw_response = generate_json(
-            system_prompt=CASUAL_CONVERSATION_SYSTEM_PROMPT,
+            system_prompt=config_casual_conversation_system_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
         )
@@ -664,13 +664,13 @@ def answer_compliance_query_stream(
 
         elif intent == QueryIntent.CASUAL_CONVERSATION.value:
             yield {"type": "status", "stage": "casual", "message": "Generating reply..."}
-            from core.prompts import CASUAL_CONVERSATION_SYSTEM_PROMPT
+            from core.prompts import config_casual_conversation_system_prompt
             casual_prompt = (
                 f"{history_text}\n\n" if history_text else ""
             ) + f"USER MESSAGE: {clean_query}\n\nReturn ONLY the raw JSON output matching the schema."
             collector: Dict[str, Any] = {}
             yield from _stream_and_collect(
-                CASUAL_CONVERSATION_SYSTEM_PROMPT,
+                config_casual_conversation_system_prompt(),
                 casual_prompt,
                 clean_query,
                 collector,

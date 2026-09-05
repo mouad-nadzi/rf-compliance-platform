@@ -1,10 +1,10 @@
 # Project Handoff Report — RF Compliance Platform
-**Date:** 2026-09-01  
+**Date:** 2026-09-05  
 **Status:** LIVE IN PRODUCTION on GCP NVIDIA L4 Host  
 **Primary LLM:** Qwen3.8-27B GGUF UD-IQ3_XXS (`qwen3.8-27b-gguf`, 3-bit, 32k context)  
 **Primary OCR:** GLM-OCR (pure-HF transformers, `glm-ocr`)  
 **Frontend:** React 18 + TypeScript SPA (Vite) — Streamlit UI fully decommissioned  
-**Repository:** `mouad-nadzi/rf-compliance-platform` (branch: `main`, commit: `4ae99bd`)
+**Repository:** `mouad-nadzi/rf-compliance-platform` (branch: `main`)
 
 ---
 
@@ -307,6 +307,34 @@ Every silent AI action generates a `NotificationItem` in PostgreSQL:
 - Soft-delete: deleted records go to `recycle_bin_records`, recoverable via the UI.
 - Import (Excel/CSV) and export available for every table.
 
+### 6.7 Two-Phase Intelligent Data Import & AI Diffing Pipeline
+
+A generalized, table-agnostic data onboarding architecture designed for importing spreadsheet data into both built-in and user-defined tables:
+
+1. **Phase 1 — Semantic Header Mapping (`POST /api/v1/databases/map-headers` / `/api/v1/certificates/map-headers`):**
+   - The LLM maps incoming spreadsheet column headers to target table fields based on semantics, not rigid regex.
+   - **Zero-row fallback:** Uses the table's Long-Term Memory schema profile when 0 records exist in PostgreSQL.
+   - **Unmapped column guardrail:** If incoming data contains columns outside `target_fields`, the system flags them (`unmapped_columns`) and requires explicit user permission (`allow_new_columns=True`) before expanding table schema memory.
+
+2. **Phase 2 — AI Diffing Batch Standardization (`POST /api/v1/databases/standardize-batch`):**
+   - **10x Performance Breakthrough:** Replaced full-row rewrites with a patch/diffing approach. The AI only returns modified cells keyed by `_temp_id`, reducing token generation by >90% and cutting processing time from ~10 minutes to <60 seconds for 88 rows.
+   - **Strict Column Type Enforcement:** Enforces valid formats based on target column names (e.g. ISO 8601 dates for date columns, E.164 for phone numbers).
+   - **Cross-Column Data Rescue:** If mismatched data is detected (e.g. an email address inside a `phone` column), the system rescues the value into the `email` column if present in the target table; otherwise it clears the invalid cell.
+
+3. **Unified Long-Term Memory Architecture (`agent_memories` table):**
+   - All tables (built-in and dynamic) adhere to a canonical 5-key JSON schema:
+     ```json
+     {
+       "table_name": "Responsibles",
+       "description": "User defined dynamic database table for Responsibles.",
+       "target_fields": ["FirstName", "LastName", "Phone", "Email", "Mission/Comment"],
+       "registered_at": "2026-09-05T20:08:19.891464",
+       "last_updated": "2026-09-05T20:08:19.891464"
+     }
+     ```
+   - Legacy `sample_formatting` was eliminated across all memories in favor of zero-shot column-name-as-intent inference.
+   - Provides **Agent Context Awareness**: the AI agent understands the entire platform data landscape, table purposes, and available columns across sessions.
+
 ---
 
 ## 7. Architectural Rules & Critical Directives
@@ -460,16 +488,18 @@ cd frontend && npm run dev
 
 ---
 
-## 12. Live System State (as of 2026-09-01)
+## 12. Live System State (as of 2026-09-05)
 
 | Metric | Value |
 |---|---|
-| RF Certificate Records | **1,580** |
+| RF Certificate Records | **1,580** (1,314 suppliers standardized to canonical names; 18 authority/country auto-filled) |
 | Regulatory Authorities | **183** (all countries seeded in `data/lookups/authorities.json`) |
-| Suppliers | **50+** |
+| Suppliers | **50+** (alias mappings pre-cached for 100% canonical resolution) |
 | Active Model Cache | Qwen3.8-27B (11 GB) + GLM-OCR (2.5 GB) + bge-m3 (4.3 GB) = **17.8 GB** |
 | Tests | **5/5 passing** (`python3 -m unittest discover tests`) |
-| Git Commit | `4ae99bd` — feat: React SPA integration + Streamlit purge |
+| Table Schema Memories | Unified 5-key JSON schema across all 6 core & dynamic database tables in `agent_memories` |
+| Import Performance | AI Diffing batch standardizer achieves **10x speedup** (<60s for 88 rows) |
+| Git Status | Clean workspace, services fully containerized on GCP L4 host |
 
 ---
 
@@ -499,7 +529,15 @@ cd frontend && npm run dev
 | Streamlit UI fully decommissioned | ✅ |
 | Port 8501 released; port 8000 only | ✅ |
 | Stale model cache purged (IQ1_M 6.3 GB removed) | ✅ |
-| GitHub push (`4ae99bd`) | ✅ |
+| Transparent duplicate import UX reporting (Scenario A & B) | ✅ |
+| Unified supplier canonicalization (PDF + CSV/Excel parity) | ✅ |
+| Database cleanup migration (1,314 supplier records standardized) | ✅ |
+| Bidirectional Authority ↔ Country DB auto-fill (18 records updated) | ✅ |
+| Long-Term Memory tool capabilities retrieval & casual prompt injection | ✅ |
+| AI Diffing batch standardizer (`llm_standardize_batch`) — 10x throughput boost | ✅ |
+| Strict column type enforcement with cross-column data rescue | ✅ |
+| Unified 5-key Long-Term Memory table schema architecture | ✅ |
+| Legacy `sample_formatting` memory purged in favor of zero-shot column intent | ✅ |
 
 ---
 
@@ -521,7 +559,7 @@ cd frontend && npm run dev
 
 | File | Description |
 |---|---|
-| [`server/main.py`](file:///home/mouadnadzi3/rf-compliance-platform/server/main.py) | All API endpoints, batch save, bidirectional auto-fill logic |
+| [`server/main.py`](file:///home/mouadnadzi3/rf-compliance-platform/server/main.py) | All API endpoints, batch save, AI Diffing standardizer, header mapping, auto-fill |
 | [`server/config.py`](file:///home/mouadnadzi3/rf-compliance-platform/server/config.py) | Central config (engine selection, VRAM limits, paths) |
 | [`core/extractor.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/extractor.py) | PDF ingestion pipeline + notification creation |
 | [`core/llm/qwen3_8_27b.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/llm/qwen3_8_27b.py) | Active production LLM engine |
@@ -530,11 +568,11 @@ cd frontend && npm run dev
 | [`schemas/extraction.py`](file:///home/mouadnadzi3/rf-compliance-platform/schemas/extraction.py) | All SQLAlchemy ORM models |
 | [`storage/seed_lookups.py`](file:///home/mouadnadzi3/rf-compliance-platform/storage/seed_lookups.py) | Authority/supplier knowledge base seeder |
 | [`data/lookups/authorities.json`](file:///home/mouadnadzi3/rf-compliance-platform/data/lookups/authorities.json) | 183 global regulatory authority definitions |
-| [`frontend/src/views/DatabasesView.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/DatabasesView.tsx) | Main compliance table UI |
+| [`frontend/src/views/DatabasesView.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/DatabasesView.tsx) | Main compliance table UI + import workflow |
 | [`frontend/src/components/Navbar/Navbar.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/components/Navbar/Navbar.tsx) | Notification bell + unread badge |
 | [`docker-compose.yaml`](file:///home/mouadnadzi3/rf-compliance-platform/docker-compose.yaml) | Container stack definition |
 | [`entrypoint.sh`](file:///home/mouadnadzi3/rf-compliance-platform/entrypoint.sh) | Container boot sequence |
 
 ---
 
-*Last updated: 2026-09-01 | Commit: `4ae99bd` | Branch: `main`*
+*Last updated: 2026-09-05 | Branch: `main`*

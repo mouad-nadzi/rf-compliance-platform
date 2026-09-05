@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Outlet, useOutletContext } from 'react-router-dom';
 import Navbar from '../Navbar/Navbar';
 import Sidebar from '../Sidebar/Sidebar';
+import { api } from '../../api';
 
 export type LayoutContextType = {
   selectedTable: string;
@@ -21,6 +22,22 @@ const AppLayout = () => {
   const [selectedTable, setSelectedTable] = useState('RF Certificates');
   const [customTables, setCustomTables] = useState<string[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loadCustomTables = async () => {
+      try {
+        const tables = await api.getCustomTables();
+        setCustomTables(tables);
+      } catch (err) {
+        console.error("Failed to load custom tables on mount:", err);
+      }
+    };
+    loadCustomTables();
+
+    const handleRefreshTables = () => loadCustomTables();
+    window.addEventListener('refresh-custom-tables', handleRefreshTables);
+    return () => window.removeEventListener('refresh-custom-tables', handleRefreshTables);
+  }, []);
 
   return (
     <div className="app-container" style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>

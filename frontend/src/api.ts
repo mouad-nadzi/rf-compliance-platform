@@ -155,11 +155,85 @@ export const api = {
     return Array.isArray(json) ? json : (json.memories || []);
   },
 
-  getCustomTableRows: async (tableName: string): Promise<any[]> => {
-    const res = await fetch(`${API_BASE}/schema/tables/${encodeURIComponent(tableName)}/rows`);
+  getCustomTables: async (): Promise<string[]> => {
+    const res = await fetch(`${API_BASE}/schema/tables`);
     if (!res.ok) return [];
     const json = await res.json();
-    return Array.isArray(json) ? json : (json.rows || []);
+    const tables: any[] = json.tables || [];
+    return tables.filter((t: any) => t.is_custom).map((t: any) => t.table_name);
+  },
+
+  createCustomTable: async (tableName: string, columns: { name: string; type?: string }[]): Promise<any> => {
+    const res = await fetch(`${API_BASE}/schema/tables`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ table_name: tableName, columns })
+    });
+    if (!res.ok) {
+      const err = await res.text().catch(() => '');
+      throw new Error(`Failed to create custom table (${res.status}): ${err}`);
+    }
+    return res.json();
+  },
+
+  deleteCustomTable: async (tableName: string): Promise<any> => {
+    const res = await fetch(`${API_BASE}/schema/tables/${encodeURIComponent(tableName)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete custom table');
+    return res.json();
+  },
+
+  getCustomTableRows: async (tableName: string): Promise<{ columns?: any[], records?: any[] }> => {
+    const res = await fetch(`${API_BASE}/schema/tables/${encodeURIComponent(tableName)}/data`);
+    if (!res.ok) return { columns: [], records: [] };
+    const json = await res.json();
+    return json;
+  },
+
+  importCustomTableFile: async (tableName: string, file: File): Promise<any> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch(`${API_BASE}/schema/tables/${encodeURIComponent(tableName)}/import`, {
+      method: 'POST',
+      body: formData
+    });
+    if (!res.ok) {
+      const err = await res.text().catch(() => '');
+      throw new Error(`Failed to import file into custom table (${res.status}): ${err}`);
+    }
+    return res.json();
+  },
+
+  saveCustomTableRow: async (tableName: string, payload: any): Promise<any> => {
+    const isUpdate = !!payload.id;
+    const url = isUpdate 
+      ? `${API_BASE}/schema/tables/${encodeURIComponent(tableName)}/data/${payload.id}`
+      : `${API_BASE}/schema/tables/${encodeURIComponent(tableName)}/data`;
+    const method = isUpdate ? 'PUT' : 'POST';
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error('Failed to save custom table row');
+    return res.json();
+  },
+
+  batchSaveCustomTableRows: async (tableName: string, rows: any[]): Promise<any> => {
+    const res = await fetch(`${API_BASE}/schema/tables/${encodeURIComponent(tableName)}/data/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rows)
+    });
+    if (!res.ok) throw new Error('Failed to batch save custom table rows');
+    return res.json();
+  },
+
+  deleteCustomTableRow: async (tableName: string, recordId: number | string): Promise<any> => {
+    const res = await fetch(`${API_BASE}/schema/tables/${encodeURIComponent(tableName)}/data/${recordId}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) throw new Error('Failed to delete custom table row');
+    return res.json();
   },
 
   deleteAuthority: async (id: string): Promise<void> => {
