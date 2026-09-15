@@ -145,9 +145,8 @@ class AgentMemory(Base):
     __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True, autoincrement=True, comment="Memory row id")
-    memory_key = Column(String(100), nullable=False, default="preference", comment="Category key: preference, rule, contact, portal_note")
+    memory_key = Column(String(100), unique=True, nullable=False, default="preference", comment="Category key: preference, rule, contact, portal_note")
     fact_text = Column(Text, nullable=False, comment="Persisted long-term fact or user directive")
-    source_session_id = Column(String(100), nullable=True, comment="Optional session ID where memory originated")
     created_at = Column(DateTime, default=datetime.utcnow, comment="Timestamp when memory was recorded")
 
 

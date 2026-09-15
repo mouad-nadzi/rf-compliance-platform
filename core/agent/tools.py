@@ -323,7 +323,8 @@ class RememberFactTool(BaseTool):
 class ManageSchemaTool(BaseTool):
     """
     Dynamically creates custom database tables, adds columns, drops columns,
-    or inspects table schemas in PostgreSQL.
+    combines columns, renames columns, or inspects table schemas in PostgreSQL.
+    Supports single and bulk operations.
     """
 
     name: str = "manage_schema"
@@ -335,31 +336,61 @@ class ManageSchemaTool(BaseTool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "Action type: 'create_table', 'add_column', 'drop_column', 'list_tables', 'get_columns'.",
+                    "description": (
+                        "Action type: 'create_table', 'add_column', 'add_columns', "
+                        "'drop_column', 'drop_columns', 'combine_columns', 'rename_column', "
+                        "'drop_table', 'list_tables', 'get_columns'."
+                    ),
                 },
                 "table_name": {
                     "type": "string",
-                    "description": "Target database table name (e.g. 'vendor_audits').",
+                    "description": "Target database table name (e.g. 'certificates_responsibles', 'vendor_audits').",
                 },
                 "columns": {
                     "type": "array",
                     "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string", "description": "Column name (e.g. 'score')"},
-                            "type": {"type": "string", "description": "SQL data type: 'string', 'text', 'int', 'float', 'date', 'timestamp', 'boolean'"},
-                        },
-                        "required": ["name"],
+                        "oneOf": [
+                            {"type": "string", "description": "Column name for drop_columns or source columns"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string", "description": "Column name"},
+                                    "type": {"type": "string", "description": "SQL data type: 'string', 'text', 'int', 'float', 'date', 'timestamp', 'boolean'"},
+                                },
+                                "required": ["name"],
+                            },
+                        ]
                     },
-                    "description": "List of column definitions for create_table action.",
+                    "description": "List of column definitions for create_table/add_columns, or list of column names to drop for drop_columns.",
                 },
                 "column_name": {
                     "type": "string",
-                    "description": "Target column name for add_column or drop_column actions.",
+                    "description": "Target column name (or comma-separated column names) for add_column or drop_column actions.",
                 },
                 "column_type": {
                     "type": "string",
                     "description": "SQL data type for add_column action.",
+                },
+                "source_columns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of source columns to concatenate for 'combine_columns' action (e.g. ['firstname', 'lastname']).",
+                },
+                "target_column": {
+                    "type": "string",
+                    "description": "Target column name to receive merged values for 'combine_columns' action (e.g. 'responsible_name').",
+                },
+                "separator": {
+                    "type": "string",
+                    "description": "Separator string for 'combine_columns' action (default: ' ').",
+                },
+                "drop_sources": {
+                    "type": "boolean",
+                    "description": "Whether to drop the source columns after combining them into target_column (default: false).",
+                },
+                "new_name": {
+                    "type": "string",
+                    "description": "New column name for rename_column action.",
                 },
             },
             "required": ["action"],
@@ -367,7 +398,12 @@ class ManageSchemaTool(BaseTool):
 
     def execute(self, **kwargs: Any) -> Any:
         from storage import dynamic_schema
-        action = str(kwargs.get("action") or "").strip().lower()
+        raw_act = str(kwargs.get("action_type") or "").strip()
+        if not raw_act or raw_act.lower() == "manage_schema":
+            raw_act = str(kwargs.get("action") or "").strip()
+        if raw_act.lower() == "manage_schema":
+            raw_act = str(kwargs.get("subaction") or kwargs.get("schema_action") or "").strip()
+        action = raw_act.lower()
         table_name = str(kwargs.get("table_name") or "")
         columns = kwargs.get("columns") or []
         column_name = str(kwargs.get("column_name") or "")
@@ -377,14 +413,37 @@ class ManageSchemaTool(BaseTool):
             if not table_name:
                 raise ValueError("table_name is required for create_table action.")
             return dynamic_schema.create_custom_table(table_name, columns)
-        elif action == "add_column":
-            if not table_name or not column_name:
-                raise ValueError("table_name and column_name are required for add_column action.")
+        elif action in ("add_column", "add_columns"):
+            if not table_name:
+                raise ValueError("table_name is required for add_column(s) action.")
+            if columns and isinstance(columns, (list, tuple)):
+                return dynamic_schema.add_columns_to_table(table_name, list(columns))
+            if not column_name:
+                raise ValueError("column_name or columns list is required for add_column action.")
             return dynamic_schema.add_column_to_table(table_name, column_name, column_type)
-        elif action == "drop_column":
-            if not table_name or not column_name:
-                raise ValueError("table_name and column_name are required for drop_column action.")
-            return dynamic_schema.drop_column_from_table(table_name, column_name)
+        elif action in ("drop_column", "drop_columns"):
+            if not table_name:
+                raise ValueError("table_name is required for drop_column(s) action.")
+            target_cols = columns if columns else column_name
+            if not target_cols:
+                raise ValueError("column_name or columns list is required for drop_column action.")
+            return dynamic_schema.drop_columns_from_table(table_name, target_cols)
+        elif action == "combine_columns":
+            if not table_name:
+                raise ValueError("table_name is required for combine_columns action.")
+            target_col = str(kwargs.get("target_column") or column_name or kwargs.get("new_name") or "").strip()
+            source_cols = kwargs.get("source_columns") or columns
+            if not target_col or not source_cols:
+                raise ValueError("target_column and source_columns are required for combine_columns action.")
+            sep = str(kwargs.get("separator") or " ")
+            drop_src = bool(kwargs.get("drop_sources", False))
+            return dynamic_schema.combine_columns_in_table(
+                table_name=table_name,
+                target_column=target_col,
+                source_columns=list(source_cols),
+                separator=sep,
+                drop_sources=drop_src,
+            )
         elif action == "rename_column":
             new_name = str(kwargs.get("new_name") or kwargs.get("new_column_name") or "")
             if not table_name or not column_name or not new_name:
@@ -401,7 +460,11 @@ class ManageSchemaTool(BaseTool):
                 raise ValueError("table_name is required for get_columns action.")
             return dynamic_schema.get_table_columns(table_name)
         else:
-            raise ValueError(f"Unknown action: '{action}'. Supported actions: create_table, drop_table, add_column, drop_column, list_tables, get_columns.")
+            raise ValueError(
+                f"Unknown action: '{action}'. Supported actions: "
+                "create_table, drop_table, add_column, add_columns, drop_column, drop_columns, "
+                "combine_columns, rename_column, list_tables, get_columns."
+            )
 
 
 class CheckUrlTool(BaseTool):
@@ -613,19 +676,17 @@ class IngestToDatabaseTool(BaseTool):
                 local_matching = [
                     p for p in local_files
                     if clean_target in unquote(os.path.basename(p)).lower()
-                    or unquote(os.path.basename(p)).lower() in clean_target
+                    or clean_target in p.lower()
                 ]
                 if local_matching:
                     file_paths = local_matching
-            elif local_files:
-                file_paths = local_files
 
         ingest_mode = kwargs.get("ingest_mode") or ""
         if ingest_mode == "single" and not target_file and len(file_paths) > 1:
             file_paths = file_paths[:1]
 
         if not file_paths:
-            return "Nothing to ingest - no downloaded certificate files."
+            return "No matching downloaded certificate files found to ingest."
 
         new_record_ids: List[str] = []
         updated_record_ids: List[str] = []
@@ -654,6 +715,89 @@ class IngestToDatabaseTool(BaseTool):
         else:
             suffix = f" ({', '.join(new_record_ids[:5])})" if new_record_ids else ""
             return f"Added {len(new_record_ids)} new certificate(s){target_str} to the database{suffix}."
+
+class ExecuteRawSQLTool(BaseTool):
+    """
+    Executes raw SQL queries (DML/DDL) directly against the database.
+    Useful for merging tables, performing complex aggregations, or advanced ETL logic.
+    """
+    name: str = "execute_raw_sql"
+    requires_approval: bool = True
+
+    def get_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "sql_query": {
+                    "type": "string",
+                    "description": "The raw PostgreSQL query to execute."
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Optional parameters to bind to the query (key-value mapping)."
+                }
+            },
+            "required": ["sql_query"]
+        }
+
+    @staticmethod
+    def generate_sql(objective: str) -> str:
+        """Dynamically generate SQL just-in-time using the database schema and an LLM."""
+        from storage.dynamic_schema import list_all_user_tables, get_table_columns
+        from core.prompts import SQL_GENERATOR_SYSTEM_PROMPT
+        
+        schema_lines = []
+        try:
+            tables = list_all_user_tables()
+            for t in tables:
+                tname = t["table_name"]
+                cols = [c["column_name"] for c in get_table_columns(tname)]
+                schema_lines.append(f"- {tname}: {', '.join(cols)}")
+            schema_block = "\n".join(schema_lines)
+        except Exception as e:
+            schema_block = f"(Schema unavailable: {e})"
+            
+        system_prompt = SQL_GENERATOR_SYSTEM_PROMPT.replace("{OBJECTIVE}", objective).replace("{SCHEMA}", schema_block)
+        
+        try:
+            import json
+            from core.llm import generate_json
+            raw_response = generate_json(system_prompt=system_prompt, user_prompt="", disable_thinking=True)
+            parsed = json.loads(raw_response)
+            return parsed.get("sql_query", "").strip()
+        except Exception as e:
+            return f"-- Failed to generate SQL: {e}"
+
+    def execute(self, **kwargs: Any) -> Any:
+        from storage.database import get_db_session
+        from sqlalchemy import text
+        
+        sql_query = str(kwargs.get("sql_query") or "").strip()
+        params = kwargs.get("params") or {}
+        
+        if not sql_query:
+            description = str(kwargs.get("description") or "Execute raw SQL query")
+            sql_query = ExecuteRawSQLTool.generate_sql(description)
+            if sql_query.startswith("-- Failed"):
+                raise ValueError(f"sql_query is required and lazy generation failed: {sql_query}")
+            
+        with get_db_session() as db:
+            try:
+                result = db.execute(text(sql_query), params)
+                rowcount = result.rowcount if result.rowcount is not None else -1
+                
+                if sql_query.lower().startswith("select") or result.returns_rows:
+                    rows = result.fetchall()
+                    data = [dict(row._mapping) for row in rows]
+                    db.commit()
+                    return {"status": "success", "rowcount": len(data), "data": data}
+                    
+                db.commit()
+                return {"status": "success", "rowcount": rowcount, "message": "SQL query executed successfully."}
+            except Exception as exc:
+                db.rollback()
+                logger.error(f" ExecuteRawSQLTool failed: {exc}")
+                raise
 
 
 class DeleteRecordTool(BaseTool):
@@ -723,6 +867,56 @@ class DeleteRecordTool(BaseTool):
             return f"Failed to delete record from '{table_name}': {exc}"
 
 
+class UpdateRecordTool(BaseTool):
+    """Update or transform records in a database table matching specific filters or search targets."""
+
+    name: str = "update_record"
+    requires_approval: bool = True
+
+    def get_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "table_name": {"type": "string", "description": "Target table name (e.g. 'certificates')"},
+                "values": {"type": "object", "description": "Field-value pairs to set (e.g. {'exp_date': '2999-01-01'})"},
+                "filters": {"type": "object", "description": "Column filter conditions (e.g. {'exp_date': '1999-01-01'})"},
+                "target_id": {"type": "string", "description": "Optional specific certificate_id or search string"},
+                "allow_full_table": {"type": "boolean", "description": "Allow updating all records in table"},
+            },
+            "required": ["values"],
+        }
+
+    def execute(self, **kwargs) -> str:
+        from core.agent.db_editor import build_mutation_sql, execute_mutation
+        from storage.database import get_db_session
+
+        table_name = kwargs.get("table_name") or "certificates"
+        values = kwargs.get("values") or {}
+        filters = kwargs.get("filters") or {}
+        target_id = kwargs.get("target_id")
+        allow_full_table = bool(kwargs.get("allow_full_table", False))
+
+        if not values:
+            return "Cannot update record: values to update are required."
+
+        try:
+            mutation = build_mutation_sql(
+                "update",
+                table_name,
+                values=values,
+                row_filter=filters if filters else None,
+                fuzzy_match_query=target_id if target_id else None,
+                allow_full_table=allow_full_table or not (filters or target_id),
+            )
+            with get_db_session() as db:
+                count = execute_mutation(db, mutation)
+                from storage.backup import export_database_to_sql
+                export_database_to_sql()
+                return f"Successfully updated {count} record(s) in table '{table_name}' with {values}."
+        except Exception as exc:
+            return f"Failed to update records in '{table_name}': {exc}"
+
+
 def get_tool_registry() -> Dict[str, BaseTool]:
     """
     Return the immutable tool registry mapping tool name -> tool instance.
@@ -738,9 +932,11 @@ def get_tool_registry() -> Dict[str, BaseTool]:
         DownloadDocumentsTool.name: DownloadDocumentsTool(),
         IngestToDatabaseTool.name: IngestToDatabaseTool(),
         DeleteRecordTool.name: DeleteRecordTool(),
+        UpdateRecordTool.name: UpdateRecordTool(),
         WebDownloaderTool.name: WebDownloaderTool(),
         DataConverterTool.name: DataConverterTool(),
         EmailDraftingTool.name: EmailDraftingTool(),
         RememberFactTool.name: RememberFactTool(),
         ManageSchemaTool.name: ManageSchemaTool(),
+        ExecuteRawSQLTool.name: ExecuteRawSQLTool(),
     }

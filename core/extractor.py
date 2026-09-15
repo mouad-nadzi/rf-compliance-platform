@@ -28,40 +28,45 @@ from core.rag.embeddings import get_embeddings_batch
 
 logger = logging.getLogger(__name__)
 
-# Sentinel date for non-expiring ("infinite"/"Perpetual") certificates. Matches the
-# Excel "no expiry" convention already preserved by _parse_iso_date, so the value is
-# both storable in the relational Date column and distinguishable from NULL (which is
-# reserved for variable/context-dependent terms where no exp date was extracted).
-NO_EXPIRY_DATE = date(9999, 1, 1)
-NO_EXPIRY_DISPLAY = "infinite"
+# Sentinel date for non-expiring / indefinite ("2999-01-01") certificates.
+# Representing indefinite validity in the database.
+NO_EXPIRY_DATE = date(2999, 1, 1)
+NO_EXPIRY_DISPLAY = "Indefinite"
 
-NO_EXPIRY_MARKERS = ("perpetual", "infinite", "no expiry", "no expiration")
+NO_EXPIRY_MARKERS = (
+    "perpetual", "infinite", "indefinite", "permanent", "no expiry", "no expiration",
+    "1999-01-01", "1999/01/01", "2999-01-01", "2999/01/01", "9999-01-01", "9999/01/01"
+)
 
 
 def is_no_expiry_marker(value) -> bool:
-    """True when a raw exp_date value explicitly denotes a non-expiring certificate."""
+    """True when a raw exp_date value explicitly denotes a non-expiring / indefinite certificate."""
     if not value:
         return False
-    return str(value).strip().lower() in NO_EXPIRY_MARKERS
+    val_str = str(value).strip().lower()
+    return val_str in NO_EXPIRY_MARKERS or val_str.startswith("1999") or val_str.startswith("2999") or val_str.startswith("9999")
 
 
 def format_exp_date(value) -> Optional[str]:
     """Render an exp_date for user-facing display.
 
-    Maps the no-expiry sentinel (9999-01-01) to "infinite"; real dates are rendered
-    as YYYY-MM-DD; NULL/empty stays None.
+    Maps the no-expiry sentinels (2999-01-01, 9999-01-01, year >= 2900) to "Indefinite";
+    real dates are rendered as YYYY-MM-DD; NULL/empty stays None.
     """
     if not value:
         return None
     if isinstance(value, datetime):
-        if value.date() == NO_EXPIRY_DATE:
+        if value.year >= 2900 or value.year <= 1999:
             return NO_EXPIRY_DISPLAY
         return value.strftime("%Y-%m-%d")
     if isinstance(value, date):
-        if value == NO_EXPIRY_DATE:
+        if value.year >= 2900 or value.year <= 1999:
             return NO_EXPIRY_DISPLAY
         return value.strftime("%Y-%m-%d")
-    return str(value)
+    s = str(value).strip()
+    if is_no_expiry_marker(s):
+        return NO_EXPIRY_DISPLAY
+    return s
 
 
 def _normalize_text(text: str) -> str:
@@ -200,10 +205,13 @@ def _parse_iso_date(date_str: Optional[str]) -> Optional[date]:
             except ValueError:
                 pass
 
-    # Try standard YYYY-MM-DD (covers 9999-01-01 correctly)
+    # Try standard YYYY-MM-DD (covers 2999-01-01, 1999-01-01, etc.)
     if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
         try:
-            return datetime.strptime(s, "%Y-%m-%d").date()
+            parsed = datetime.strptime(s, "%Y-%m-%d").date()
+            if parsed.year <= 1999 or parsed.year >= 2900:
+                return NO_EXPIRY_DATE
+            return parsed
         except ValueError:
             pass
 

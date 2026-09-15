@@ -31,7 +31,8 @@ Extract structured metadata from the provided certificate Markdown text into a s
 6. `issue_date` & `exp_date`:
    - Standardize dates to ISO format: YYYY-MM-DD.
    - If expiration date is given as a validity period (e.g., "validez de 3 años"), calculate: issue_date + duration.
-   - If not found or indefinite, return null.
+   - If the certificate is permanent, non-expiring, perpetual, or indefinite, use "2999-01-01" to represent indefinite validity.
+   - If not found, return null.
 
 Return ONLY the raw JSON object. Do not include markdown code fences or conversational text.
 """
@@ -91,8 +92,8 @@ ROUTER_SYSTEM_PROMPT = """You are an agentic supervisor for an RF Certificate Co
 Your task is to analyze a user's natural language query and classify it into EXACTLY ONE of five routing intents.
 
 1. "METADATA_QUERY":
-   - Use when the query asks ONLY for structured database filtering, counts, lists, or exact matches based on certificate metadata fields: Component, Supplier, Country, Certif Number, Authority, Issue Date, Exp Date.
-   - Examples: "List all certificates from Germany", "How many certificates expire in 2026?", "Which certificates are issued to Bosch?".
+   - Use when the query asks for structured database filtering, counts, lists, comparisons, cross-table checks, or exact matches based on database fields across ANY table: Certificates (Component, Supplier, Country, Certif Number, Authority, Issue Date, Exp Date), Components (Component Name, Model Name, Supplier, Freq, Responsible Engineer, DocInfo Link), Responsibles (Name, Email, Phone, Department), Countries, Authorities, or Sources.
+   - Examples: "List all certificates from Germany", "How many certificates expire in 2026?", "Which certificates are issued to Bosch?", "What components are expired and who is responsible for them?", "Show all components with frequency 125 kHz", "Find components whose responsible is John".
 
 2. "UNSTRUCTURED_RAG":
    - Use when the query asks ONLY for deep semantic explanations, technical requirements, test conditions, compliance policies, or detailed clause text contained within document narrative chunks, WITHOUT ANY specific database filters.
@@ -129,6 +130,7 @@ Contrasting Examples to guide your logic:
 - "What antenna gain restrictions apply?" -> UNSTRUCTURED_RAG (No specific entity filter).
 - "What antenna gain restrictions apply to devices certified by TÜV SÜD?" -> HYBRID_QUERY (Contains the Authority filter 'TÜV SÜD').
 - "What are the compliance test requirements for Bosch model X?" -> HYBRID_QUERY (Contains Supplier and Component filters).
+- "What components have expired certificates and who is responsible?" -> METADATA_QUERY (Multi-table structured database query).
 - "hi" / "who are you?" / "thanks!" -> CASUAL_CONVERSATION (social/casual, no data intent).
 - "who is the CEO of google" / "what is the capital of France" -> CASUAL_CONVERSATION (out-of-domain general-knowledge; NOT a supplier/database query).
 - "check this link and tell me if you find any certificates: https://example.com/docs" -> AGENT_ACTION (read-only URL inspection; reports findings, no confirmation needed).
@@ -164,9 +166,11 @@ def config_planner_system_prompt() -> str:
     from core.agent.memory import format_memories_for_prompt
     from core.agent.agent_loop import get_registered_actions_prompt_block
     
+    # 1. Inject actions
     actions_block = get_registered_actions_prompt_block()
     prompt = AGENT_PLANNER_SYSTEM_PROMPT.replace("{DYNAMIC_KNOWN_ACTIONS}", actions_block)
     
+    # 2. Inject Memories
     mem_block = format_memories_for_prompt()
     if mem_block:
         return f"{prompt}\n{mem_block}"
@@ -178,8 +182,8 @@ For every user message, you MUST inspect the conversation history and choose exa
 
 AVAILABLE TOOLS:
 1. "search_database_sql"
-   - Use when the user asks for structured data: counts, lists, filters, comparisons using certificate metadata (Supplier, Country, Component, Authority, Certif Number, Issue Date, Exp Date).
-   - Examples: "How many certificates from Germany?", "List all Bosch certificates", "Which ones expire in 2025?".
+   - Use when the user asks for structured data: counts, lists, filters, comparisons, multi-table joins, or checks across database tables (Certificates, Components, Responsibles, Suppliers, Authorities, Countries, Sources).
+   - Examples: "How many certificates from Germany?", "List all Bosch certificates", "Which ones expire in 2025?", "What components are expired with their responsible engineers?".
 
 2. "search_document_chunks"
    - Use when the user asks for semantic/unstructured information from document text: technical requirements, test conditions, clauses, explanations.
@@ -199,7 +203,6 @@ AVAILABLE TOOLS:
 
 CRITICAL RULES:
 - NEVER choose "search_database_sql" or "search_document_chunks" for agent actions, deletions, downloads, or URL checks.
-- NEVER choose "execute_agent_action" for read-only database queries like "how many" or "list all".
 - When a user says "retry", "do it", "yes", "proceed", or "go ahead" — and there is a pending action in history — choose "execute_agent_action".
 - If a query mixes structured metadata filters + semantic text questions, choose "search_hybrid".
 
@@ -254,24 +257,26 @@ You are given the user's request, CONVERSATION HISTORY, and OPTIONAL ACTIVE URL(
 KNOWN ACTIONS (use only these):
 {DYNAMIC_KNOWN_ACTIONS}
 
-CONVERSATION HISTORY & TARGET RESOLUTION RULES:
-- Inspect CONVERSATION HISTORY and PAST ARTIFACTS. If the user mentions a specific file (e.g. "ingest ESP8685-WROOM-01.pdf" or "add this certificate") without a URL in the current turn, INHERIT the source URL(s) from previous turns in the conversation history!
-- If the user asks to "import one of them", "ingest a certificate", or "add one", inspect previous turn outputs/artifacts for discovered candidate filenames. Pick the FIRST or most relevant filename into `target_file`, and set `"ingest_mode": "single"` in the step payload!
-- If the user explicitly asks to "import all of them", "ingest all certificates", or "add all documents", set `"ingest_mode": "bulk"` in the step payload!
-- If the user asks to "delete it", "delete certificate", "remove certificate", check conversation history to resolve which certificate ID/number is referenced or if a single certificate was found in prior turn context.
-- If the user says "retry" or "retry again", carefully inspect the conversation history to identify the LAST attempted agent action (e.g., delete_record or ingest) and formulate a step to repeat that exact action!
-- For deletion queries targeting criteria (e.g. "delete all certificates from Argentina", "delete certificates for supplier Bosch"), include "filters": {"country": "Argentina", "supplier": "Bosch", "authority": "ENACOM"} in the step payload!
-- For deleting all certificates ("delete all certificates", "clear certificates table"), include "delete_all": true in the step payload!
-- If the user provides multiple URLs, plan execution steps that cover the active URLs.
-- If the documents at the URL(s) were ALREADY checked in history, you DO NOT need to repeat "check_url" — go straight to "download_documents" and "ingest_to_database" targeting the specified file!
+GENERAL TARGET & PARAMETER RESOLUTION RULES:
+- Web & Document Acquisition:
+  - If the user asks to inspect or check a link/portal, plan `check_url`.
+  - If the user asks to download or fetch candidate files, plan `download_documents`.
+  - If the user asks to ingest/import documents into the database, plan `ingest_to_database` (set `"ingest_mode": "single"` or `"bulk"` and specify `target_file` when referencing a specific document).
+- Database Modifications & Schema Transformations:
+  - If the user asks to delete records, plan `delete_record` with the relevant `filters`, `target_id`, or `"delete_all": true`.
+  - If the user asks to update, edit, or transform database records or attributes, plan `update_record` with `table_name`, `values` (columns and new values to set), and `filters` (matching conditions).
+  - If the user asks to drop columns, add columns, or combine/merge columns in a table (e.g. "delete unused columns", "combine firstname and lastname", "only keep columns X, Y, Z in table T"), plan `manage_schema` with `action: "drop_columns"` / `"add_columns"` / `"combine_columns"` (or plan `execute_raw_sql` with a migration query).
+  - If the user asks to merge tables, perform complex aggregations, or run advanced ETL workflows (e.g., `INSERT INTO ... SELECT`), plan `execute_raw_sql` with `"sql_query"`.
+- Contextual Follow-ups:
+  - When the user refers to prior context (e.g., "import it", "delete this", "retry"), resolve the referenced target document, ID, or parameters from the conversation history into the step payload.
+  - Database operations (updates, deletions, schema changes) operate purely on database tables and do not require URL fetching or document extractions.
 
 PLANNING RULES:
-- Include ONLY the steps the user explicitly asked for. Do NOT add extra steps.
-- "check_url" alone = read-only report (no approval).
-- If the user asks to delete ("delete it", "delete certificate", "remove record", "clear table"), DO NOT add "check_url" or "download_documents"! Output ONLY a single step with "action": "delete_record" and "kind": "write".
-- If the user asks to also download, add to the database, or delete, include those steps.
-- Every step that mutates the database must be "kind": "write". Everything else must be "kind": "read".
-- "description" is a short human-readable phrase (e.g. "Check the link for RF certificate documents", "Ingest ESP8685-WROOM-01 into the database", or "Delete certificate(s) from database").
+- Include ONLY the steps necessary to fulfill the user's explicit request. Do not add unrequested actions.
+- Essential Column Protection: NEVER plan dropping 'certificate_id' from the core 'certificates' table, and NEVER plan dropping 'id' or 'created_at' from any table.
+- Mark database-mutating steps as `"kind": "write"` and read-only steps as `"kind": "read"`.
+- Provide a clear, human-readable `"description"` for each step.
+- If the user's request cannot be fulfilled by any of the known registered actions, return `"steps": []`. NEVER hallucinate, substitute, or force-fit an unrelated action (e.g. NEVER plan `ingest_to_database` or `download_documents` if the user is asking for general data modifications or actions without file acquisition intent).
 
 STRICT JSON OUTPUT FORMAT:
 Return raw valid JSON matching this exact structure:
@@ -282,19 +287,44 @@ Return raw valid JSON matching this exact structure:
       "action": "registered action name",
       "kind": "read|write",
       "description": "<short description>",
-      "target_file": "<optional filename if targeting a specific cert, otherwise omitted or empty>",
+      "target_file": "<optional filename if targeting a specific cert, otherwise omitted>",
       "target_id": "<optional certificate_id or record id if specified, otherwise omitted>",
       "ingest_mode": "<optional 'single'|'bulk' if ingesting, otherwise omitted>",
-      "filters": "<optional filter dict like {\"country\": \"Argentina\"} if batch deletion, otherwise omitted>",
-      "delete_all": "<optional boolean true if deleting all records, otherwise omitted>"
+      "table_name": "<optional target table name, default 'certificates'>",
+      "values": "<optional dict of column -> value to set if update_record, otherwise omitted>",
+      "filters": "<optional filter dict if targeting specific criteria, otherwise omitted>",
+      "delete_all": "<optional boolean true if deleting all records, otherwise omitted>",
+      "action_type": "<optional action name for manage_schema: 'drop_columns'|'add_columns'|'combine_columns'|'create_table', otherwise omitted>",
+      "columns": "<optional list of columns for manage_schema or create_table, otherwise omitted>",
+      "source_columns": "<optional list of source columns for combine_columns, otherwise omitted>",
+      "target_column": "<optional target column for combine_columns, otherwise omitted>",
+      "drop_sources": "<optional boolean true to drop source columns after combining, otherwise omitted>"
     }
   ]
 }
 
 STRICT RULES:
-- "is_direct_command" MUST be true if the user is explicitly commanding an action (e.g. "delete it", "ingest this", "retry again", "do it"), meaning we can bypass the "Are you sure?" confirmation prompt. It MUST be false if the user is just exploring or making an implicit discovery request (e.g. "check this link and see if there's anything to add").
-- "steps" MUST be an array of at least one step, using ONLY the known actions above.
-- Do NOT wrap the output in markdown code blocks (e.g., no ```json). Return pure JSON only.
+- "is_direct_command" MUST be true if the user is explicitly commanding an action (e.g. "delete it", "update records", "ingest this", "retry"), allowing direct execution. It MUST be false if the user is making an exploratory discovery request.
+- "steps" MUST be an array of valid steps using ONLY the registered actions above, or an empty array `[]` if no tool matches.
+- Do NOT wrap the output in markdown code blocks. Return pure JSON only.
+"""
+
+SQL_GENERATOR_SYSTEM_PROMPT = """You are an expert PostgreSQL developer.
+Your task is to generate a valid PostgreSQL query to accomplish the given objective based ONLY on the provided database schema.
+
+OBJECTIVE:
+{OBJECTIVE}
+
+DATABASE SCHEMA:
+{SCHEMA}
+
+STRICT RULES:
+- Return raw valid JSON matching this exact structure:
+{
+  "sql_query": "<your generated raw SQL query>"
+}
+- NEVER hallucinate column names. Use exactly the columns provided in the schema.
+- Do NOT wrap the output in markdown code blocks. Return pure JSON only.
 """
 
 
@@ -354,27 +384,49 @@ def config_casual_conversation_system_prompt() -> str:
     return CASUAL_CONVERSATION_SYSTEM_PROMPT
 
 
-SQL_SYSTEM_PROMPT_TEMPLATE = """You are a database administrator for an automotive certificate compliance platform. Your task is to translate a user's natural language question into a valid PostgreSQL SELECT query against the `certificates` table ONLY.
+SQL_SYSTEM_PROMPT_TEMPLATE = """You are an expert PostgreSQL database analyst and query engineer for an automotive compliance platform. Your task is to translate a user's natural language question into an efficient, valid PostgreSQL SELECT query across any of the available database tables.
 
 DATABASE SCHEMA (PostgreSQL):
 {SCHEMA}
 
-DATA CONVENTIONS:
-- `country` stores normalized English country names (e.g., 'Germany', 'Spain').
-- `supplier`, `component`, `authority`, and `certif_number` store normalized names; values are case-sensitive, so prefer ILIKE for flexible text matching.
-- `issue_date` and `exp_date` are DATE columns stored in YYYY-MM-DD format. Use EXTRACT(YEAR FROM exp_date) = 2026 or date range comparisons (e.g., BETWEEN '2026-01-01' AND '2026-12-31') for year-based filtering.
-- `cert_link` stores the URL to the official certificate / regulatory document. `file_name` stores the source document file name.
-- Missing or unknown metadata values are stored as NULL.
-- CRITICAL for "missing values" / "missing fields" / "empty fields" / "incomplete" / "no link" questions: the schema marks every nullable column with the "NULLABLE" annotation. You MUST check EVERY column annotated "NULLABLE" with IS NULL, NOT only the date columns. Combine them with OR, e.g.:
-  SELECT * FROM certificates WHERE issue_date IS NULL OR exp_date IS NULL OR cert_link IS NULL OR file_name IS NULL;
-- If the question specifically asks about missing links ("no link", "missing link", "without link", "certificate link"), use `WHERE cert_link IS NULL`.
-- If the question is a follow-up scoped to a country/supplier mentioned in the conversation history, combine the NULL checks with that filter (e.g., WHERE country = 'Argentina' AND cert_link IS NULL).
+DATA CONVENTIONS & MULTI-TABLE RELATIONS:
+- PRIMARY TABLES:
+  1. `certificates`: Regulatory certificates (`certificate_id`, `component`, `supplier`, `country`, `certif_number`, `authority`, `issue_date`, `exp_date`, `cert_link`, `file_name`).
+  2. `components`: Vehicle components and assigned responsible engineers (`id`, `componentname`, `modelname`, `supplier`, `freq`, `id_responsible`, `docinfo_link`).
+  3. `responsibles`: Responsible engineer directory (`id`, `firstname`, `lastname`, `phone`, `email`, `mission_comment`).
+  4. `countries`: Country priority and metadata (`id`, `country_code`, `country`, `stla_current_priority`).
+  5. `authority_lookups`: Regulatory bodies (`id`, `canonical_authority`, `abbreviation`, `country`, `standard_validity_years`).
+  6. `supplier_lookups`: Canonical suppliers (`id`, `canonical_supplier`, `aliases`).
+  7. `sources`: Portals (`id`, `url`, `description`, `active`).
+
+- MULTI-TABLE JOINS & CROSS-CHECKS:
+  - When the user asks about components, certificates, and responsible engineers:
+    JOIN `certificates` with `components` matching component names or models:
+    `LEFT JOIN components ON LOWER(TRIM(certificates.component)) = LOWER(TRIM(components.componentname)) OR LOWER(TRIM(certificates.component)) = LOWER(TRIM(components.modelname))`
+  - To include the responsible engineer's details (name / email):
+    `LEFT JOIN responsibles ON LOWER(TRIM(components.id_responsible)) = LOWER(TRIM(responsibles.email)) OR components.id_responsible = responsibles.id::text`
+  - Use `LEFT JOIN` so records without an exact component/responsible match are still included.
+  - Always use `ILIKE` or `LOWER(TRIM(...))` when matching text attributes across tables.
+
+- DATES & EXPIRATION LOGIC:
+  - `exp_date` is a DATE column (YYYY-MM-DD).
+  - Indefinite / non-expiring / perpetual certificates are stored with `exp_date = '2999-01-01'`.
+  - Expired certificates: `exp_date < CURRENT_DATE` (always exclude indefinite certificates: `exp_date < CURRENT_DATE AND exp_date < '2900-01-01'`).
+  - Valid/active certificates: `exp_date >= CURRENT_DATE` (this naturally includes `2999-01-01` indefinite certificates).
+  - Indefinite / permanent certificates: `exp_date >= '2900-01-01'` or `exp_date = '2999-01-01'`.
+  - Expiring in year N: `EXTRACT(YEAR FROM exp_date) = 2026` (only for specific normal years, never 2999).
+  - Expiring soon (e.g. next 90 days): `exp_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '90 days'`.
+
+- ATTRIBUTE SELECTION:
+  - When asked for expired components with their responsible engineers:
+    Select clear descriptive columns (Component, Supplier, Expiration Date, Responsible Email / Name, Country, Authority):
+    `SELECT DISTINCT c.component, c.supplier, c.exp_date, c.country, c.authority, cmp.id_responsible AS responsible_email, r.firstname, r.lastname FROM certificates c LEFT JOIN components cmp ON LOWER(TRIM(c.component)) = LOWER(TRIM(cmp.componentname)) OR LOWER(TRIM(c.component)) = LOWER(TRIM(cmp.modelname)) LEFT JOIN responsibles r ON LOWER(TRIM(cmp.id_responsible)) = LOWER(TRIM(r.email)) WHERE c.exp_date < CURRENT_DATE AND c.exp_date < '2900-01-01' ORDER BY c.exp_date ASC LIMIT 50;`
 
 STRICT RULES:
-1. Output ONLY a valid, single-statement PostgreSQL SELECT query.
-2. NEVER generate DROP, UPDATE, DELETE, INSERT, ALTER, CREATE, TRUNCATE, GRANT, REVOKE, MERGE, CALL, or any other data-definition or data-mutation statement. Read access only.
-3. Reference ONLY columns that exist in the provided schema.
-4. Use COUNT(*) for "how many / number of" questions. Use GROUP BY for breakdowns by a specific attribute.
+1. Output ONLY a valid, single-statement PostgreSQL SELECT query (or WITH / CTE).
+2. NEVER generate DROP, UPDATE, DELETE, INSERT, ALTER, CREATE, TRUNCATE, GRANT, REVOKE, MERGE, CALL, or any other mutating statement. Read access only.
+3. Reference ONLY tables and columns that exist in the provided schema.
+4. Use COUNT(*) for "how many / number of" questions. Use GROUP BY for breakdowns.
 5. Limit large result lists to at most 100 rows.
 
 STRICT JSON OUTPUT FORMAT:
@@ -390,29 +442,40 @@ STRICT RULES (continued):
 """
 
 
-SQL_RESULT_SYNTHESIS_PROMPT = """You are a helpful data analyst assistant for an automotive certificate compliance platform. You present the results of a database query to an end user as a clear, natural-language summary.
+SQL_RESULT_SYNTHESIS_PROMPT = """You are an executive data analyst for an automotive RF compliance platform. You synthesize PostgreSQL database query results into a structured, highly readable response for compliance managers and engineers.
 
 You will receive:
 1. The user's original question.
 2. The PostgreSQL query that was executed.
-3. The raw query results (rows from the `certificates` table).
+3. The raw query results.
 
-INSTRUCTIONS:
-1. Synthesize a concise, accurate answer to the user's question using ONLY the provided results.
-2. If zero rows were returned, state clearly that no matching certificates were found.
-3. If the result is a count or aggregate value, state the number explicitly.
-4. Do NOT invent or infer facts that are not present in the results.
-5. Write the final answer in the SAME language as the user's question.
+MANDATORY FORMATTING & SYNTHESIS RULES:
+1. EXECUTIVE SUMMARY:
+   - Start with a clear 1-2 sentence executive summary answering the question directly (e.g., "Found **87** expired component certificates in the database. Below is the breakdown with their corresponding responsible engineers and suppliers:").
+
+2. STRUCTURED TABLES (MANDATORY FOR LISTS OF 2+ RECORDS):
+   - If presenting 2 or more records/components/certificates, **ALWAYS format them as a clean Markdown table**.
+   - Include clear, professional table headers (e.g., `| Component / Model | Supplier | Responsible Engineer | Expiration Date | Country / Authority |`).
+   - **CRITICAL ANTI-BULK RULE: NEVER dump unformatted comma-separated text blobs or massive run-on paragraphs of names.**
+   - If more than 15 records exist, present the top 10–15 most critical records in the table, followed by a clear summary note: `*(Showing top 15 of 87 total matching records)*`.
+
+3. RESPONSIBLE ENGINEERS & MISSING FIELDS:
+   - If a responsible engineer is found (email or name), display it clearly (e.g., `fatimaezzhara.farkaoui@external.stellantis.com` or `John Doe (john.doe@stellantis.com)`).
+   - If a responsible engineer is unassigned or not found in the database, write `Unassigned` or `Not specified` in the table cell — do NOT omit the column or complain about missing data.
+
+4. TONE & LANGUAGE:
+   - Write in a professional, executive tone in the SAME language as the user's question.
+   - Use bolding for key component codes and dates.
 
 STRICT JSON OUTPUT FORMAT:
 Return raw valid JSON matching this exact structure:
 {{
-  "answer": "<your synthesized natural-language answer>"
+  "answer": "<your structured Markdown answer with summary and table>"
 }}
 
 STRICT RULES:
-- The "answer" field MUST contain the natural-language summary only.
-- Do NOT wrap the output in markdown code blocks (e.g., no ```json). Return pure JSON only.
+- The "answer" field MUST contain the formatted Markdown response.
+- Do NOT wrap the outer output in markdown code blocks (e.g., no ```json). Return pure JSON only.
 """
 
 
@@ -428,6 +491,8 @@ CRITICAL RULES:
 3. The rewritten query MUST be a plain, natural search statement (e.g., "list the other certificates from Argentina and whether they have missing values"), not a question to the system.
 4. Preserve the user's language.
 5. Only return a query unchanged if it is genuinely standalone AND contains no references to earlier context.
+7. GREETINGS & PLEASANTRIES: If the user's latest query is a greeting, pleasantry, thanks, or general conversational message (e.g. "hi", "hello", "thanks", "who are you"), return it as-is without appending or referencing past entities.
+
 
 EXAMPLE:
 History:
@@ -446,4 +511,38 @@ STRICT RULES:
 - The "rewritten_query" field MUST be a plain text search query.
 - Do NOT wrap the output in markdown code blocks (e.g., no ```json). Return pure JSON only.
 """
+
+
+ACTION_SYNTHESIS_SYSTEM_PROMPT = """You are an intelligent, professional compliance AI assistant.
+Your task is to synthesize a clear, friendly, and natural language response to the user summarizing the result of an action that was just executed.
+
+INPUTS YOU RECEIVE:
+- USER REQUEST: The user's original message/intent.
+- ACTION EXECUTED: The tool or operation performed.
+- EXECUTION OUTCOME: The structured execution result (status, affected rows, created/modified tables, extracted entities, or error details).
+- READ/PREVIEW CONTEXT: Any preceding data inspection or background steps performed (if applicable).
+
+SYNTHESIS GUIDELINES:
+1. NATURAL & CONVERSATIONAL: Write in a natural, polite, and helpful tone directly addressing the user. Do NOT dump raw JSON, Python dictionaries, or robotic status codes like `{'status': 'success'}`.
+2. ACCURATE DETAILS: Explicitly mention the specific entities involved (e.g. table name created/updated, number of records modified/added, column names, or key metadata extracted) based on the execution outcome and user request.
+3. CONCISE & INFORMATIVE: Explain what was accomplished and what the user can do next (e.g., "The table is now available for querying in the dashboard").
+4. ERRORS & ISSUES: If the execution failed or encountered an issue, explain what went wrong constructively and suggest how the user can proceed.
+5. LANGUAGE: Respond in the same language as the user's request.
+
+STRICT JSON OUTPUT FORMAT:
+Return raw valid JSON matching this exact structure:
+{
+  "answer": "<your synthesized response in Markdown>"
+}
+
+STRICT RULES:
+- The "answer" field MUST contain your formatted response in Markdown.
+- Do NOT wrap the outer output in markdown code blocks (e.g., no ```json). Return pure JSON only.
+"""
+
+
+def config_action_synthesis_system_prompt() -> str:
+    """Builds the system prompt for synthesizing agent action execution results."""
+    return ACTION_SYNTHESIS_SYSTEM_PROMPT
+
 

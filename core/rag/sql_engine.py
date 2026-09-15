@@ -57,39 +57,100 @@ _MULTI_STATEMENT_RE = re.compile(r";\s*\S")
 
 def build_schema_description() -> str:
     """
-    Derives a human-readable PostgreSQL schema description directly from the
-    `certificates` ORM table definition, keeping prompt schema always in sync
-    with the actual database model.
-
-    Nullable columns are explicitly annotated as "NULLABLE" so the SQL generator
-    can generalize "missing values" questions to every field that can be NULL
-    (schema-driven, no hardcoded column names).
-
-    Returns:
-        str: Multi-line schema description (table name, columns, types, comments).
+    Derives a complete, multi-table PostgreSQL schema description directly from
+    the live database and schema definitions.
+    
+    Includes all core tables (certificates, components, responsibles, countries,
+    authority_lookups, supplier_lookups, sources, agent_memories) and user custom tables,
+    annotating column types, nullability, and primary keys.
     """
-    table = CertificateMetadata.__table__
-    lines = [f"Table: {table.name}", "Columns:"]
+    table_docs = {
+        "certificates": "Regulatory RF homologation certificates and approval records.",
+        "components": "Vehicle components master list with frequencies, model names, supplier, DocInfo links, and assigned responsible engineer email/ID.",
+        "responsibles": "Directory of engineering and homologation responsible personnel (contact details, email, phone, mission comments).",
+        "countries": "Country regulatory priorities (stla_current_priority), ISO country codes, and market status comments.",
+        "authority_lookups": "Regulatory authorities (e.g. ENACOM, ANATEL, FCC, IFT), country, validity period in years, and aliases.",
+        "supplier_lookups": "Canonical automotive suppliers and manufacturers (e.g. BOSCH, CONTINENTAL, MARELLI, VALEO).",
+        "sources": "Monitored compliance portals, document URLs, and cookie credentials.",
+        "agent_memories": "Cross-session user directives, rules, and preferences learned by the assistant."
+    }
 
-    for column in table.columns:
-        col_type = str(column.type)
-        extras = []
-        if column.primary_key:
-            extras.append("PRIMARY KEY")
-        elif getattr(column, "nullable", True):
-            extras.append("NULLABLE")
-        else:
-            extras.append("NOT NULL")
+    lines = []
+    try:
+        from storage.dynamic_schema import list_all_user_tables, get_table_columns
+        user_tables = list_all_user_tables()
+        for t in user_tables:
+            tbl_name = t["table_name"]
+            doc = table_docs.get(tbl_name, "User data table.")
+            lines.append(f"Table: `{tbl_name}` — {doc}")
+            lines.append("Columns:")
+            cols = get_table_columns(tbl_name)
+            for c in cols:
+                col_name = c["column_name"]
+                data_type = c["data_type"]
+                nullability = "NULLABLE" if c["is_nullable"] == "YES" else "NOT NULL"
+                if col_name in ("id", "certificate_id") and not (c["is_nullable"] == "YES"):
+                    nullability = "PRIMARY KEY"
+                lines.append(f"  - `{col_name}` {data_type} {nullability}")
+            lines.append("")
+    except Exception as exc:
+        logger.warning(f"Dynamic schema reflection fallback: {exc}")
+        lines = [
+            "Table: `certificates` — Regulatory RF homologation certificates and approval records.",
+            "Columns:",
+            "  - `certificate_id` character varying PRIMARY KEY",
+            "  - `component` character varying NULLABLE -- Normalized component/model code",
+            "  - `supplier` character varying NULLABLE -- Normalized supplier name",
+            "  - `country` character varying NULLABLE -- Jurisdiction country",
+            "  - `certif_number` character varying NULLABLE -- Certificate number",
+            "  - `authority` character varying NULLABLE -- Regulatory body acronym (e.g. ENACOM, ANATEL)",
+            "  - `issue_date` date NULLABLE -- Issuance date (YYYY-MM-DD)",
+            "  - `exp_date` date NULLABLE -- Expiration date (YYYY-MM-DD)",
+            "  - `cert_link` character varying NULLABLE -- Document link",
+            "  - `file_name` character varying NULLABLE",
+            "",
+            "Table: `components` — Vehicle components master list with frequencies and assigned responsible engineer.",
+            "Columns:",
+            "  - `id` integer PRIMARY KEY",
+            "  - `componentname` character varying NULLABLE -- Component code/name (e.g. RTBM SH, VSM, AIDA)",
+            "  - `modelname` character varying NULLABLE -- Model identifier",
+            "  - `supplier` character varying NULLABLE -- Component supplier",
+            "  - `freq` character varying NULLABLE -- Operating frequency (e.g. 125 kHz, 2.4 GHz)",
+            "  - `id_responsible` character varying NULLABLE -- Responsible engineer email or id (e.g. fatimaezzhara.farkaoui@external.stellantis.com)",
+            "  - `docinfo_link` character varying NULLABLE -- Link to DocInfo fiche",
+            "",
+            "Table: `responsibles` — Responsible engineers directory.",
+            "Columns:",
+            "  - `id` integer PRIMARY KEY",
+            "  - `firstname` character varying NULLABLE",
+            "  - `lastname` character varying NULLABLE",
+            "  - `phone` character varying NULLABLE",
+            "  - `email` character varying NULLABLE -- Contact email address",
+            "  - `mission_comment` character varying NULLABLE",
+            "",
+            "Table: `authority_lookups` — Regulatory authorities.",
+            "Columns:",
+            "  - `id` integer PRIMARY KEY",
+            "  - `canonical_authority` character varying NOT NULL",
+            "  - `abbreviation` character varying NULLABLE",
+            "  - `country` character varying NOT NULL",
+            "  - `standard_validity_years` character varying NULLABLE",
+            "",
+            "Table: `supplier_lookups` — Supplier aliases.",
+            "Columns:",
+            "  - `id` integer PRIMARY KEY",
+            "  - `canonical_supplier` character varying NOT NULL",
+            "  - `aliases` jsonb NOT NULL",
+            "",
+            "Table: `countries` — Market priorities.",
+            "Columns:",
+            "  - `id` integer PRIMARY KEY",
+            "  - `country` character varying NULLABLE",
+            "  - `country_code` character varying NULLABLE",
+            "  - `stla_current_priority` character varying NULLABLE",
+        ]
 
-        description = f"  - {column.name} {col_type}"
-        if extras:
-            description += " " + " ".join(extras)
-        comment = getattr(column, "comment", None)
-        if comment:
-            description += f"  -- {comment}"
-        lines.append(description)
-
-    return "\n".join(lines)
+    return "\n".join(lines).strip()
 
 
 def build_sql_system_prompt() -> str:
@@ -308,17 +369,24 @@ def _synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, Any]], co
 def _format_python_answer(user_query: str, rows: List[Dict[str, Any]], columns: List[str]) -> str:
     """
     Deterministic fallback answer formatter used when LLM synthesis is unavailable.
+    Formats results as an executive summary followed by a clean Markdown table.
     """
     if not rows:
-        return "No certificates matching your question were found in the database."
+        return "No matching records were found in the database for your query."
 
     if len(columns) == 1 and len(rows) == 1:
-        return f"The result for your question is {_cell_to_text(rows[0].get(columns[0]))}."
+        return f"The result for your query is **{_cell_to_text(rows[0].get(columns[0]))}**."
 
-    lines = [f"Found {len(rows)} certificate record(s) matching your question:"]
-    for idx, row in enumerate(rows, start=1):
-        pairs = ", ".join(f"{key}={_cell_to_text(value)}" for key, value in row.items())
-        lines.append(f"  {idx}. {pairs}")
+    lines = [f"Found **{len(rows)}** record(s) matching your request:\n"]
+    header = "| " + " | ".join(col.replace("_", " ").title() for col in columns) + " |"
+    separator = "| " + " | ".join(["---"] * len(columns)) + " |"
+    lines.append(header)
+    lines.append(separator)
+    for row in rows[:15]:
+        row_str = "| " + " | ".join(_cell_to_text(row.get(col)) for col in columns) + " |"
+        lines.append(row_str)
+    if len(rows) > 15:
+        lines.append(f"\n*(Showing top 15 of {len(rows)} total records)*")
     return "\n".join(lines)
 
 

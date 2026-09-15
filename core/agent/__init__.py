@@ -14,7 +14,7 @@ from core.agent.tools import (
     EmailDraftingTool,
     get_tool_registry,
 )
-from core.agent.db_editor import build_mutation_sql, execute_mutation, ALLOWED_TABLES
+from core.agent.db_editor import build_mutation_sql, execute_mutation
 from core.agent.proposals import ProposalManager, proposal_manager
 from core.agent.scraper import discover_pdf_urls, DiscoveryResult
 from core.agent.ingestor import ingest_document_file, set_ocr_engine

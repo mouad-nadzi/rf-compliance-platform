@@ -98,19 +98,20 @@ def _llm_plan(
                 continue
             tool = registry[action]
             kind = "write" if tool.requires_approval else "read"
-            target_file = str(item.get("target_file", "")).strip()
-            target_id = str(item.get("target_id", "") or item.get("certificate_id", "")).strip()
-            payload = {"url": primary_url, "urls": urls}
-            if target_file:
-                payload["target_file"] = target_file
-            if target_id:
-                payload["target_id"] = target_id
-            if "ingest_mode" in item and isinstance(item["ingest_mode"], str):
-                payload["ingest_mode"] = item["ingest_mode"].strip()
-            if "filters" in item and isinstance(item["filters"], dict):
-                payload["filters"] = item["filters"]
-            if "delete_all" in item:
-                payload["delete_all"] = bool(item["delete_all"])
+            
+            # Dynamically ingest all schema-driven parameters from the planner
+            payload: Dict[str, Any] = {}
+            if primary_url:
+                payload["url"] = primary_url
+                payload["urls"] = urls
+            
+            for k, v in item.items():
+                if k not in ("action", "kind", "description") and v is not None:
+                    payload[k] = v
+            
+            if "certificate_id" in payload and "target_id" not in payload:
+                payload["target_id"] = str(payload["certificate_id"])
+
             steps.append(
                 Step(
                     action=action,
@@ -134,7 +135,7 @@ def plan_agent_action(
     Decompose an AGENT_ACTION query into a step plan using the LLM planner.
 
     Supports single URL strings or lists of URLs. If no URLs are provided,
-    extracts all URLs from current query text or conversation history.
+    extracts all URLs from current query text.
     Returns PlanResult with empty steps if no registered tool matches the request.
     """
     url_list: List[str] = []
@@ -154,21 +155,9 @@ def plan_agent_action(
             if u and u not in url_list:
                 url_list.append(u)
 
-    # Inherit URLs from history if missing in current turn
-    if not url_list and history:
-        for turn in reversed(history):
-            matches = _url_re.findall(turn.get("content", ""))
-            for m in matches:
-                u = m.rstrip(".,;").strip()
-                if u and u not in url_list:
-                    url_list.append(u)
-            if url_list:
-                logger.info(f" Inherited active URL(s) from history: {url_list}")
-                break
-
     plan_result = _llm_plan(query, url_list, history)
 
-    # Ensure URL(s) are populated in step payloads
+    # Ensure URL(s) are populated in step payloads if active URLs are present
     primary_url = url_list[0] if url_list else ""
     for s in plan_result.steps:
         if url_list and not s.payload.get("urls"):
@@ -212,6 +201,7 @@ def stage_write_step(write_step: Step, artifacts: RunArtifacts) -> Dict[str, Any
     filters = write_step.payload.get("filters")
     delete_all = write_step.payload.get("delete_all")
     row_filter = write_step.payload.get("row_filter")
+    values = write_step.payload.get("values") or {}
 
     desc = write_step.description or write_step.action
 
@@ -234,6 +224,36 @@ def stage_write_step(write_step: Step, artifacts: RunArtifacts) -> Dict[str, Any
             desc = mutation.get("preview", desc)
         except Exception as e_desc:
             logger.warning(f" Could not build detailed deletion preview: {e_desc}")
+
+    elif write_step.action == "update_record":
+        try:
+            from core.agent.db_editor import build_mutation_sql
+            table_name = write_step.payload.get("table_name") or "certificates"
+            mutation = build_mutation_sql(
+                "update",
+                table_name,
+                values=values,
+                row_filter=filters or row_filter,
+                fuzzy_match_query=target_id,
+                allow_full_table=not (filters or row_filter or target_id),
+            )
+            desc = mutation.get("preview", desc)
+        except Exception as e_desc:
+            logger.warning(f" Could not build detailed update preview: {e_desc}")
+
+    elif write_step.action == "execute_raw_sql":
+        sql_query = write_step.payload.get("sql_query")
+        if not sql_query:
+            try:
+                from core.agent.tools import ExecuteRawSQLTool
+                sql_query = ExecuteRawSQLTool.generate_sql(write_step.description)
+                write_step.payload["sql_query"] = sql_query
+                desc = sql_query
+            except Exception as e:
+                logger.warning(f" Could not generate lazy SQL: {e}")
+                desc = f"Raw SQL execution (failed to generate preview: {e})"
+        else:
+            desc = sql_query
 
     elif target_file and target_file not in desc:
         desc = f"{desc} ({target_file})"

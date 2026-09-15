@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 def save_agent_memory(
     memory_key: str,
     fact_text: str,
-    source_session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Saves a long-term memory fact to PostgreSQL.
@@ -30,7 +29,6 @@ def save_agent_memory(
         row = AgentMemory(
             memory_key=key,
             fact_text=text,
-            source_session_id=source_session_id,
         )
         session.add(row)
         session.flush()
@@ -40,7 +38,6 @@ def save_agent_memory(
             "id": row.id,
             "memory_key": row.memory_key,
             "fact_text": row.fact_text,
-            "source_session_id": row.source_session_id,
             "created_at": row.created_at.isoformat() if row.created_at else None,
         }
 
@@ -60,7 +57,6 @@ def get_active_memories(category: Optional[str] = None, limit: int = 50) -> List
                     "id": r.id,
                     "memory_key": r.memory_key,
                     "fact_text": r.fact_text,
-                    "source_session_id": r.source_session_id,
                     "created_at": r.created_at.isoformat() if r.created_at else None,
                 }
                 for r in rows
@@ -94,7 +90,6 @@ def delete_agent_memory(memory_id: int) -> bool:
                     "id": row.id,
                     "memory_key": row.memory_key,
                     "fact_text": row.fact_text,
-                    "source_session_id": row.source_session_id,
                     "created_at": row.created_at.isoformat() if row.created_at else None
                 }),
                 deleted_at=datetime.utcnow()
@@ -155,7 +150,6 @@ def seed_base_identity_memories() -> None:
                     row = AgentMemory(
                         memory_key=item["memory_key"],
                         fact_text=item["fact_text"],
-                        source_session_id="system_seed",
                     )
                     session.add(row)
                     logger.info(f" Seeded base memory [{item['memory_key']}]: {item['fact_text'][:60]}...")

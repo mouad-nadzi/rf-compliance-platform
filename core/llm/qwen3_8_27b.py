@@ -171,37 +171,33 @@ class Qwen3_8_27BEngine(BaseLLMEngine):
 # ── BaseLLMEngine hook ───────────────────────────────────────────────────
 
     def _build_prompt(self, system_prompt: str, user_prompt: str, disable_thinking: bool) -> str:
-        """Assemble the ChatML prompt (handling Qwen3.8 empty  thinking block)."""
+        """Assemble ChatML prompt with Qwen3 soft mode tag."""
         if not system_prompt:
             system_prompt = (
                 "You are an expert technical data extraction engine. "
                 "Respond with a valid JSON object only."
             )
 
-        prompt = (
+        mode_tag = " /no_think" if disable_thinking else " /think"
+        if (
+            mode_tag not in user_prompt
+            and "/no_think" not in user_prompt
+            and "/think" not in user_prompt
+        ):
+            user_prompt = f"{user_prompt}{mode_tag}"
+
+        return (
             f"<|im_start|>system\n{system_prompt}\n<|im_end|>\n"
             f"<|im_start|>user\n{user_prompt}\n<|im_end|>\n"
             f"<|im_start|>assistant\n"
         )
 
-        if disable_thinking and " thinking" not in prompt:
-            prompt = prompt.replace(
-                "<|im_start|>assistant\n",
-                "<|im_start|>assistant\n thinking\n response\n",
-                1,
-            )
-        return prompt
-
     def _sampling_params(self, disable_thinking: bool) -> Dict[str, Any]:
-        temp = 0.0 if disable_thinking else 0.6
+        temp = 0.7 if disable_thinking else 0.6
         top_p = 0.80 if disable_thinking else 0.95
         return {
             "temperature": temp,
             "top_p": top_p,
-            "top_k": 20,
-            "min_p": 0.0,
-            "presence_penalty": 1.5,
-            "repeat_penalty": 1.0,
             "stop": ["<|im_end|>", "<|endoftext|>"],
         }
 

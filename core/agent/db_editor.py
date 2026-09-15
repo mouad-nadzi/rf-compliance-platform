@@ -17,25 +17,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-#: Static identifier allowlist. Table name -> valid writable column names.
-#: This is the primary defense: the engine can only ever reference these
-#: identifiers, so DDL / arbitrary identifiers are unreachable.
-ALLOWED_TABLES: Dict[str, List[str]] = {
-    "certificates": [
-        "certificate_id", "component", "supplier", "country", "certif_number",
-        "authority", "issue_date", "exp_date", "cert_link", "file_name",
-    ],
-    "authority_lookups": [
-        "id", "canonical_authority", "abbreviation", "country",
-        "standard_validity_years", "aliases",
-    ],
-    "supplier_lookups": [
-        "id", "canonical_supplier", "aliases",
-    ],
-    "certificate_chunks": [
-        "id", "certificate_id", "page_number", "raw_text",
-    ],
-}
+# Dynamic schema lookups replace static ALLOWED_TABLES
 
 #: Operations the engine may build. DELETE is intentionally unsupported.
 SUPPORTED_OPS = ("update", "insert", "delete")
@@ -111,10 +93,19 @@ def build_mutation_sql(
         )
 
     table = _validate_identifier(table, "table")
-    if table not in ALLOWED_TABLES:
-        raise ValueError(f"Table '{table}' is not in the allowed write set: {sorted(ALLOWED_TABLES)}")
 
-    allowed_cols = set(ALLOWED_TABLES[table])
+    # Dynamically fetch valid tables instead of using a static dictionary
+    from storage import dynamic_schema
+    all_tables = [t["table_name"] for t in dynamic_schema.list_all_user_tables()]
+    # Also include core platform tables since list_all_user_tables excludes some internal ones,
+    # but core tables are listed in dynamic_schema.CORE_PLATFORM_TABLES
+    valid_tables = set(all_tables) | dynamic_schema.CORE_PLATFORM_TABLES
+    
+    if table not in valid_tables:
+        raise ValueError(f"Table '{table}' is not in the allowed write set: {sorted(valid_tables)}")
+
+    allowed_cols = {col["column_name"] for col in dynamic_schema.get_table_columns(table)}
+    
     values = values or {}
     if op in ("update", "insert") and not values:
         raise ValueError("'values' must be a non-empty dictionary of column -> value.")
@@ -163,20 +154,38 @@ def build_mutation_sql(
             sql = f"DELETE FROM {table}"
 
     elif op == "update":
-        if not isinstance(row_filter, dict) or not row_filter:
-            raise ValueError("'row_filter' is required for update mutations (prevents full-table updates).")
-        row_filter = {str(k).strip(): v for k, v in row_filter.items()}
-        for col in row_filter:
-            _validate_identifier(col, "column")
-            if col not in allowed_cols:
-                raise ValueError(f"Filter column '{col}' is not writable on table '{table}'.")
-            _validate_value(col, row_filter[col])
+        if not row_filter and not fuzzy_match_query and not allow_full_table:
+            raise ValueError("'row_filter' or 'fuzzy_match_query' or 'allow_full_table' is required for update mutations.")
+        
+        where_clauses = []
+        if row_filter:
+            row_filter = {str(k).strip(): v for k, v in row_filter.items()}
+            for col in row_filter:
+                _validate_identifier(col, "column")
+                if col not in allowed_cols:
+                    raise ValueError(f"Filter column '{col}' is not writable on table '{table}'.")
+                _validate_value(col, row_filter[col])
+            where_clauses.extend([f"{col} = :{col}_filter" for col in row_filter])
+            params.update({f"{col}_filter": val for col, val in row_filter.items()})
+
+        if fuzzy_match_query:
+            fuzzy_cols = [c for c in allowed_cols if c in ("certificate_id", "component", "supplier", "certif_number", "file_name")]
+            if not fuzzy_cols:
+                raise ValueError(f"Table '{table}' does not support fuzzy_match_query.")
+            fuzzy_clause = " OR ".join(f"{col} ILIKE :fuzzy_query" for col in fuzzy_cols)
+            if where_clauses:
+                where_clauses.append(f"({fuzzy_clause})")
+            else:
+                where_clauses.append(fuzzy_clause)
+            params["fuzzy_query"] = f"%{fuzzy_match_query}%"
 
         set_clause = ", ".join(f"{col} = :{col}" for col in values)
-        where_clause = " AND ".join(f"{col} = :{col}_filter" for col in row_filter)
-        sql = f"UPDATE {table} SET {set_clause} WHERE {where_clause}"
+        where_clause = " AND ".join(where_clauses)
+        if where_clause:
+            sql = f"UPDATE {table} SET {set_clause} WHERE {where_clause}"
+        else:
+            sql = f"UPDATE {table} SET {set_clause}"
         params.update({col: val for col, val in values.items()})
-        params.update({f"{col}_filter": val for col, val in row_filter.items()})
     else:  # insert
         cols = list(values.keys())
         col_list = ", ".join(cols)

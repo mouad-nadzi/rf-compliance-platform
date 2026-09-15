@@ -47,6 +47,21 @@ VALID_TOOLS = set(TOOL_TO_INTENT.keys())
 from core.utils.history import format_conversation_history as _format_history
 
 
+import re
+
+_CONVERSATIONAL_EXACT_RE = re.compile(
+    r"^(hi|hello|hey|greetings|howdy|hola|bonjour|salut|good morning|good afternoon|good evening|"
+    r"thanks|thank you|merci|gracias|bye|goodbye|who are you\??|what are you\??|what can you do\??|"
+    r"help\??)$",
+    re.IGNORECASE,
+)
+
+
+def _is_conversational_query(query: str) -> bool:
+    clean = (query or "").strip()
+    return bool(_CONVERSATIONAL_EXACT_RE.match(clean))
+
+
 def unified_tool_select(
     query: str,
     history: Optional[List[Dict[str, str]]] = None,
@@ -59,9 +74,17 @@ def unified_tool_select(
         - "reasoning": one-sentence explanation
         - "intent": the equivalent legacy QueryIntent value (for API compat)
 
-    Falls back to "search_document_chunks" (UNSTRUCTURED_RAG) if the LLM
+    Falls back to "respond_conversationally" for conversational messages,
+    or "search_document_chunks" (UNSTRUCTURED_RAG) for other queries if the LLM
     fails or returns an unrecognized tool name.
     """
+    if _is_conversational_query(query):
+        return {
+            "tool": "respond_conversationally",
+            "reasoning": "Conversational greeting / pleasantry.",
+            "intent": QueryIntent.CASUAL_CONVERSATION.value,
+        }
+
     from core.llm import generate_json
     from core.prompts import config_unified_agent_system_prompt
 
@@ -88,7 +111,7 @@ def unified_tool_select(
 
         if tool not in VALID_TOOLS:
             logger.warning(
-                f" Unified agent returned unknown tool '{tool}'; falling back to vector search."
+                f" Unified agent returned unknown tool '{tool}'; falling back to default."
             )
             return fallback
 
@@ -97,5 +120,6 @@ def unified_tool_select(
         return {"tool": tool, "reasoning": reasoning, "intent": intent}
 
     except Exception as exc:
-        logger.warning(f" Unified agent tool selection failed ({exc}); falling back to vector search.")
+        logger.warning(f" Unified agent tool selection failed ({exc}); falling back to default.")
         return fallback
+

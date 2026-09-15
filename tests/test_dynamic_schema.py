@@ -68,5 +68,96 @@ class TestDynamicSchemaEngine(unittest.TestCase):
         self.assertNotIn(table_name, table_names_after)
 
 
+    def test_bulk_operations_and_combine(self):
+        from core.agent.tools import ManageSchemaTool
+        table_name = "test_bulk_schema_table"
+
+        # 1. Create table with extra columns
+        create_res = dynamic_schema.create_custom_table(
+            table_name=table_name,
+            columns=[
+                {"name": "firstname", "type": "string"},
+                {"name": "lastname", "type": "string"},
+                {"name": "component", "type": "string"},
+                {"name": "country", "type": "string"},
+                {"name": "phone", "type": "string"},
+                {"name": "fax", "type": "string"},
+                {"name": "temp_notes", "type": "string"},
+            ],
+        )
+        self.assertEqual(create_res["status"], "success")
+
+        # 2. Insert record
+        insert_res = dynamic_schema.insert_dynamic_record(
+            table_name,
+            {
+                "firstname": "John",
+                "lastname": "Doe",
+                "component": "Radar B3",
+                "country": "Germany",
+                "phone": "+49123456",
+                "fax": "+49654321",
+                "temp_notes": "Internal note",
+            },
+        )
+        self.assertEqual(insert_res["status"], "success")
+
+        # 3. Test combine_columns (firstname + lastname -> responsible_name, drop sources)
+        combine_res = dynamic_schema.combine_columns_in_table(
+            table_name=table_name,
+            target_column="responsible_name",
+            source_columns=["firstname", "lastname"],
+            drop_sources=True,
+        )
+        self.assertEqual(combine_res["status"], "success")
+
+        # Verify combined value
+        records = dynamic_schema.fetch_dynamic_records(table_name)
+        self.assertEqual(records[0]["responsible_name"], "John Doe")
+        cols_after_combine = [c["column_name"] for c in dynamic_schema.get_table_columns(table_name)]
+        self.assertIn("responsible_name", cols_after_combine)
+        self.assertNotIn("firstname", cols_after_combine)
+        self.assertNotIn("lastname", cols_after_combine)
+
+        # 4. Test bulk drop via drop_columns_from_table
+        drop_bulk_res = dynamic_schema.drop_columns_from_table(table_name, ["phone", "fax", "temp_notes"])
+        self.assertEqual(drop_bulk_res["status"], "success")
+        self.assertEqual(len(drop_bulk_res["dropped_columns"]), 3)
+
+        cols_after_drop = [c["column_name"] for c in dynamic_schema.get_table_columns(table_name)]
+        self.assertNotIn("phone", cols_after_drop)
+        self.assertNotIn("fax", cols_after_drop)
+        self.assertNotIn("temp_notes", cols_after_drop)
+
+        # 5. Test ManageSchemaTool tool execution with bulk actions
+        tool = ManageSchemaTool()
+        
+        # Test tool bulk add_columns
+        tool_add_res = tool.execute(
+            action="add_columns",
+            table_name=table_name,
+            columns=[
+                {"name": "email", "type": "string"},
+                {"name": "exp_date", "type": "date"},
+            ],
+        )
+        self.assertEqual(tool_add_res["status"], "success")
+
+        cols_after_tool_add = [c["column_name"] for c in dynamic_schema.get_table_columns(table_name)]
+        self.assertIn("email", cols_after_tool_add)
+        self.assertIn("exp_date", cols_after_tool_add)
+
+        # Test tool bulk drop_columns with comma-separated column_name string
+        tool_drop_res = tool.execute(
+            action="drop_columns",
+            table_name=table_name,
+            column_name="email, exp_date",
+        )
+        self.assertEqual(tool_drop_res["status"], "success")
+
+        # Clean up
+        dynamic_schema.drop_custom_table(table_name)
+
+
 if __name__ == "__main__":
     unittest.main()

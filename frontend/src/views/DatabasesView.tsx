@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Search, Download, Plus, Trash2, Save, Upload, CheckCircle2, AlertCircle, ExternalLink, XCircle, ArrowUpDown, ArrowUp, ArrowDown, X, FileText, Loader2, MoreVertical } from 'lucide-react';
+import { Search, Download, Plus, Trash2, Save, Upload, CheckCircle2, AlertCircle, XCircle, ArrowUpDown, ArrowUp, ArrowDown, X, FileText, Loader2, MoreVertical, WrapText, Zap, Sparkles } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { api } from '../api';
 import { useLayoutContext } from '../components/Layout/AppLayout';
@@ -34,6 +34,9 @@ const DatabasesView = () => {
   const [colWidths, setColWidths] = useState<Record<string, number>>({});
   const [resizingCol, setResizingCol] = useState<{ key: string; startX: number; startWidth: number } | null>(null);
 
+  // Wrap Text Mode
+  const [isWrapText, setIsWrapText] = useState(false);
+
   // Loading, Saving, Deleting & Progress Status
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -53,8 +56,38 @@ const DatabasesView = () => {
   const [showImportDrawer, setShowImportDrawer] = useState(false);
   const [importedFiles, setImportedFiles] = useState<{ id: string; name: string; count: number }[]>([]);
   const [pendingImportRows, setPendingImportRows] = useState<any[]>([]);
+  const [pendingImportFiles, setPendingImportFiles] = useState<File[] | null>(null);
   const [fileProcessingStatus, setFileProcessingStatus] = useState<string | null>(null);
   const [lastImportStats, setLastImportStats] = useState<{ total: number; newCount: number; skippedCount: number; fileName: string } | null>(null);
+
+  // Add Custom Column Modal state
+  const [showAddColumnModal, setShowAddColumnModal] = useState(false);
+  const [newColName, setNewColName] = useState('');
+  const [newColSemanticType, setNewColSemanticType] = useState('auto');
+  const [addingColumn, setAddingColumn] = useState(false);
+
+  // In-place cell editing state for link and email fields
+  const [editingCell, setEditingCell] = useState<{ rowIdx: number; colKey: string } | null>(null);
+
+  const handleAddColumnSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newColName.trim()) return;
+    setAddingColumn(true);
+    try {
+      const sqlDataType = newColSemanticType === 'number' ? 'INTEGER' : (newColSemanticType === 'date' ? 'DATE' : 'VARCHAR(255)');
+      await api.addCustomTableColumn(selectedTable, newColName.trim(), sqlDataType, newColSemanticType);
+      setSaveStatus({ message: `Successfully added column "${newColName.trim()}" to ${selectedTable}.`, type: 'success' });
+      setNewColName('');
+      setNewColSemanticType('auto');
+      setShowAddColumnModal(false);
+      await fetchTableData();
+    } catch (err: any) {
+      console.error("Failed to add column:", err);
+      alert(`Error adding column: ${err.message || 'Server error'}`);
+    } finally {
+      setAddingColumn(false);
+    }
+  };
 
   // Close 3-dots menu on click outside
   useEffect(() => {
@@ -89,15 +122,55 @@ const DatabasesView = () => {
       let rows: any[] = [];
       let fetchedCols: any[] = [];
       if (selectedTable === "RF Certificates") {
-        rows = await api.getCertificates();
+        const [certs, schemaData] = await Promise.all([
+          api.getCertificates(),
+          api.getCustomTableRows("certificates").catch(() => null)
+        ]);
+        if (schemaData && schemaData.columns) {
+          fetchedCols = schemaData.columns;
+          if (Array.isArray(schemaData.records) && schemaData.records.length > 0) {
+            const schemaRecordMap = new Map();
+            schemaData.records.forEach((r: any) => {
+              if (r.certificate_id) schemaRecordMap.set(r.certificate_id, r);
+            });
+            rows = (certs || []).map((c: any) => {
+              const extra = schemaRecordMap.get(c.certificate_id) || {};
+              return { ...extra, ...c };
+            });
+          } else {
+            rows = certs || [];
+          }
+        } else {
+          rows = certs || [];
+        }
       } else if (selectedTable === "Authorities") {
-        rows = await api.getAuthorities();
+        const [auths, schemaData] = await Promise.all([
+          api.getAuthorities(),
+          api.getCustomTableRows("authority_lookups").catch(() => null)
+        ]);
+        rows = auths || [];
+        if (schemaData && schemaData.columns) fetchedCols = schemaData.columns;
       } else if (selectedTable === "Suppliers") {
-        rows = await api.getSuppliers();
+        const [supps, schemaData] = await Promise.all([
+          api.getSuppliers(),
+          api.getCustomTableRows("supplier_lookups").catch(() => null)
+        ]);
+        rows = supps || [];
+        if (schemaData && schemaData.columns) fetchedCols = schemaData.columns;
       } else if (selectedTable === "Sources") {
-        rows = await api.getSources();
+        const [srcs, schemaData] = await Promise.all([
+          api.getSources(),
+          api.getCustomTableRows("sources").catch(() => null)
+        ]);
+        rows = srcs || [];
+        if (schemaData && schemaData.columns) fetchedCols = schemaData.columns;
       } else if (selectedTable === "Agent Memories") {
-        rows = await api.getMemories();
+        const [mems, schemaData] = await Promise.all([
+          api.getMemories(),
+          api.getCustomTableRows("agent_memories").catch(() => null)
+        ]);
+        rows = mems || [];
+        if (schemaData && schemaData.columns) fetchedCols = schemaData.columns;
       } else {
         const data = await api.getCustomTableRows(selectedTable);
         rows = data.records || [];
@@ -143,19 +216,11 @@ const DatabasesView = () => {
     return () => window.removeEventListener('refresh-table-data', handleRefresh);
   }, [fetchTableData]);
 
-  const handleFileUploadRef = useRef<any>(null);
-  useEffect(() => {
-    handleFileUploadRef.current = handleFileUpload;
-  });
-
   useEffect(() => {
     const handleSidebarImport = (e: any) => {
       const file = e.detail?.file;
-      if (file && handleFileUploadRef.current) {
-        handleFileUploadRef.current({
-          target: { files: [file] },
-          preventDefault: () => {}
-        });
+      if (file) {
+        setPendingImportFiles([file]);
       }
     };
     window.addEventListener('sidebar-import-file', handleSidebarImport);
@@ -210,11 +275,26 @@ useEffect(() => {
   return () => window.removeEventListener('mousemove', handleMouseMove);
 }, [resizingCol]);
 
-const handleStartResize = (e: React.MouseEvent, key: string, currentWidth: number) => {
-  e.preventDefault();
-  e.stopPropagation();
-  setResizingCol({ key, startX: e.clientX, startWidth: currentWidth });
-};
+  const handleStartResize = (e: React.MouseEvent, key: string, currentWidth: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setResizingCol({ key, startX: e.clientX, startWidth: currentWidth });
+  };
+
+  // Auto-fit single column width to its content on double click
+  const handleAutoFitColumn = (key: string, label: string) => {
+    let maxChars = label.length;
+    gridData.forEach(row => {
+      const val = row[key];
+      if (val !== undefined && val !== null) {
+        const len = String(val).length;
+        if (len > maxChars) maxChars = len;
+      }
+    });
+    const autoWidth = Math.min(650, Math.max(120, Math.round(maxChars * 8.5) + 40));
+    setColWidths(prev => ({ ...prev, [key]: autoWidth }));
+  };
+
 
 // Drag-to-Select Checkbox Handlers
 const handleCheckboxMouseDown = (e: React.MouseEvent, index: number) => {
@@ -364,7 +444,7 @@ const toggleSelectAll = () => {
   const cancelRequestedRef = useRef(false);
 
   // Save Changes to Database with Live Progress Bar & Abort Capability
-  const handleSaveChangesToDatabase = async (rowsToSaveOverride?: any[]) => {
+  const handleSaveChangesToDatabase = async (rowsToSaveOverride?: any[], usePipeline: boolean = true) => {
     cancelRequestedRef.current = false;
     let rowsToSave: any[] = [];
     if (rowsToSaveOverride) {
@@ -418,7 +498,7 @@ const toggleSelectAll = () => {
         }
       } else if (!isCoreTable) {
         // Batch saving for Custom Dynamic Tables
-        const CHUNK_SIZE = 10;
+        const CHUNK_SIZE = usePipeline ? 10 : 100;
         for (let i = 0; i < total; i += CHUNK_SIZE) {
           if (cancelRequestedRef.current) {
             setSaveStatus({ message: `Import / Save operation cancelled by user. Saved ${savedCount} of ${total} records.`, type: 'error' });
@@ -437,7 +517,7 @@ const toggleSelectAll = () => {
           });
 
           try {
-            await api.batchSaveCustomTableRows(selectedTable, chunk);
+            await api.batchSaveCustomTableRows(selectedTable, chunk, usePipeline);
             savedCount += chunk.length;
           } catch (e: any) {
             console.error("Error batch saving custom table rows:", e);
@@ -553,8 +633,8 @@ const formatExcelDate = (val: any): string => {
   return str;
 };
 
-  // Import Excel / CSV Files (Multi-file Support + Explicit Duplicate Reporting)
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // File selection triggers the Middle Phase Import Mode Modal
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
 
@@ -567,6 +647,15 @@ const formatExcelDate = (val: any): string => {
       e.target.value = '';
       return;
     }
+
+    setPendingImportFiles(validFiles);
+    e.target.value = '';
+  };
+
+  // Execute Import (either Fast/As-Is or AI Standardization Pipeline)
+  const executeImport = async (validFiles: File[], usePipeline: boolean) => {
+    setPendingImportFiles(null);
+    if (!validFiles || validFiles.length === 0) return;
 
     let newlyAddedFilesCount = 0;
     let newlyAddedRowsCount = 0;
@@ -603,49 +692,75 @@ const formatExcelDate = (val: any): string => {
           totalParsedRowsCount += rawImportedRows.length;
           const sampleRow = rawImportedRows[0] || {};
           const headers = Object.keys(sampleRow);
-          
-          // Request dynamic LLM header mapping & supplier lookups from backend
-          let llmMapping: Record<string, string> = {};
-          let suppMap: Record<string, string> = {};
-          try {
-            const targetFields = columnsMeta.map((c: any) => String(c.key));
-            const mapRes = await api.mapSpreadsheetHeaders(headers, sampleRow, selectedTable, targetFields);
-            if (mapRes && mapRes.mapping) {
-              llmMapping = mapRes.mapping;
+          let targetFields = columnsMeta.map((c: any) => String(c.key));
+
+          if (!isCoreTable) {
+            try {
+              const tableData = await api.getCustomTableRows(selectedTable);
+              if (tableData && Array.isArray(tableData.columns) && tableData.columns.length > 0) {
+                const dbCols = tableData.columns
+                  .filter((c: any) => c.column_name !== 'id' && c.column_name !== 'created_at')
+                  .map((c: any) => c.column_name);
+                if (dbCols.length > 0) {
+                  targetFields = dbCols;
+                  setCustomTableCols(tableData.columns);
+                }
+              }
+            } catch (e) {
+              console.warn("Could not fetch latest custom table columns for import", e);
             }
-          } catch (e) {
-            console.warn("LLM header mapping request failed, using fallback mapper", e);
           }
 
-          try {
-            const suppList = await api.getSuppliers();
-            if (Array.isArray(suppList)) {
-              for (const s of suppList) {
-                if (s.canonical_supplier) {
-                  const canon = String(s.canonical_supplier).trim();
-                  suppMap[canon.toLowerCase()] = canon;
-                  if (Array.isArray(s.aliases)) {
-                    for (const alias of s.aliases) {
-                      if (alias) suppMap[String(alias).trim().toLowerCase()] = canon;
+          let llmMapping: Record<string, string> = {};
+          let suppMap: Record<string, string> = {};
+
+          if (usePipeline) {
+            // Request dynamic LLM header mapping & supplier lookups from backend
+            try {
+              const mapRes = await api.mapSpreadsheetHeaders(headers, sampleRow, selectedTable, targetFields);
+              if (mapRes && mapRes.mapping) {
+                llmMapping = mapRes.mapping;
+              }
+            } catch (e) {
+              console.warn("LLM header mapping request failed, using fallback mapper", e);
+            }
+
+            try {
+              const suppList = await api.getSuppliers();
+              if (Array.isArray(suppList)) {
+                for (const s of suppList) {
+                  if (s.canonical_supplier) {
+                    const canon = String(s.canonical_supplier).trim();
+                    suppMap[canon.toLowerCase()] = canon;
+                    if (Array.isArray(s.aliases)) {
+                      for (const alias of s.aliases) {
+                        if (alias) suppMap[String(alias).trim().toLowerCase()] = canon;
+                      }
                     }
                   }
                 }
               }
+            } catch (e) {
+              console.warn("Could not load supplier lookups for client canonicalization", e);
             }
-          } catch (e) {
-            console.warn("Could not load supplier lookups for client canonicalization", e);
           }
 
-          const targetFields = columnsMeta.map((c: any) => String(c.key));
+          const normalizeKey = (k: string) => String(k || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
           const importedRows = rawImportedRows.map(r => {
             if (!r || typeof r !== 'object') return r;
-            
+
             const getLlmVal = (targetKey: string) => {
-              const srcHeader = llmMapping[targetKey];
-              if (srcHeader && r[srcHeader] !== undefined && r[srcHeader] !== null) {
-                return r[srcHeader];
+              if (usePipeline) {
+                const srcHeader = llmMapping[targetKey];
+                if (srcHeader && r[srcHeader] !== undefined && r[srcHeader] !== null) {
+                  return r[srcHeader];
+                }
               }
+              if (r[targetKey] !== undefined) return r[targetKey];
+              const normTarget = normalizeKey(targetKey);
+              const matchKey = Object.keys(r).find(k => normalizeKey(k) === normTarget);
+              if (matchKey && r[matchKey] !== undefined) return r[matchKey];
               return undefined;
             };
 
@@ -655,18 +770,20 @@ const formatExcelDate = (val: any): string => {
               const ctry = getLlmVal('country') ?? r.country ?? r.Country;
               const certNo = getLlmVal('certif_number') ?? r.certif_number ?? r['Certif Number'];
               const auth = getLlmVal('authority') ?? r.authority ?? r.Authority ?? r.canonical_authority;
-              const issueD = formatExcelDate(getLlmVal('issue_date') ?? r.issue_date ?? r['Issue Date']);
-              const expD = formatExcelDate(getLlmVal('exp_date') ?? r.exp_date ?? r.expiration_date ?? r['Expiration Date'] ?? r['Exp Date']);
+              const issueD = usePipeline ? formatExcelDate(getLlmVal('issue_date') ?? r.issue_date ?? r['Issue Date']) : (getLlmVal('issue_date') ?? r.issue_date ?? r['Issue Date'] ?? '');
+              const expD = usePipeline ? formatExcelDate(getLlmVal('exp_date') ?? r.exp_date ?? r.expiration_date ?? r['Expiration Date'] ?? r['Exp Date']) : (getLlmVal('exp_date') ?? r.exp_date ?? r.expiration_date ?? r['Expiration Date'] ?? r['Exp Date'] ?? '');
               const certL = getLlmVal('cert_link') ?? r.cert_link ?? r['PDF Document Link'] ?? r.url;
 
               let suppStr = rawSuppVal !== undefined ? String(rawSuppVal).trim() : '';
-              if (suppStr && suppMap[suppStr.toLowerCase()]) {
-                suppStr = suppMap[suppStr.toLowerCase()];
-              } else if (suppStr) {
-                for (const [aliasKey, canonTarget] of Object.entries(suppMap)) {
-                  if (aliasKey.length >= 3 && suppStr.toLowerCase().includes(aliasKey)) {
-                    suppStr = canonTarget;
-                    break;
+              if (usePipeline) {
+                if (suppStr && suppMap[suppStr.toLowerCase()]) {
+                  suppStr = suppMap[suppStr.toLowerCase()];
+                } else if (suppStr) {
+                  for (const [aliasKey, canonTarget] of Object.entries(suppMap)) {
+                    if (aliasKey.length >= 3 && suppStr.toLowerCase().includes(aliasKey)) {
+                      suppStr = canonTarget;
+                      break;
+                    }
                   }
                 }
               }
@@ -684,13 +801,15 @@ const formatExcelDate = (val: any): string => {
               };
             } else {
               // Custom Dynamic Tables mapping
-              const dynamicRow: any = { ...r };
+              const dynamicRow: any = {};
               for (const tf of targetFields) {
-                const llmVal = getLlmVal(tf);
-                if (llmVal !== undefined) {
-                   dynamicRow[tf] = llmVal;
+                const mappedVal = getLlmVal(tf);
+                if (mappedVal !== undefined) {
+                  dynamicRow[tf] = mappedVal;
                 } else if (r[tf] !== undefined) {
-                   dynamicRow[tf] = r[tf];
+                  dynamicRow[tf] = r[tf];
+                } else {
+                  dynamicRow[tf] = '';
                 }
               }
               return dynamicRow;
@@ -703,9 +822,8 @@ const formatExcelDate = (val: any): string => {
               const secondary = (r.country || r.supplier || r.authority || '').toString().trim().toLowerCase();
               return `${primary}::${secondary}`;
             } else {
-               // For custom tables, generate signature from dynamic target fields
-               const vals = targetFields.map(tf => (r[tf] || '').toString().trim().toLowerCase());
-               return vals.join('::');
+              const vals = targetFields.map(tf => (r[tf] || '').toString().trim().toLowerCase());
+              return vals.join('::');
             }
           };
 
@@ -751,19 +869,19 @@ const formatExcelDate = (val: any): string => {
     });
 
     if (allNewRows.length > 0) {
-      // Auto-start saving process without requiring manual click
       setShowImportDrawer(false);
-      await handleSaveChangesToDatabase(allNewRows);
-      
+      await handleSaveChangesToDatabase(allNewRows, usePipeline);
+
       const duplicateNote = totalSkippedDuplicatesCount > 0 ? ` (${totalSkippedDuplicatesCount} duplicate row(s) skipped)` : '';
+      const modeNote = usePipeline ? ' [Standardized]' : ' [As-Is]';
       setSaveStatus({
-        message: `${newlyAddedFilesCount} file(s) processed: ${newlyAddedRowsCount} new row(s) successfully imported${duplicateNote}.`,
+        message: `${newlyAddedFilesCount} file(s) processed${modeNote}: ${newlyAddedRowsCount} new row(s) successfully imported${duplicateNote}.`,
         type: 'success'
       });
     } else {
       setSaveStatus({
-        message: `Import completed: All ${totalParsedRowsCount} row(s) in selected file(s) are duplicates of existing records and were skipped.`,
-        type: 'success'
+        message: `0 new records to import (all duplicate or empty).`,
+        type: 'error'
       });
     }
 
@@ -774,8 +892,6 @@ const formatExcelDate = (val: any): string => {
       statusText: `Processed ${totalFilesCount} file(s) successfully! (100%)`
     });
     setTimeout(() => setProgress(null), 1200);
-
-    e.target.value = '';
   };
 
 // Export Excel (.xlsx)
@@ -801,59 +917,71 @@ const handleExportExcel = () => {
 
 // Column definitions per table
 const columnsMeta = useMemo(() => {
+  let baseCols: any[] = [];
   if (selectedTable === "Authorities") {
-    return [
-      { key: 'canonical_authority', label: 'Canonical Authority', defaultWidth: 220 },
-      { key: 'abbreviation', label: 'Abbreviation', defaultWidth: 130 },
-      { key: 'country', label: 'Country', defaultWidth: 140 },
-      { key: 'standard_validity_years', label: 'Validity (Years)', defaultWidth: 140 },
-      { key: 'aliases', label: 'Aliases', defaultWidth: 260 },
+    baseCols = [
+      { key: 'canonical_authority', label: 'Canonical Authority', semantic_type: 'text', defaultWidth: 220 },
+      { key: 'abbreviation', label: 'Abbreviation', semantic_type: 'badge', defaultWidth: 130 },
+      { key: 'country', label: 'Country', semantic_type: 'text', defaultWidth: 140 },
+      { key: 'standard_validity_years', label: 'Validity (Years)', semantic_type: 'number', defaultWidth: 140 },
+      { key: 'aliases', label: 'Aliases', semantic_type: 'text', defaultWidth: 260 },
+    ];
+  } else if (selectedTable === "Suppliers") {
+    baseCols = [
+      { key: 'canonical_supplier', label: 'Canonical Supplier', semantic_type: 'supplier', defaultWidth: 240 },
+      { key: 'aliases', label: 'Aliases', semantic_type: 'text', defaultWidth: 320 },
+    ];
+  } else if (selectedTable === "Sources") {
+    baseCols = [
+      { key: 'url', label: 'Source URL', semantic_type: 'url', defaultWidth: 300 },
+      { key: 'description', label: 'Description', semantic_type: 'text', defaultWidth: 260 },
+      { key: 'active', label: 'Active Status', semantic_type: 'badge', defaultWidth: 130 },
+    ];
+  } else if (selectedTable === "Agent Memories") {
+    baseCols = [
+      { key: 'memory_key', label: 'Category / Key', semantic_type: 'badge', defaultWidth: 180 },
+      { key: 'fact_text', label: 'Memory Fact / Directive', semantic_type: 'text', defaultWidth: 380 },
+      { key: 'created_at', label: 'Date Created', semantic_type: 'date', defaultWidth: 160 },
+    ];
+  } else if (selectedTable === "RF Certificates") {
+    baseCols = [
+      { key: 'component', label: 'Component / Model', semantic_type: 'text', defaultWidth: 200 },
+      { key: 'supplier', label: 'Supplier / Manufacturer', semantic_type: 'supplier', defaultWidth: 200 },
+      { key: 'country', label: 'Country', semantic_type: 'text', defaultWidth: 120 },
+      { key: 'certif_number', label: 'Certificate No.', semantic_type: 'text', defaultWidth: 180 },
+      { key: 'authority', label: 'Authority', semantic_type: 'text', defaultWidth: 160 },
+      { key: 'issue_date', label: 'Issue Date', semantic_type: 'date', defaultWidth: 130 },
+      { key: 'exp_date', label: 'Exp Date', semantic_type: 'date', defaultWidth: 130 },
+      { key: 'cert_link', label: 'PDF Document Link', semantic_type: 'url', defaultWidth: 200 },
+      { key: 'last_update', label: 'Last Update', semantic_type: 'date', defaultWidth: 150 },
     ];
   }
-  if (selectedTable === "Suppliers") {
-    return [
-      { key: 'canonical_supplier', label: 'Canonical Supplier', defaultWidth: 240 },
-      { key: 'aliases', label: 'Aliases', defaultWidth: 320 },
-    ];
+
+  if (baseCols.length > 0) {
+    const existingKeys = new Set(baseCols.map(c => c.key));
+    const extraCols = (customTableCols || [])
+      .filter(c => c.column_name !== 'id' && c.column_name !== 'created_at' && c.column_name !== 'certificate_id' && c.column_name !== 'file_name' && !existingKeys.has(c.column_name))
+      .map(c => ({
+        key: c.column_name,
+        label: c.label || c.column_name.replace(/_/g, ' ').toUpperCase(),
+        semantic_type: c.semantic_type || (c.column_name.toLowerCase().includes('email') ? 'email' : (c.column_name.toLowerCase().includes('url') || c.column_name.toLowerCase().includes('link') ? 'url' : (c.column_name.toLowerCase().includes('date') ? 'date' : 'text'))),
+        defaultWidth: 180
+      }));
+    return [...baseCols, ...extraCols];
   }
-  if (selectedTable === "Sources") {
-    return [
-      { key: 'url', label: 'Source URL', defaultWidth: 300 },
-      { key: 'description', label: 'Description', defaultWidth: 260 },
-      { key: 'active', label: 'Active Status', defaultWidth: 130 },
-    ];
-  }
-  if (selectedTable === "Agent Memories") {
-    return [
-      { key: 'memory_key', label: 'Category / Key', defaultWidth: 180 },
-      { key: 'fact_text', label: 'Memory Fact / Directive', defaultWidth: 380 },
-      { key: 'created_at', label: 'Date Created', defaultWidth: 160 },
-    ];
-  }
-  if (selectedTable === "RF Certificates") {
-    return [
-      { key: 'component', label: 'Component / Model', defaultWidth: 200 },
-      { key: 'supplier', label: 'Supplier / Manufacturer', defaultWidth: 200 },
-      { key: 'country', label: 'Country', defaultWidth: 120 },
-      { key: 'certif_number', label: 'Certificate No.', defaultWidth: 180 },
-      { key: 'authority', label: 'Authority', defaultWidth: 160 },
-      { key: 'issue_date', label: 'Issue Date', defaultWidth: 130 },
-      { key: 'exp_date', label: 'Exp Date', defaultWidth: 130 },
-      { key: 'cert_link', label: 'PDF Document Link', defaultWidth: 200 },
-      { key: 'last_update', label: 'Last Update', defaultWidth: 150 },
-    ];
-  }
-  // Custom Tables
+
+  // Custom Dynamic Tables
   if (customTableCols.length > 0) {
     return customTableCols
       .filter(c => c.column_name !== 'id' && c.column_name !== 'created_at')
       .map(c => ({ 
         key: c.column_name, 
-        label: c.column_name.replace(/_/g, ' ').toUpperCase(), 
+        label: c.label || c.column_name.replace(/_/g, ' ').toUpperCase(),
+        semantic_type: c.semantic_type || (c.column_name.toLowerCase().includes('email') ? 'email' : (c.column_name.toLowerCase().includes('url') || c.column_name.toLowerCase().includes('link') ? 'url' : (c.column_name.toLowerCase().includes('date') ? 'date' : 'text'))),
         defaultWidth: 180 
       }));
   }
-  return [{ key: 'name', label: 'Name', defaultWidth: 200 }];
+  return [{ key: 'name', label: 'Name', semantic_type: 'text', defaultWidth: 200 }];
 }, [selectedTable, customTableCols]);
 
 // Filtered & Sorted Grid Data
@@ -1040,6 +1168,44 @@ return (
                   }}
                   onClick={() => {
                     setShowMoreMenu(false);
+                    setShowAddColumnModal(true);
+                  }}
+                >
+                  <Plus size={14} /> Add Column
+                </button>
+
+                <button
+                  className="btn btn-secondary"
+                  style={{
+                    border: 'none',
+                    justifyContent: 'flex-start',
+                    fontSize: '0.82rem',
+                    padding: '0.45rem 0.75rem',
+                    width: '100%',
+                    backgroundColor: isWrapText ? 'rgba(36, 56, 129, 0.08)' : 'transparent',
+                    color: isWrapText ? 'var(--brand-blue)' : 'inherit',
+                    fontWeight: isWrapText ? 600 : 400
+                  }}
+                  onClick={() => {
+                    setIsWrapText(prev => !prev);
+                    setShowMoreMenu(false);
+                  }}
+                >
+                  <WrapText size={14} /> {isWrapText ? 'Disable Wrap Text' : 'Wrap Text'}
+                </button>
+
+                <button
+                  className="btn btn-secondary"
+                  style={{
+                    border: 'none',
+                    justifyContent: 'flex-start',
+                    fontSize: '0.82rem',
+                    padding: '0.45rem 0.75rem',
+                    width: '100%',
+                    backgroundColor: 'transparent'
+                  }}
+                  onClick={() => {
+                    setShowMoreMenu(false);
                     setShowImportDrawer(prev => !prev);
                   }}
                 >
@@ -1126,7 +1292,12 @@ return (
           width: '100%'
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem', fontWeight: 600, color: 'var(--brand-blue)' }}>
-            <span>{progress.statusText}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              {progress.percent < 100 && (
+                <Loader2 size={16} className="spin-icon" />
+              )}
+              <span>{progress.statusText}</span>
+            </div>
             <span>{progress.percent}%</span>
           </div>
           <div style={{ width: '100%', height: '8px', backgroundColor: 'rgba(148, 163, 184, 0.2)', borderRadius: '4px', overflow: 'hidden' }}>
@@ -1409,7 +1580,7 @@ return (
         {loading ? (
           <p className="text-secondary" style={{ padding: '1.5rem' }}>Loading database data...</p>
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem', tableLayout: 'fixed' }}>
+          <table style={{ width: 'max-content', minWidth: '100%', borderCollapse: 'collapse', fontSize: '0.85rem', tableLayout: 'fixed' }}>
             <thead>
               <tr style={{ backgroundColor: 'var(--bg-body)', borderBottom: '2px solid var(--border-color)', position: 'sticky', top: 0, zIndex: 2 }}>
                 <th style={{ width: '45px', padding: '0.65rem 0.5rem', textAlign: 'center', borderRight: '1px solid var(--border-color)' }}>
@@ -1457,18 +1628,22 @@ return (
                       {/* Column Resizer Handle */}
                       <div
                         onMouseDown={(e) => handleStartResize(e, col.key, currentWidth)}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          handleAutoFitColumn(col.key, col.label);
+                        }}
                         onClick={(e) => e.stopPropagation()}
                         style={{
                           position: 'absolute',
                           right: 0,
                           top: 0,
                           bottom: 0,
-                          width: '6px',
+                          width: '8px',
                           cursor: 'col-resize',
                           backgroundColor: resizingCol?.key === col.key ? 'var(--brand-blue)' : 'transparent',
                           zIndex: 3
                         }}
-                        title="Drag to resize column"
+                        title="Drag to resize, double-click to auto-fit column"
                       />
                     </th>
                   );
@@ -1516,59 +1691,304 @@ return (
                       />
                     </td>
 
-                    {/* Cell Content: Clickable Link for cert_link, Interactive Input for all other cells */}
+                    {/* Cell Content: Deterministically rendered based on AI Schema semantic_type */}
                     {columnsMeta.map(col => {
+                      const stype = (col as any).semantic_type || 'text';
                       const cellVal = item[col.key] ?? '';
+                      const rawStr = typeof cellVal === 'string' ? cellVal.trim() : String(cellVal || '').trim();
+                      const cleanEmail = rawStr.replace(/#mailto:[^#]*#?/i, '').replace(/^mailto:/i, '').trim();
+                      const isEditingThisCell = editingCell?.rowIdx === originalIndex && editingCell?.colKey === col.key;
 
-                      if (col.key === 'cert_link' || col.key.toLowerCase().includes('link') || col.key.toLowerCase().includes('url') || col.key.toLowerCase().includes('email')) {
-                        const isEmail = col.key.toLowerCase().includes('email');
-                        const href = isEmail ? `mailto:${cellVal}` : String(cellVal);
+                      if (stype === 'email') {
+                        if (isEditingThisCell || !cleanEmail) {
+                          return (
+                            <td
+                              key={col.key}
+                              style={{
+                                padding: 0,
+                                borderRight: '1px solid var(--border-color)',
+                                verticalAlign: isWrapText ? 'top' : 'middle'
+                              }}
+                            >
+                              {isWrapText ? (
+                                <textarea
+                                  className="excel-cell-input"
+                                  value={cellVal}
+                                  title={String(cellVal)}
+                                  rows={Math.min(6, Math.max(1, Math.ceil(String(cellVal).length / 25)))}
+                                  autoFocus={isEditingThisCell}
+                                  onFocus={() => setEditingCell({ rowIdx: originalIndex, colKey: col.key })}
+                                  onBlur={() => setEditingCell(null)}
+                                  onChange={e => handleCellChange(originalIndex, col.key, e.target.value)}
+                                  style={{
+                                    width: '100%',
+                                    padding: '0.55rem 0.75rem',
+                                    border: 'none',
+                                    outline: 'none',
+                                    background: 'transparent',
+                                    color: 'var(--text-primary)',
+                                    fontFamily: 'inherit',
+                                    fontSize: '0.85rem',
+                                    resize: 'none',
+                                    whiteSpace: 'normal',
+                                    wordBreak: 'break-word',
+                                    display: 'block'
+                                  }}
+                                />
+                              ) : (
+                                <input
+                                  type="text"
+                                  className="excel-cell-input"
+                                  value={cellVal}
+                                  title={String(cellVal)}
+                                  autoFocus={isEditingThisCell}
+                                  onFocus={() => setEditingCell({ rowIdx: originalIndex, colKey: col.key })}
+                                  onBlur={() => setEditingCell(null)}
+                                  onChange={e => handleCellChange(originalIndex, col.key, e.target.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter' || e.key === 'Escape') setEditingCell(null);
+                                  }}
+                                  style={{
+                                    width: '100%',
+                                    height: '100%',
+                                    padding: '0.55rem 0.75rem',
+                                    border: 'none',
+                                    outline: 'none',
+                                    background: 'transparent',
+                                    color: 'var(--text-primary)',
+                                    fontFamily: 'inherit',
+                                    fontSize: '0.85rem'
+                                  }}
+                                />
+                              )}
+                            </td>
+                          );
+                        }
+
                         return (
-                          <td key={col.key} style={{ padding: '0.55rem 0.75rem', borderRight: '1px solid var(--border-color)' }}>
-                            {cellVal ? (
-                              <a
-                                href={href}
-                                target={isEmail ? undefined : "_blank"}
-                                rel="noreferrer"
-                                title={isEmail ? "Send Email" : "Open Link"}
-                                style={{
-                                  color: 'var(--brand-blue)',
-                                  fontWeight: 500,
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '0.35rem',
-                                  textDecoration: 'underline'
-                                }}
-                              >
-                                {!isEmail && <ExternalLink size={14} />}
-                                {isEmail ? String(cellVal) : "View Link"}
-                              </a>
-                            ) : (
-                              <span className="text-tertiary">—</span>
-                            )}
+                          <td
+                            key={col.key}
+                            style={{
+                              padding: '0.55rem 0.75rem',
+                              borderRight: '1px solid var(--border-color)',
+                              overflow: 'hidden',
+                              textOverflow: isWrapText ? 'clip' : 'ellipsis',
+                              whiteSpace: isWrapText ? 'normal' : 'nowrap',
+                              wordBreak: isWrapText ? 'break-word' : 'normal',
+                              verticalAlign: isWrapText ? 'top' : 'middle',
+                              cursor: 'pointer'
+                            }}
+                            title={`${cleanEmail} (Double-click to edit)`}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setEditingCell({ rowIdx: originalIndex, colKey: col.key });
+                            }}
+                            onClick={(e) => {
+                              if (e.target === e.currentTarget) {
+                                setEditingCell({ rowIdx: originalIndex, colKey: col.key });
+                              }
+                            }}
+                          >
+                            <a
+                              href={`mailto:${cleanEmail}`}
+                              title={`${cleanEmail} (Double-click to edit)`}
+                              onDoubleClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setEditingCell({ rowIdx: originalIndex, colKey: col.key });
+                              }}
+                              style={{
+                                color: 'var(--brand-blue)',
+                                fontWeight: 500,
+                                display: isWrapText ? 'inline' : 'inline-block',
+                                textDecoration: 'underline',
+                                maxWidth: '100%',
+                                overflow: 'hidden',
+                                textOverflow: isWrapText ? 'clip' : 'ellipsis',
+                                whiteSpace: isWrapText ? 'normal' : 'nowrap',
+                                wordBreak: isWrapText ? 'break-word' : 'normal'
+                              }}
+                            >
+                              {cleanEmail}
+                            </a>
+                          </td>
+                        );
+                      }
+
+                      if (stype === 'url') {
+                        if (isEditingThisCell || !rawStr) {
+                          return (
+                            <td
+                              key={col.key}
+                              style={{
+                                padding: 0,
+                                borderRight: '1px solid var(--border-color)',
+                                verticalAlign: isWrapText ? 'top' : 'middle'
+                              }}
+                            >
+                              {isWrapText ? (
+                                <textarea
+                                  className="excel-cell-input"
+                                  value={cellVal}
+                                  title={String(cellVal)}
+                                  rows={Math.min(6, Math.max(1, Math.ceil(String(cellVal).length / 25)))}
+                                  autoFocus={isEditingThisCell}
+                                  onFocus={() => setEditingCell({ rowIdx: originalIndex, colKey: col.key })}
+                                  onBlur={() => setEditingCell(null)}
+                                  onChange={e => handleCellChange(originalIndex, col.key, e.target.value)}
+                                  style={{
+                                    width: '100%',
+                                    padding: '0.55rem 0.75rem',
+                                    border: 'none',
+                                    outline: 'none',
+                                    background: 'transparent',
+                                    color: 'var(--text-primary)',
+                                    fontFamily: 'inherit',
+                                    fontSize: '0.85rem',
+                                    resize: 'none',
+                                    whiteSpace: 'normal',
+                                    wordBreak: 'break-word',
+                                    display: 'block'
+                                  }}
+                                />
+                              ) : (
+                                <input
+                                  type="text"
+                                  className="excel-cell-input"
+                                  value={cellVal}
+                                  title={String(cellVal)}
+                                  autoFocus={isEditingThisCell}
+                                  onFocus={() => setEditingCell({ rowIdx: originalIndex, colKey: col.key })}
+                                  onBlur={() => setEditingCell(null)}
+                                  onChange={e => handleCellChange(originalIndex, col.key, e.target.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter' || e.key === 'Escape') setEditingCell(null);
+                                  }}
+                                  style={{
+                                    width: '100%',
+                                    height: '100%',
+                                    padding: '0.55rem 0.75rem',
+                                    border: 'none',
+                                    outline: 'none',
+                                    background: 'transparent',
+                                    color: 'var(--text-primary)',
+                                    fontFamily: 'inherit',
+                                    fontSize: '0.85rem'
+                                  }}
+                                />
+                              )}
+                            </td>
+                          );
+                        }
+
+                        const href = rawStr.startsWith('http://') || rawStr.startsWith('https://') ? rawStr : `https://${rawStr}`;
+                        const displayLabel = selectedTable === "RF Certificates" && col.key === 'cert_link' ? "Open Link" : rawStr;
+
+                        return (
+                          <td
+                            key={col.key}
+                            style={{
+                              padding: '0.55rem 0.75rem',
+                              borderRight: '1px solid var(--border-color)',
+                              overflow: 'hidden',
+                              textOverflow: isWrapText ? 'clip' : 'ellipsis',
+                              whiteSpace: isWrapText ? 'normal' : 'nowrap',
+                              wordBreak: isWrapText ? 'break-word' : 'normal',
+                              verticalAlign: isWrapText ? 'top' : 'middle',
+                              cursor: 'pointer'
+                            }}
+                            title={`${rawStr} (Double-click to edit)`}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setEditingCell({ rowIdx: originalIndex, colKey: col.key });
+                            }}
+                            onClick={(e) => {
+                              if (e.target === e.currentTarget) {
+                                setEditingCell({ rowIdx: originalIndex, colKey: col.key });
+                              }
+                            }}
+                          >
+                            <a
+                              href={href}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={`${rawStr} (Double-click to edit)`}
+                              onDoubleClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setEditingCell({ rowIdx: originalIndex, colKey: col.key });
+                              }}
+                              style={{
+                                color: 'var(--brand-blue)',
+                                fontWeight: 500,
+                                display: isWrapText ? 'inline' : 'inline-block',
+                                textDecoration: 'underline',
+                                maxWidth: '100%',
+                                overflow: 'hidden',
+                                textOverflow: isWrapText ? 'clip' : 'ellipsis',
+                                whiteSpace: isWrapText ? 'normal' : 'nowrap',
+                                wordBreak: isWrapText ? 'break-word' : 'normal'
+                              }}
+                            >
+                              {displayLabel}
+                            </a>
                           </td>
                         );
                       }
 
                       return (
-                        <td key={col.key} style={{ padding: 0, borderRight: '1px solid var(--border-color)' }}>
-                          <input
-                            type="text"
-                            className="excel-cell-input"
-                            value={cellVal}
-                            onChange={e => handleCellChange(originalIndex, col.key, e.target.value)}
-                            style={{
-                              width: '100%',
-                              height: '100%',
-                              padding: '0.55rem 0.75rem',
-                              border: 'none',
-                              outline: 'none',
-                              background: 'transparent',
-                              color: 'var(--text-primary)',
-                              fontFamily: 'inherit',
-                              fontSize: '0.85rem'
-                            }}
-                          />
+                        <td
+                          key={col.key}
+                          style={{
+                            padding: 0,
+                            borderRight: '1px solid var(--border-color)',
+                            verticalAlign: isWrapText ? 'top' : 'middle'
+                          }}
+                        >
+                          {isWrapText ? (
+                            <textarea
+                              className="excel-cell-input"
+                              value={cellVal}
+                              title={String(cellVal)}
+                              rows={Math.min(6, Math.max(1, Math.ceil(String(cellVal).length / 25)))}
+                              onChange={e => handleCellChange(originalIndex, col.key, e.target.value)}
+                              style={{
+                                width: '100%',
+                                padding: '0.55rem 0.75rem',
+                                border: 'none',
+                                outline: 'none',
+                                background: 'transparent',
+                                color: 'var(--text-primary)',
+                                fontFamily: 'inherit',
+                                fontSize: '0.85rem',
+                                resize: 'none',
+                                whiteSpace: 'normal',
+                                wordBreak: 'break-word',
+                                display: 'block'
+                              }}
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              className="excel-cell-input"
+                              value={cellVal}
+                              title={String(cellVal)}
+                              onChange={e => handleCellChange(originalIndex, col.key, e.target.value)}
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                padding: '0.55rem 0.75rem',
+                                border: 'none',
+                                outline: 'none',
+                                background: 'transparent',
+                                color: 'var(--text-primary)',
+                                fontFamily: 'inherit',
+                                fontSize: '0.85rem'
+                              }}
+                            />
+                          )}
                         </td>
                       );
                     })}
@@ -1588,6 +2008,298 @@ return (
         )}
       </div>
     </div>
+
+    {/* ────────────────────────────────────────────────────────────────────── */}
+    {/* MIDDLE PHASE: IMPORT MODE SELECTION MODAL (FAST AS-IS VS AI PIPELINE) */}
+    {/* ────────────────────────────────────────────────────────────────────── */}
+    {pendingImportFiles && (
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.45)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}
+      >
+        <div
+          className="card"
+          style={{
+            width: '540px',
+            maxWidth: '92vw',
+            padding: '1.75rem',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1.25rem',
+            backgroundColor: 'var(--bg-surface)',
+            boxShadow: 'var(--shadow-lg)'
+          }}
+          onClick={e => e.stopPropagation()}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div>
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                Import into <span style={{ color: 'var(--brand-blue)' }}>{selectedTable}</span>
+              </h3>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+                {pendingImportFiles.length === 1
+                  ? `File: "${pendingImportFiles[0].name}"`
+                  : `${pendingImportFiles.length} files queued`} — Choose your import mode:
+              </p>
+            </div>
+            <button
+              className="btn btn-secondary"
+              style={{ padding: '0.25rem', border: 'none' }}
+              onClick={() => setPendingImportFiles(null)}
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            {/* Option 1: Fast As-Is Import */}
+            <div
+              onClick={() => executeImport(pendingImportFiles, false)}
+              style={{
+                border: '1.5px solid var(--border-color)',
+                borderRadius: '10px',
+                padding: '1rem',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease-in-out',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '0.85rem',
+                backgroundColor: 'var(--bg-body)'
+              }}
+              onMouseEnter={e => {
+                e.currentTarget.style.borderColor = 'var(--brand-blue)';
+                e.currentTarget.style.backgroundColor = 'rgba(36, 56, 129, 0.04)';
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.borderColor = 'var(--border-color)';
+                e.currentTarget.style.backgroundColor = 'var(--bg-body)';
+              }}
+            >
+              <div style={{ padding: '0.5rem', borderRadius: '8px', backgroundColor: 'rgba(16, 185, 129, 0.12)', color: 'var(--success)', marginTop: '0.1rem' }}>
+                <Zap size={20} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <span style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                    Import As-Is (Fast)
+                  </span>
+                  <span className="badge badge-green" style={{ fontSize: '0.7rem', padding: '0.15rem 0.45rem' }}>
+                    Instant
+                  </span>
+                </div>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.25rem', lineHeight: 1.4 }}>
+                  Imports records directly with exact raw cell values without AI processing. Instant and preserves exact source spreadsheet text.
+                </p>
+              </div>
+            </div>
+
+            {/* Option 2: AI Standardization Pipeline */}
+            <div
+              onClick={() => executeImport(pendingImportFiles, true)}
+              style={{
+                border: '1.5px solid var(--border-color)',
+                borderRadius: '10px',
+                padding: '1rem',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease-in-out',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '0.85rem',
+                backgroundColor: 'var(--bg-body)'
+              }}
+              onMouseEnter={e => {
+                e.currentTarget.style.borderColor = 'var(--brand-blue)';
+                e.currentTarget.style.backgroundColor = 'rgba(36, 56, 129, 0.04)';
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.borderColor = 'var(--border-color)';
+                e.currentTarget.style.backgroundColor = 'var(--bg-body)';
+              }}
+            >
+              <div style={{ padding: '0.5rem', borderRadius: '8px', backgroundColor: 'rgba(36, 56, 129, 0.1)', color: 'var(--brand-blue)', marginTop: '0.1rem' }}>
+                <Sparkles size={20} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <span style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                    AI Standardization Pipeline
+                  </span>
+                  <span className="badge badge-blue" style={{ fontSize: '0.7rem', padding: '0.15rem 0.45rem' }}>
+                    Recommended
+                  </span>
+                </div>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.25rem', lineHeight: 1.4 }}>
+                  Passes data through semantic header mapping and AI Diffing to normalize dates (ISO 8601), phone numbers (E.164), official country titles, and rescue misplaced cells.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.25rem' }}>
+            <button
+              className="btn btn-secondary"
+              onClick={() => setPendingImportFiles(null)}
+              style={{ fontSize: '0.8rem' }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Add Custom Column Modal */}
+    {showAddColumnModal && (
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.55)',
+          backdropFilter: 'blur(3px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1100,
+          padding: '1rem'
+        }}
+        onClick={() => {
+          if (!addingColumn) setShowAddColumnModal(false);
+        }}
+      >
+        <div
+          style={{
+            backgroundColor: 'var(--bg-surface)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '12px',
+            width: '100%',
+            maxWidth: '460px',
+            padding: '1.4rem',
+            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.25)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1.1rem'
+          }}
+          onClick={e => e.stopPropagation()}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+              <div style={{ padding: '0.45rem', borderRadius: '8px', backgroundColor: 'rgba(36, 56, 129, 0.1)', color: 'var(--brand-blue)' }}>
+                <Plus size={18} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  Add Column
+                </h3>
+                <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                  Add a new field to table "{selectedTable}"
+                </p>
+              </div>
+            </div>
+            <button
+              className="btn btn-secondary"
+              style={{ padding: '0.35rem', border: 'none', backgroundColor: 'transparent' }}
+              onClick={() => setShowAddColumnModal(false)}
+              disabled={addingColumn}
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <form onSubmit={handleAddColumnSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
+                Column Identifier / Name *
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. lead_engineer, datasheet_link, priority"
+                value={newColName}
+                onChange={e => setNewColName(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '0.55rem 0.75rem',
+                  borderRadius: '8px',
+                  border: '1px solid var(--border-color)',
+                  backgroundColor: 'var(--bg-body)',
+                  color: 'var(--text-primary)',
+                  fontSize: '0.85rem',
+                  outline: 'none'
+                }}
+                autoFocus
+              />
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
+                Semantic Type / Behavior
+              </label>
+              <select
+                value={newColSemanticType}
+                onChange={e => setNewColSemanticType(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '0.55rem 0.75rem',
+                  borderRadius: '8px',
+                  border: '1px solid var(--border-color)',
+                  backgroundColor: 'var(--bg-body)',
+                  color: 'var(--text-primary)',
+                  fontSize: '0.85rem',
+                  outline: 'none',
+                  cursor: 'pointer'
+                }}
+              >
+                <option value="auto">Auto / AI Inferred (Recommended)</option>
+                <option value="text">Text (General string / description)</option>
+                <option value="email">Email (Clickable mailto: link)</option>
+                <option value="url">URL / Document Link (Clickable external link)</option>
+                <option value="date">Date (ISO 8601 formatting)</option>
+                <option value="phone">Phone Number (E.164 standardized)</option>
+                <option value="supplier">Supplier / Manufacturer</option>
+                <option value="number">Number (Integer / Decimal metric)</option>
+                <option value="badge">Status / Badge (Category tag)</option>
+              </select>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', marginTop: '0.4rem' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShowAddColumnModal(false)}
+                disabled={addingColumn}
+                style={{ fontSize: '0.82rem' }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={addingColumn || !newColName.trim()}
+                style={{ fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+              >
+                {addingColumn ? (
+                  <>
+                    <Loader2 size={14} className="spin" /> Adding...
+                  </>
+                ) : (
+                  <>
+                    <Plus size={14} /> Add Column
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    )}
 
   </div>
 );

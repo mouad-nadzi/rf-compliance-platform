@@ -531,7 +531,7 @@ const Sidebar = ({
 
             {/* Action Button: + New Table */}
             {isOpen && (
-              <div style={{ marginTop: '0.25rem' }}>
+              <div style={{ marginTop: '0.25rem', flexShrink: 0 }}>
                 <button 
                   className="btn btn-secondary" 
                   style={{ width: '100%', fontSize: '0.8rem', padding: '0.45rem', justifyContent: 'center' }}
@@ -544,7 +544,7 @@ const Sidebar = ({
 
             {/* Form Drawer for + New Table */}
             {isOpen && showNewTableModal && (
-              <form onSubmit={handleCreateCustomTable} style={{ backgroundColor: 'var(--bg-body)', padding: '0.85rem', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+              <form onSubmit={handleCreateCustomTable} style={{ backgroundColor: 'var(--bg-body)', padding: '0.85rem', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '0.65rem', flexShrink: 0 }}>
                 <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>CREATE CUSTOM TABLE</span>
                 
                 <label className="btn btn-secondary" style={{ width: '100%', fontSize: '0.75rem', padding: '0.35rem 0.5rem', justifyContent: 'center', cursor: 'pointer', border: '1px dashed var(--brand-blue)', color: 'var(--brand-blue)' }}>

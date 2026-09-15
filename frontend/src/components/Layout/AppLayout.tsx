@@ -20,14 +20,23 @@ export function useLayoutContext() {
 const AppLayout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [selectedTable, setSelectedTable] = useState('RF Certificates');
-  const [customTables, setCustomTables] = useState<string[]>([]);
+  const [customTables, setCustomTables] = useState<string[]>(() => {
+    try {
+      const cached = localStorage.getItem('rf_custom_tables');
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
   useEffect(() => {
     const loadCustomTables = async () => {
       try {
         const tables = await api.getCustomTables();
-        setCustomTables(tables);
+        const cleanTables = Array.isArray(tables) ? tables : [];
+        setCustomTables(cleanTables);
+        localStorage.setItem('rf_custom_tables', JSON.stringify(cleanTables));
       } catch (err) {
         console.error("Failed to load custom tables on mount:", err);
       }

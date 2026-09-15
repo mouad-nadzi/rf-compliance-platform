@@ -213,7 +213,7 @@ def _persist_chat_session_frozen(session_id: str, frozen: bool) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _seed_table_schema_memories():
-    """Ensure all core tables have their Table Schema Profiles registered in Long-Term Memory (agent_memories)."""
+    """Ensure all core tables have their Table Schema Profiles with semantic column types registered in Long-Term Memory (agent_memories)."""
     import storage.database as db
     from schemas.extraction import AgentMemory
     from datetime import datetime
@@ -222,28 +222,72 @@ def _seed_table_schema_memories():
     tables = [
         {
             'table_name': 'RF Certificates',
-            'target_fields': ['component', 'supplier', 'country', 'certif_number', 'authority', 'issue_date', 'exp_date', 'cert_link'],
+            'target_fields': ['component', 'supplier', 'country', 'certif_number', 'authority', 'issue_date', 'exp_date', 'cert_link', 'last_update'],
+            'columns': {
+                'component': {'semantic_type': 'text', 'label': 'Component / Model'},
+                'supplier': {'semantic_type': 'supplier', 'label': 'Supplier / Manufacturer'},
+                'country': {'semantic_type': 'text', 'label': 'Country'},
+                'certif_number': {'semantic_type': 'text', 'label': 'Certificate No.'},
+                'authority': {'semantic_type': 'text', 'label': 'Authority'},
+                'issue_date': {'semantic_type': 'date', 'label': 'Issue Date'},
+                'exp_date': {'semantic_type': 'date', 'label': 'Exp Date'},
+                'cert_link': {'semantic_type': 'url', 'label': 'PDF Document Link'},
+                'last_update': {'semantic_type': 'date', 'label': 'Last Update'}
+            },
             'description': 'Main database table storing Radio Frequency homologation certificates, equipment models, suppliers, regulatory bodies, issue/expiration dates, and document URLs.'
         },
         {
             'table_name': 'Authorities',
-            'target_fields': ['canonical_authority', 'abbreviation', 'country', 'standard_validity_years', 'website_url'],
+            'target_fields': ['canonical_authority', 'abbreviation', 'country', 'standard_validity_years', 'aliases'],
+            'columns': {
+                'canonical_authority': {'semantic_type': 'text', 'label': 'Canonical Authority'},
+                'abbreviation': {'semantic_type': 'badge', 'label': 'Abbreviation'},
+                'country': {'semantic_type': 'text', 'label': 'Country'},
+                'standard_validity_years': {'semantic_type': 'number', 'label': 'Validity (Years)'},
+                'aliases': {'semantic_type': 'text', 'label': 'Aliases'}
+            },
             'description': 'Master lookup table storing global regulatory bodies (e.g. ENTE NACIONAL DE COMUNICACIONES, ANATEL, ATT, FCC) and standard validity terms.'
         },
         {
             'table_name': 'Suppliers',
-            'target_fields': ['canonical_supplier', 'aliases', 'headquarters_country', 'notes'],
+            'target_fields': ['canonical_supplier', 'aliases'],
+            'columns': {
+                'canonical_supplier': {'semantic_type': 'supplier', 'label': 'Canonical Supplier'},
+                'aliases': {'semantic_type': 'text', 'label': 'Aliases'}
+            },
             'description': 'Master lookup table storing foreign tier-1 automotive suppliers (e.g. Valeo, Bosch, Aptiv, Continental, Denso) and brand aliases.'
         },
         {
             'table_name': 'Compliance Sources',
-            'target_fields': ['name', 'url', 'description', 'active'],
+            'target_fields': ['url', 'description', 'active'],
+            'columns': {
+                'url': {'semantic_type': 'url', 'label': 'Source URL'},
+                'description': {'semantic_type': 'text', 'label': 'Description'},
+                'active': {'semantic_type': 'badge', 'label': 'Active Status'}
+            },
             'description': 'Autonomous ingestion source portals and regulatory web sources monitored for compliance updates.'
         },
         {
             'table_name': 'Agent Memories',
-            'target_fields': ['memory_key', 'fact_text', 'source_session_id', 'created_at'],
+            'target_fields': ['memory_key', 'fact_text', 'created_at'],
+            'columns': {
+                'memory_key': {'semantic_type': 'badge', 'label': 'Category / Key'},
+                'fact_text': {'semantic_type': 'text', 'label': 'Memory Fact / Directive'},
+                'created_at': {'semantic_type': 'date', 'label': 'Date Created'}
+            },
             'description': 'Long-term memory store keeping user preferences, table schema profiles, and compliance rules.'
+        },
+        {
+            'table_name': 'responsibles',
+            'target_fields': ['firstname', 'lastname', 'phone', 'email', 'mission_comment'],
+            'columns': {
+                'firstname': {'semantic_type': 'text', 'label': 'First Name'},
+                'lastname': {'semantic_type': 'text', 'label': 'Last Name'},
+                'phone': {'semantic_type': 'phone', 'label': 'Phone Number'},
+                'email': {'semantic_type': 'email', 'label': 'Email Address'},
+                'mission_comment': {'semantic_type': 'text', 'label': 'Mission / Role Comment'}
+            },
+            'description': 'Directory of responsible compliance engineers and contact info.'
         }
     ]
 
@@ -252,17 +296,27 @@ def _seed_table_schema_memories():
             for t in tables:
                 key = f'table_schema:{t["table_name"].lower()}'
                 existing = session.query(AgentMemory).filter(AgentMemory.memory_key == key).first()
+                now_iso = datetime.utcnow().isoformat()
+                schema_data = {
+                    "table_name": t["table_name"],
+                    "description": t["description"],
+                    "target_fields": t["target_fields"],
+                    "columns": t.get("columns", {}),
+                    "registered_at": now_iso,
+                    "last_updated": now_iso
+                }
                 if not existing:
-                    now_iso = datetime.utcnow().isoformat()
-                    schema_data = {
-                        "table_name": t["table_name"],
-                        "description": t["description"],
-                        "target_fields": t["target_fields"],
-                        "registered_at": now_iso,
-                        "last_updated": now_iso
-                    }
                     mem = AgentMemory(memory_key=key, fact_text=json.dumps(schema_data))
                     session.add(mem)
+                else:
+                    # Update columns definition if missing
+                    try:
+                        cur = json.loads(existing.fact_text)
+                        if "columns" not in cur or not cur["columns"]:
+                            cur["columns"] = t.get("columns", {})
+                            existing.fact_text = json.dumps(cur)
+                    except Exception:
+                        pass
             session.commit()
     except Exception as ex:
         logger.debug(f"Warning seeding table schema memories: {ex}")
@@ -1346,8 +1400,7 @@ async def restore_recycle_bin_item(item_id: str, db: Session = Depends(get_db)):
         elif item.table_name in ["Agent Memories", "memories", "agent_memories"]:
             mem = AgentMemory(
                 memory_key=rec_data.get("memory_key", "preference"),
-                fact_text=rec_data.get("fact_text", ""),
-                source_session_id=rec_data.get("source_session_id")
+                fact_text=rec_data.get("fact_text", "")
             )
             db.merge(mem)
 
@@ -1737,9 +1790,92 @@ async def clear_notifications(db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
-def get_or_create_table_schema_memory(db: Session, table_name: str, target_fields: list, sample_row: dict, allow_new_columns: bool = False) -> tuple[dict, list]:
+def llm_profile_table_columns(table_name: str, column_names: list, sample_rows: list = None) -> dict:
     """
-    Retrieves or updates a table's schema profile in Long-Term Memory (agent_memories table).
+    Uses Qwen 27B LLM to semantically profile table columns based on column headers and sample data rows.
+    Returns a dictionary mapping column_name -> {"semantic_type": str, "label": str}.
+    Supported semantic_types: 'email', 'url', 'phone', 'date', 'supplier', 'badge', 'text', 'number'.
+    """
+    from core.llm import generate_json
+    import json
+
+    if not column_names:
+        return {}
+
+    sample_snippet = sample_rows[:3] if sample_rows else []
+    system_prompt = (
+        "You are an expert database schema architect. Given a table name, list of column names, and sample data rows, "
+        "determine the exact semantic type and a clean human-readable UI label for each column.\n"
+        "Allowed semantic_type values are strictly:\n"
+        "- 'email' (for email addresses, responsible contacts, ldap emails, e.g. user@domain.com, id_responsible, contact_email)\n"
+        "- 'url' (for web links, document links, pdf urls, e.g. http://..., https://..., docinfo_link, cert_link)\n"
+        "- 'phone' (for telephone and mobile numbers)\n"
+        "- 'date' (for dates, timestamps, issue_date, exp_date)\n"
+        "- 'supplier' (for company, manufacturer, vendor, or supplier names)\n"
+        "- 'badge' (for status, priority, active booleans, categories with short keywords)\n"
+        "- 'number' (for numeric metrics, IDs, counts, frequencies)\n"
+        "- 'text' (default general text description, model name, etc.)\n\n"
+        "CRITICAL INSTRUCTION: If sample rows or the column name indicate email addresses (e.g. id_responsible containing @domain.com), "
+        "classify it as 'email'. If it contains URLs or document links (e.g. docinfo_link), classify it as 'url'.\n\n"
+        "Return ONLY a valid JSON object where keys are the column names and values are objects with "
+        "'semantic_type' and 'label'."
+    )
+    user_prompt = f"Table Name: {table_name}\nColumns: {json.dumps(column_names)}\nSample Data: {json.dumps(sample_snippet, default=str)}"
+
+    try:
+        raw = generate_json(system_prompt, user_prompt, disable_thinking=True, max_tokens=1024)
+        start = raw.find('{')
+        end = raw.rfind('}') + 1
+        if start != -1 and end > start:
+            parsed = json.loads(raw[start:end])
+            if isinstance(parsed, dict) and len(parsed) > 0:
+                return parsed
+    except Exception as e:
+        logger.warning(f"Error in llm_profile_table_columns for {table_name}: {e}")
+
+    # Fallback heuristic if LLM generation fails or offline
+    return fast_profile_table_columns(column_names, sample_rows=sample_rows)
+
+
+def fast_profile_table_columns(column_names: list, sample_rows: list = None) -> dict:
+    """
+    Fast rule-based semantic profiling for table columns. Executes instantly in <1ms without LLM latency.
+    """
+    profile = {}
+    for c in column_names:
+        clow = c.lower()
+        if 'email' in clow:
+            stype = 'email'
+        elif 'link' in clow or 'url' in clow or 'pdf' in clow or 'uri' in clow:
+            stype = 'url'
+        elif 'date' in clow or 'time' in clow or clow.endswith('_at'):
+            stype = 'date'
+        elif 'phone' in clow or 'tel' in clow or 'fax' in clow or 'mobile' in clow:
+            stype = 'phone'
+        elif 'supplier' in clow or 'vendor' in clow or 'manufacturer' in clow:
+            stype = 'supplier'
+        elif 'status' in clow or 'active' in clow or 'priority' in clow or 'badge' in clow:
+            stype = 'badge'
+        elif 'count' in clow or 'score' in clow or 'amount' in clow:
+            stype = 'number'
+        elif 'responsible' in clow:
+            is_email = False
+            if sample_rows:
+                for r in sample_rows:
+                    val = str(r.get(c) or '')
+                    if '@' in val:
+                        is_email = True
+                        break
+            stype = 'email' if is_email else 'text'
+        else:
+            stype = 'text'
+        profile[c] = {'semantic_type': stype, 'label': c.replace('_', ' ').title()}
+    return profile
+
+
+def get_or_create_table_schema_memory(db: Session, table_name: str, target_fields: list, sample_row: dict = None, allow_new_columns: bool = False, sample_rows: list = None) -> tuple[dict, list]:
+    """
+    Retrieves or updates a table's schema profile with LLM semantic column metadata in Long-Term Memory (agent_memories table).
     If new columns are detected, it requires explicit allow_new_columns permission to expand memory!
     Returns (profile, unmapped_columns).
     """
@@ -1750,7 +1886,8 @@ def get_or_create_table_schema_memory(db: Session, table_name: str, target_field
     memory_key = f"table_schema:{table_name.strip().lower()}"
     existing_mem = db.query(AgentMemory).filter(AgentMemory.memory_key == memory_key).first()
 
-    current_fields = target_fields if target_fields else list(sample_row.keys())
+    current_fields = target_fields if target_fields else (list(sample_row.keys()) if sample_row else [])
+    samples = sample_rows if sample_rows else ([sample_row] if sample_row else [])
 
     if existing_mem:
         try:
@@ -1761,22 +1898,36 @@ def get_or_create_table_schema_memory(db: Session, table_name: str, target_field
             # Detect extra/unmapped columns
             unmapped = list(incoming_fields - stored_fields)
 
+            columns_meta = profile.get("columns", {})
+            # Check if any columns are missing semantic metadata
+            missing_cols = [f for f in stored_fields if f not in columns_meta]
+            if missing_cols or not columns_meta:
+                inferred = llm_profile_table_columns(table_name, list(stored_fields), sample_rows=samples)
+                columns_meta.update(inferred)
+                profile["columns"] = columns_meta
+                existing_mem.fact_text = json.dumps(profile)
+                db.commit()
+
             if unmapped:
                 if allow_new_columns:
                     # User granted explicit permission to add new column(s)!
                     updated_fields = sorted(list(stored_fields.union(incoming_fields)))
+                    new_cols_inferred = llm_profile_table_columns(table_name, unmapped, sample_rows=samples)
+                    columns_meta.update(new_cols_inferred)
+
                     now_iso = datetime.utcnow().isoformat()
                     profile = {
                         "table_name": profile.get("table_name", table_name),
                         "description": profile.get("description", f"Database table for {table_name}."),
                         "target_fields": updated_fields,
+                        "columns": columns_meta,
                         "registered_at": profile.get("registered_at", now_iso),
                         "last_updated": now_iso
                     }
 
                     existing_mem.fact_text = json.dumps(profile)
                     db.commit()
-                    logger.info(f"User granted permission: Added new column(s) {unmapped} for table '{table_name}' to Long-Term Memory!")
+                    logger.info(f"User granted permission: Added new column(s) {unmapped} with semantic profiles for table '{table_name}' to Long-Term Memory!")
                     return profile, []
                 else:
                     # Permission denied / not yet granted: Keep target_fields restricted to existing stored_fields
@@ -1787,12 +1938,14 @@ def get_or_create_table_schema_memory(db: Session, table_name: str, target_field
         except Exception as ex:
             logger.debug(f"Error parsing existing table memory: {ex}")
 
-    # If brand new table, construct and store table schema memory
+    # If brand new table, profile semantic column types via LLM and store in memory
+    columns_meta = llm_profile_table_columns(table_name, current_fields, sample_rows=samples)
     now_iso = datetime.utcnow().isoformat()
     schema_profile = {
         "table_name": table_name,
         "description": f"User defined dynamic database table for {table_name}.",
         "target_fields": current_fields,
+        "columns": columns_meta,
         "registered_at": now_iso,
         "last_updated": now_iso
     }
@@ -1803,7 +1956,7 @@ def get_or_create_table_schema_memory(db: Session, table_name: str, target_field
         )
         db.add(new_mem)
         db.commit()
-        logger.info(f"Automatically registered brand-new table schema profile '{table_name}' in Long-Term Memory!")
+        logger.info(f"Automatically registered brand-new table schema profile '{table_name}' with LLM semantic metadata in Long-Term Memory!")
     except Exception as ex:
         db.rollback()
         logger.debug(f"Warning saving table schema memory for '{table_name}': {ex}")
@@ -3076,10 +3229,9 @@ def save_memory_endpoint(payload: dict):
     from core.agent.memory import save_agent_memory
     key = str((payload or {}).get("memory_key") or "preference")
     fact = str((payload or {}).get("fact_text") or "").strip()
-    session_id = (payload or {}).get("source_session_id")
     if not fact:
         raise HTTPException(status_code=422, detail="'fact_text' is required.")
-    return save_agent_memory(key, fact, source_session_id=session_id)
+    return save_agent_memory(key, fact)
 
 
 @app.delete("/api/v1/memories/{memory_id}")
@@ -3162,50 +3314,161 @@ def drop_schema_table(table_name: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/v1/schema/tables/{table_name}/columns")
-def add_schema_column(table_name: str, payload: dict):
-    """Adds a new column to an existing table."""
+def add_schema_column(table_name: str, payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Adds a new column to an existing table (supports both core tables and custom dynamic tables) and updates semantic metadata in Long-Term Memory."""
     from storage import dynamic_schema
+    from schemas.extraction import AgentMemory
+    import json
+    from datetime import datetime
+
+    resolved_table = dynamic_schema.resolve_physical_table_name(table_name)
     col_name = str((payload or {}).get("column_name") or "").strip()
     col_type = str((payload or {}).get("column_type") or "string").strip()
+    user_semantic_type = (payload or {}).get("semantic_type")
+
     if not col_name:
         raise HTTPException(status_code=422, detail="'column_name' is required.")
     try:
-        return dynamic_schema.add_column_to_table(table_name, col_name, col_type)
+        res = dynamic_schema.add_column_to_table(resolved_table, col_name, col_type)
+        clean_col = res.get("column_name", col_name)
+
+        # Update Long-Term Memory profile for this table
+        memory_key = f"table_schema:{resolved_table.strip().lower()}"
+        mem = db.query(AgentMemory).filter(AgentMemory.memory_key == memory_key).first()
+
+        if user_semantic_type and user_semantic_type != "auto":
+            new_meta = {clean_col: {"semantic_type": user_semantic_type, "label": col_name.replace("_", " ").title()}}
+        else:
+            new_meta = llm_profile_table_columns(resolved_table, [clean_col])
+
+        now_iso = datetime.utcnow().isoformat()
+        if mem:
+            try:
+                prof = json.loads(mem.fact_text)
+                target_fields = prof.get("target_fields", [])
+                if clean_col not in target_fields:
+                    target_fields.append(clean_col)
+                cols_meta = prof.get("columns", {})
+                cols_meta.update(new_meta)
+                prof["target_fields"] = target_fields
+                prof["columns"] = cols_meta
+                prof["last_updated"] = now_iso
+                mem.fact_text = json.dumps(prof)
+                db.commit()
+            except Exception as ex:
+                db.rollback()
+                logger.debug(f"Warning updating schema memory on add_column: {ex}")
+        else:
+            all_cols = dynamic_schema.get_table_columns(resolved_table)
+            col_names = [c["column_name"] for c in all_cols if c["column_name"] not in ("id", "created_at")]
+            inferred = llm_profile_table_columns(resolved_table, col_names)
+            inferred.update(new_meta)
+            schema_prof = {
+                "table_name": resolved_table,
+                "description": f"Database table {resolved_table}.",
+                "target_fields": col_names,
+                "columns": inferred,
+                "registered_at": now_iso,
+                "last_updated": now_iso
+            }
+            new_mem = AgentMemory(memory_key=memory_key, fact_text=json.dumps(schema_prof))
+            db.add(new_mem)
+            db.commit()
+
+        return res
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.put("/api/v1/schema/tables/{table_name}/columns/{column_name}/rename")
 def rename_schema_column(table_name: str, column_name: str, payload: dict):
-    """Renames an existing column in a dynamic custom table."""
+    """Renames an existing column in a database table."""
     from storage import dynamic_schema
+    resolved_table = dynamic_schema.resolve_physical_table_name(table_name)
     new_name = str((payload or {}).get("new_name") or "").strip()
     if not new_name:
         raise HTTPException(status_code=422, detail="'new_name' is required.")
     try:
-        return dynamic_schema.rename_column_in_table(table_name, column_name, new_name)
+        return dynamic_schema.rename_column_in_table(resolved_table, column_name, new_name)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.delete("/api/v1/schema/tables/{table_name}/columns/{column_name}")
 def drop_schema_column(table_name: str, column_name: str):
-    """Drops a column from an existing table."""
+    """Drops a column from an existing database table."""
     from storage import dynamic_schema
+    resolved_table = dynamic_schema.resolve_physical_table_name(table_name)
     try:
-        return dynamic_schema.drop_column_from_table(table_name, column_name)
+        return dynamic_schema.drop_column_from_table(resolved_table, column_name)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/v1/schema/tables/{table_name}/data")
-def fetch_schema_table_data(table_name: str, limit: int = 500):
-    """Fetches all rows from a dynamic custom table."""
+def fetch_schema_table_data(table_name: str, limit: int = 500, db: Session = Depends(get_db)):
+    """Fetches all rows from a database table enriched with LLM-inferred semantic column types."""
     from storage import dynamic_schema
+    from schemas.extraction import AgentMemory
+    import json
+    from datetime import datetime
     try:
-        columns = dynamic_schema.get_table_columns(table_name)
-        records = dynamic_schema.fetch_dynamic_records(table_name, limit=limit)
-        return {"table_name": table_name, "columns": columns, "records": records}
+        resolved_table = dynamic_schema.resolve_physical_table_name(table_name)
+        raw_columns = dynamic_schema.get_table_columns(resolved_table)
+        records = dynamic_schema.fetch_dynamic_records(resolved_table, limit=limit)
+
+        memory_key = f"table_schema:{resolved_table.strip().lower()}"
+        mem = db.query(AgentMemory).filter(AgentMemory.memory_key == memory_key).first()
+
+        semantic_map = {}
+        if mem:
+            try:
+                prof = json.loads(mem.fact_text)
+                semantic_map = prof.get("columns", {})
+            except Exception:
+                semantic_map = {}
+
+        col_names = [c["column_name"] for c in raw_columns if c["column_name"] not in ("id", "created_at")]
+        missing_cols = [c for c in col_names if c not in semantic_map]
+
+        if (missing_cols or not semantic_map) and col_names:
+            inferred = fast_profile_table_columns(col_names, sample_rows=records[:3])
+            semantic_map.update(inferred)
+            try:
+                now_iso = datetime.utcnow().isoformat()
+                schema_prof = {
+                    "table_name": resolved_table,
+                    "description": f"Database table {resolved_table}.",
+                    "target_fields": col_names,
+                    "columns": semantic_map,
+                    "registered_at": now_iso,
+                    "last_updated": now_iso
+                }
+                if mem:
+                    mem.fact_text = json.dumps(schema_prof)
+                else:
+                    new_mem = AgentMemory(memory_key=memory_key, fact_text=json.dumps(schema_prof))
+                    db.add(new_mem)
+                db.commit()
+            except Exception as ex:
+                db.rollback()
+                logger.debug(f"Warning persisting semantic profile for {resolved_table}: {ex}")
+
+        enriched_columns = []
+        for c in raw_columns:
+            col_k = c["column_name"]
+            if col_k in ("id", "created_at"):
+                continue
+            meta = semantic_map.get(col_k, {})
+            enriched_columns.append({
+                "column_name": col_k,
+                "data_type": c["data_type"],
+                "is_nullable": c["is_nullable"],
+                "semantic_type": meta.get("semantic_type", "date" if "date" in col_k else "text"),
+                "label": meta.get("label", col_k.replace("_", " ").title())
+            })
+
+        return {"table_name": resolved_table, "columns": enriched_columns, "records": records}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -3223,14 +3486,17 @@ def insert_schema_table_data(table_name: str, payload: dict = Body(...)):
 
 
 @app.post("/api/v1/schema/tables/{table_name}/data/batch")
-async def batch_insert_schema_table_data(table_name: str, rows: list = Body(...)):
-    """Batch inserts multiple rows into a dynamic custom table with bulk LLM standardization."""
+async def batch_insert_schema_table_data(table_name: str, rows: list = Body(...), standardize: bool = Query(True)):
+    """Batch inserts multiple rows into a dynamic custom table with optional bulk LLM standardization."""
     from storage import dynamic_schema
     try:
         if not rows:
             return {"status": "success", "imported_count": 0}
         
-        std_rows = llm_standardize_batch(rows)
+        if standardize:
+            std_rows = llm_standardize_batch(rows)
+        else:
+            std_rows = rows
         imported_count = dynamic_schema.bulk_insert_dynamic_records(table_name, std_rows)
         return {"status": "success", "imported_count": imported_count}
     except Exception as exc:

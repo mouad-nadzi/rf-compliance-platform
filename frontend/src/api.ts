@@ -182,6 +182,19 @@ export const api = {
     return res.json();
   },
 
+  addCustomTableColumn: async (tableName: string, columnName: string, columnType: string = 'VARCHAR', semanticType?: string): Promise<any> => {
+    const res = await fetch(`${API_BASE}/schema/tables/${encodeURIComponent(tableName)}/columns`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ column_name: columnName, column_type: columnType, semantic_type: semanticType })
+    });
+    if (!res.ok) {
+      const err = await res.text().catch(() => '');
+      throw new Error(`Failed to add column (${res.status}): ${err}`);
+    }
+    return res.json();
+  },
+
   getCustomTableRows: async (tableName: string): Promise<{ columns?: any[], records?: any[] }> => {
     const res = await fetch(`${API_BASE}/schema/tables/${encodeURIComponent(tableName)}/data`);
     if (!res.ok) return { columns: [], records: [] };
@@ -218,8 +231,8 @@ export const api = {
     return res.json();
   },
 
-  batchSaveCustomTableRows: async (tableName: string, rows: any[]): Promise<any> => {
-    const res = await fetch(`${API_BASE}/schema/tables/${encodeURIComponent(tableName)}/data/batch`, {
+  batchSaveCustomTableRows: async (tableName: string, rows: any[], standardize: boolean = true): Promise<any> => {
+    const res = await fetch(`${API_BASE}/schema/tables/${encodeURIComponent(tableName)}/data/batch?standardize=${standardize}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(rows)
