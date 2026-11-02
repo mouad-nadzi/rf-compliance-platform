@@ -30,6 +30,7 @@ Every problem, bug, or feature request in this codebase MUST be approached from 
 ### C. Git Directives
 - **No Automatic Host Sync:** There is no automated sync to the remote GCP server anymore. Files are edited directly in this workspace, which is bind-mounted to `/app` inside the `rf_app` container. Manual `scp`/SSH syncs are no longer performed. If containerized app files (`server/main.py`, `server/config.py`, `core/*`, etc.) are modified, restart the service container (`sudo docker restart rf_app`) for the changes to take effect. If `frontend/src/*` files are modified, run `cd frontend && npm run build` before restarting `rf_app`.
 - **Git Commit & Push Threshold:** Do NOT commit or push for minor UI tweaks, styling adjustments, formatting fixes, or routine file syncs. Git commits and `git push origin main` are strictly reserved for **major feature implementations, core engine integrations, milestone completions, or when the user explicitly requests a commit/push**.
+- **SSH Key Authentication for Git:** The repository remote is configured via SSH (`git@github.com:mouad-nadzi/rf-compliance-platform.git`). The host SSH key is stored in the standard location (`~/.ssh/id_ed25519`), enabling seamless, non-interactive `git push origin main` across all chat sessions without tokens or passwords.
 
 ### D. Code Style Directives
 - **No Emojis:** Never write emojis (or decorative Unicode symbols such as arrows/dingbats) in the codebase — not in code, log messages, comments, or documentation.
