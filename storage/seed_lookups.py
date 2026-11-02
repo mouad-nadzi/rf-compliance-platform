@@ -91,97 +91,91 @@ def seed_lookup_tables():
             db.commit()
             print(f"Loaded suppliers from JSON ({inserted_supp} inserted, {updated_supp} updated).")
 
-        # Standardize existing uncanonicalized supplier strings and auto-fill empty authority/country in certificates table
+        # Unified standardization and country/supplier/authority migration in certificates table
         try:
             from schemas.extraction import CertificateMetadata
-            
-            # Pre-cache AuthorityLookup and SupplierLookup maps for fast in-memory matching
-            authority_lookups = db.query(AuthorityLookup).all()
-            country_to_auth_map = {}
-            auth_to_country_map = {}
-            for al in authority_lookups:
-                if al.country:
-                    auth_target = al.abbreviation if al.abbreviation else al.canonical_authority
-                    country_to_auth_map[al.country.strip().lower()] = auth_target
-                    if al.abbreviation:
-                        auth_to_country_map[al.abbreviation.strip().lower()] = al.country
-                    if al.canonical_authority:
-                        auth_to_country_map[al.canonical_authority.strip().lower()] = al.country
-                    if isinstance(al.aliases, list):
-                        for alias in al.aliases:
-                            if alias:
-                                auth_to_country_map[alias.strip().lower()] = al.country
+            from core.normalization import normalize_certificate_fields, get_lookup_caches
 
-            supplier_lookups = db.query(SupplierLookup).all()
-            alias_to_canon = {}
-            for sl in supplier_lookups:
-                if sl.canonical_supplier:
-                    alias_to_canon[sl.canonical_supplier.strip().lower()] = sl.canonical_supplier
-                    for alias in (sl.aliases or []):
-                        if alias:
-                            alias_to_canon[alias.strip().lower()] = sl.canonical_supplier
-
+            caches = get_lookup_caches(db)
             certs = db.query(CertificateMetadata).all()
-            updated_cert_suppliers = 0
+            updated_count = 0
+            country_standardized = 0
+            supplier_standardized = 0
             autofilled_auth_country = 0
             cleaned_placeholders = 0
 
             for cert in certs:
-                # 1. Clean legacy placeholder strings ("N/A", "Unknown", "—")
-                if cert.country in ('—', 'N/A', 'Unknown'):
-                    cert.country = ""
-                    cleaned_placeholders += 1
-                if cert.authority in ('—', 'N/A', 'Unknown'):
-                    cert.authority = ""
-                    cleaned_placeholders += 1
-                if cert.supplier in ('—', 'N/A', 'Unknown'):
-                    cert.supplier = ""
-                    cleaned_placeholders += 1
+                orig_country = cert.country or ""
+                orig_supplier = cert.supplier or ""
+                orig_authority = cert.authority or ""
 
-                # 2. Supplier Canonicalization
-                if cert.supplier:
-                    supp_key = cert.supplier.strip().lower()
-                    canon_target = alias_to_canon.get(supp_key)
-                    if not canon_target:
-                        for alias_key, target in alias_to_canon.items():
-                            if len(alias_key) >= 3 and alias_key in supp_key:
-                                canon_target = target
-                                break
-                    if canon_target and cert.supplier != canon_target:
-                        cert.supplier = canon_target
-                        updated_cert_suppliers += 1
+                norm_dict, autofilled = normalize_certificate_fields(
+                    raw_component=cert.component,
+                    raw_supplier=cert.supplier,
+                    raw_country=cert.country,
+                    raw_certif_number=cert.certif_number,
+                    raw_authority=cert.authority,
+                    raw_issue_date=cert.issue_date,
+                    raw_exp_date=cert.exp_date,
+                    raw_cert_link=cert.cert_link,
+                    raw_file_name=cert.file_name,
+                    db=db,
+                    caches=caches,
+                )
 
-                # 3. Derive Country from Authority if Country is empty
-                if not (cert.country or "").strip() and (cert.authority or "").strip():
-                    auth_key = cert.authority.strip().lower()
-                    if auth_key in auth_to_country_map:
-                        cert.country = auth_to_country_map[auth_key]
-                        autofilled_auth_country += 1
+                changed = False
+                new_country = norm_dict.get("country") or ""
+                new_supplier = norm_dict.get("supplier") or ""
+                new_authority = norm_dict.get("authority") or ""
+                new_issue_date = norm_dict.get("issue_date")
+                new_exp_date = norm_dict.get("exp_date")
 
-                # 4. Derive Authority from Country if Authority is empty
-                if not (cert.authority or "").strip() and (cert.country or "").strip():
-                    ctry_key = cert.country.strip().lower()
-                    if ctry_key in country_to_auth_map:
-                        cert.authority = country_to_auth_map[ctry_key]
-                        autofilled_auth_country += 1
+                if (cert.country or "") != new_country:
+                    if orig_country in ("—", "N/A", "Unknown", "null", "None"):
+                        cleaned_placeholders += 1
+                    elif orig_country and new_country:
+                        country_standardized += 1
+                    cert.country = new_country
+                    changed = True
 
-                # 5. Derive Supplier from Component if Supplier is empty
-                if not (cert.supplier or "").strip() and (cert.component or "").strip():
-                    comp_key = cert.component.strip().lower()
-                    for alias_key, target_supp in alias_to_canon.items():
-                        if len(alias_key) >= 3 and alias_key in comp_key:
-                            cert.supplier = target_supp
-                            updated_cert_suppliers += 1
-                            break
+                if (cert.supplier or "") != new_supplier:
+                    if orig_supplier in ("—", "N/A", "Unknown", "null", "None"):
+                        cleaned_placeholders += 1
+                    elif orig_supplier and new_supplier:
+                        supplier_standardized += 1
+                    cert.supplier = new_supplier
+                    changed = True
 
-            if updated_cert_suppliers > 0 or autofilled_auth_country > 0 or cleaned_placeholders > 0:
+                if (cert.authority or "") != new_authority:
+                    if orig_authority in ("—", "N/A", "Unknown", "null", "None"):
+                        cleaned_placeholders += 1
+                    cert.authority = new_authority
+                    changed = True
+
+                if cert.issue_date != new_issue_date and new_issue_date is not None:
+                    cert.issue_date = new_issue_date
+                    changed = True
+
+                if cert.exp_date != new_exp_date and new_exp_date is not None:
+                    cert.exp_date = new_exp_date
+                    changed = True
+
+                if autofilled:
+                    autofilled_auth_country += 1
+
+                if changed:
+                    updated_count += 1
+
+            if updated_count > 0:
                 db.commit()
-                print(f"Database Auto-Fill & Standardization Summary:")
-                print(f" - Standardized/Derived suppliers: {updated_cert_suppliers} records")
-                print(f" - Auto-filled Authority/Country: {autofilled_auth_country} records")
+                print(f"Database Normalization & Standardization Summary:")
+                print(f" - Total certificate records updated: {updated_count}")
+                print(f" - Countries standardized (e.g. USA -> United States): {country_standardized} records")
+                print(f" - Suppliers standardized/derived: {supplier_standardized} records")
+                print(f" - Auto-filled Authority/Country/Date: {autofilled_auth_country} records")
                 print(f" - Cleaned placeholder strings: {cleaned_placeholders} fields")
         except Exception as ex:
-            print(f"Supplier/Authority standardization cleanup warning: {ex}")
+            print(f"Standardization migration cleanup warning: {ex}")
 
         print("Lookup tables verified and seeded successfully.")
 

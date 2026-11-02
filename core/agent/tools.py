@@ -468,6 +468,7 @@ class ManageSchemaTool(BaseTool):
 
 
 class CheckUrlTool(BaseTool):
+    """Inspects a web URL or portal page and discovers downloadable certificate PDF links."""
     name: str = "check_url"
     requires_approval: bool = False
 
@@ -520,9 +521,12 @@ class CheckUrlTool(BaseTool):
                 verified = result.verified_urls
                 all_verified.extend([v for v in verified if v not in all_verified])
                 if verified:
-                    names = [unquote(os.path.basename(urlparse(u).path)) or u for u in verified]
-                    listed = "\n".join(f"- {n}" for n in names[:10])
-                    more = f"\n... and {len(names) - 10} more" if len(names) > 10 else ""
+                    listed_lines = []
+                    for idx, u in enumerate(verified[:15], 1):
+                        fname = unquote(os.path.basename(urlparse(u).path)) or u
+                        listed_lines.append(f"{idx}. {fname} ({u})")
+                    listed = "\n".join(listed_lines)
+                    more = f"\n... and {len(verified) - 15} more" if len(verified) > 15 else ""
                     reports.append(f"I checked {target_url} and found {len(verified)} certificate document(s):\n{listed}{more}")
                 else:
                     reports.append(f"I checked {target_url} and found no downloadable certificate documents on it.")
@@ -539,6 +543,7 @@ class CheckUrlTool(BaseTool):
 
 
 class DownloadDocumentsTool(BaseTool):
+    """Downloads one or more discovered certificate PDFs (or a specific target_file) from a portal or URL to local storage."""
     name: str = "download_documents"
     requires_approval: bool = False
 
@@ -554,51 +559,67 @@ class DownloadDocumentsTool(BaseTool):
 
     def execute(self, **kwargs: Any) -> Any:
         from urllib.parse import unquote, urlparse
+        from core.agent.scraper import discover_pdf_urls, verify_pdf
         
         artifacts = kwargs.get("artifacts")
-        urls = (artifacts.verified_urls if artifacts else []) or []
-        
-        if not urls:
-            source_urls = kwargs.get("urls") or ([kwargs.get("url")] if kwargs.get("url") else [])
-            if not source_urls and artifacts and artifacts.source_url:
-                source_urls = [u.strip() for u in artifacts.source_url.split(",") if u.strip()]
-            if source_urls:
-                from core.agent.scraper import discover_pdf_urls
-                from server.config import (
-                    SCRAPER_MAX_PAGES, SCRAPER_MAX_DEPTH, SCRAPER_TIMEOUT_SECONDS,
-                    SCRAPER_USER_AGENT, SCRAPER_POLITE_DELAY_SECONDS,
-                    SCRAPER_BLOCKED_KEYWORDS, SCRAPER_ALLOWED_KEYWORDS, SCRAPER_USE_LLM_FILTER,
-                )
-                for s_url in source_urls:
-                    try:
-                        res = discover_pdf_urls(
-                            s_url,
-                            max_pages=SCRAPER_MAX_PAGES,
-                            max_depth=SCRAPER_MAX_DEPTH,
-                            timeout=SCRAPER_TIMEOUT_SECONDS,
-                            user_agent=SCRAPER_USER_AGENT,
-                            polite_delay=SCRAPER_POLITE_DELAY_SECONDS,
-                            allowed_keywords=SCRAPER_ALLOWED_KEYWORDS,
-                            blocked_keywords=SCRAPER_BLOCKED_KEYWORDS,
-                            use_llm=SCRAPER_USE_LLM_FILTER,
-                            fetcher_type="auto",
-                        )
-                        urls.extend(res.verified_urls)
-                    except Exception as exc:
-                        logger.warning(f" Auto-discovery failed for {s_url}: {exc}")
-                if artifacts:
-                    artifacts.verified_urls = urls
+        urls = list((artifacts.verified_urls if artifacts and artifacts.verified_urls else kwargs.get("verified_urls")) or [])
+        target_file = (kwargs.get("target_file") or "").strip()
+
+        # If target_file itself is a direct HTTP(S) URL, use it immediately
+        if target_file.startswith(("http://", "https://")) and verify_pdf(target_file):
+            if target_file not in urls:
+                urls.append(target_file)
+
+        source_urls = kwargs.get("urls") or ([kwargs.get("url")] if kwargs.get("url") else [])
+        if not source_urls and artifacts and artifacts.source_url:
+            source_urls = [u.strip() for u in artifacts.source_url.split(",") if u.strip()]
+
+        # If any passed source_url is already a direct PDF URL, include it directly
+        direct_pdf_sources = [u for u in source_urls if u.lower().split("?")[0].endswith(".pdf")]
+        if direct_pdf_sources:
+            for du in direct_pdf_sources:
+                if du not in urls:
+                    urls.append(du)
+
+        portal_source_urls = [u for u in source_urls if u not in direct_pdf_sources]
+        if not urls and portal_source_urls:
+            from server.config import (
+                SCRAPER_MAX_PAGES, SCRAPER_MAX_DEPTH, SCRAPER_TIMEOUT_SECONDS,
+                SCRAPER_USER_AGENT, SCRAPER_POLITE_DELAY_SECONDS,
+                SCRAPER_BLOCKED_KEYWORDS, SCRAPER_ALLOWED_KEYWORDS, SCRAPER_USE_LLM_FILTER,
+            )
+            for s_url in portal_source_urls:
+                try:
+                    res = discover_pdf_urls(
+                        s_url,
+                        max_pages=SCRAPER_MAX_PAGES,
+                        max_depth=SCRAPER_MAX_DEPTH,
+                        timeout=SCRAPER_TIMEOUT_SECONDS,
+                        user_agent=SCRAPER_USER_AGENT,
+                        polite_delay=SCRAPER_POLITE_DELAY_SECONDS,
+                        allowed_keywords=SCRAPER_ALLOWED_KEYWORDS,
+                        blocked_keywords=SCRAPER_BLOCKED_KEYWORDS,
+                        use_llm=SCRAPER_USE_LLM_FILTER,
+                        fetcher_type="auto",
+                    )
+                    for vu in res.verified_urls:
+                        if vu not in urls:
+                            urls.append(vu)
+                except Exception as exc:
+                    logger.warning(f" Auto-discovery failed for {s_url}: {exc}")
+            if artifacts:
+                artifacts.verified_urls = list(urls)
 
         if not urls:
             return "There were no certificate documents found to download."
 
-        target_file = (kwargs.get("target_file") or "").strip()
         if target_file:
-            clean_target = unquote(target_file).lower()
+            clean_target = unquote(target_file).strip().lower()
             matching_urls = [
                 u for u in urls
                 if clean_target in unquote(os.path.basename(urlparse(u).path)).lower()
                 or unquote(os.path.basename(urlparse(u).path)).lower() in clean_target
+                or clean_target.replace(" ", "_") in unquote(os.path.basename(urlparse(u).path)).lower().replace(" ", "_")
             ]
             if matching_urls:
                 urls = matching_urls
@@ -608,20 +629,30 @@ class DownloadDocumentsTool(BaseTool):
         for url in urls:
             try:
                 res = tool.execute(url=url, cookie_header=kwargs.get("cookie_header"))
-                path = str(res.get("path", ""))
+                path = str(res.get("path", "")) if isinstance(res, dict) else ""
                 if path:
                     downloaded.append(path)
             except Exception as exc:
                 logger.warning(f" Download failed for {url}: {exc}")
 
         if artifacts:
-            artifacts.file_paths = downloaded
+            existing_paths = list(artifacts.file_paths or [])
+            for p in downloaded:
+                if p not in existing_paths:
+                    existing_paths.append(p)
+            artifacts.file_paths = existing_paths
+            if not artifacts.verified_urls:
+                artifacts.verified_urls = list(urls)
             
         target_str = f" for '{target_file}'" if target_file else ""
-        return f"I've downloaded {len(downloaded)} certificate PDF(s){target_str} to local storage."
+        if downloaded:
+            names = [os.path.basename(p) for p in downloaded]
+            return f"Downloaded {len(downloaded)} certificate PDF(s){target_str} to local storage: {', '.join(names)}."
+        return f"Could not download certificate PDF(s){target_str}."
 
 
 class IngestToDatabaseTool(BaseTool):
+    """Downloads (if not yet downloaded), runs GLM-OCR + LLM metadata extraction, and ingests certificate PDF(s) into PostgreSQL."""
     name: str = "ingest_to_database"
     requires_approval: bool = True
 
@@ -638,58 +669,79 @@ class IngestToDatabaseTool(BaseTool):
 
     def execute(self, **kwargs: Any) -> Any:
         from core.agent.ingestor import ingest_document_file
+        from core.agent.agent_loop import RunArtifacts
         from urllib.parse import unquote, urlparse
 
         artifacts = kwargs.get("artifacts")
         status_callback = kwargs.get("status_callback")
         
-        file_paths = kwargs.get("file_paths") or (artifacts.file_paths if artifacts else []) or []
-        source_url = kwargs.get("source_url") or (artifacts.source_url if artifacts else "") or ""
-        verified_urls = kwargs.get("verified_urls") or (artifacts.verified_urls if artifacts else []) or []
+        file_paths = list(kwargs.get("file_paths") or (artifacts.file_paths if artifacts and artifacts.file_paths else []) or [])
+        source_url = kwargs.get("source_url") or (artifacts.source_url if artifacts and artifacts.source_url else "") or ""
+        verified_urls = list(kwargs.get("verified_urls") or (artifacts.verified_urls if artifacts and artifacts.verified_urls else []) or [])
         target_file = (kwargs.get("target_file") or "").strip()
 
-        if not file_paths:
-            # Fallback to trigger download
-            dl_tool = DownloadDocumentsTool()
-            dl_tool.execute(**kwargs)
-            file_paths = artifacts.file_paths if artifacts else []
-            verified_urls = artifacts.verified_urls if artifacts else verified_urls
+        if artifacts is None:
+            artifacts = RunArtifacts(
+                source_url=source_url,
+                verified_urls=list(verified_urls),
+                file_paths=list(file_paths),
+            )
 
-        if target_file and file_paths:
-            clean_target = unquote(target_file).lower()
-            matching = [
-                p for p in file_paths
-                if clean_target in unquote(os.path.basename(p)).lower()
-                or unquote(os.path.basename(p)).lower() in clean_target
+        def _match_paths(paths: List[str], tf: str) -> List[str]:
+            if not tf:
+                return paths
+            clean_tf = unquote(tf).strip().lower()
+            return [
+                p for p in paths
+                if os.path.exists(p) and (
+                    clean_tf in unquote(os.path.basename(p)).lower()
+                    or unquote(os.path.basename(p)).lower() in clean_tf
+                    or clean_tf.replace(" ", "_") in unquote(os.path.basename(p)).lower().replace(" ", "_")
+                )
             ]
-            if matching:
-                file_paths = matching
 
-        if (not file_paths or (target_file and not matching)) and os.path.exists(DOWNLOAD_DIR):
+        matching = _match_paths(file_paths, target_file) if target_file else [p for p in file_paths if os.path.exists(p)]
+
+        if not matching and os.path.exists(DOWNLOAD_DIR):
             local_files = [
                 os.path.join(DOWNLOAD_DIR, f)
                 for f in os.listdir(DOWNLOAD_DIR)
                 if f.lower().endswith(".pdf")
             ]
-            if target_file:
-                clean_target = unquote(target_file).lower()
-                local_matching = [
-                    p for p in local_files
-                    if clean_target in unquote(os.path.basename(p)).lower()
-                    or clean_target in p.lower()
+            matching = _match_paths(local_files, target_file) if target_file else local_files
+
+        if not matching:
+            # Trigger DownloadDocumentsTool with the session's RunArtifacts
+            dl_kwargs = dict(kwargs)
+            dl_kwargs["artifacts"] = artifacts
+            if source_url and not dl_kwargs.get("url") and not dl_kwargs.get("urls"):
+                dl_kwargs["url"] = source_url
+            dl_tool = DownloadDocumentsTool()
+            dl_tool.execute(**dl_kwargs)
+            file_paths = list(artifacts.file_paths or [])
+            verified_urls = list(artifacts.verified_urls or verified_urls)
+            matching = _match_paths(file_paths, target_file) if target_file else [p for p in file_paths if os.path.exists(p)]
+            if not matching and os.path.exists(DOWNLOAD_DIR):
+                local_files = [
+                    os.path.join(DOWNLOAD_DIR, f)
+                    for f in os.listdir(DOWNLOAD_DIR)
+                    if f.lower().endswith(".pdf")
                 ]
-                if local_matching:
-                    file_paths = local_matching
+                matching = _match_paths(local_files, target_file) if target_file else local_files
+
+        file_paths = matching
 
         ingest_mode = kwargs.get("ingest_mode") or ""
         if ingest_mode == "single" and not target_file and len(file_paths) > 1:
             file_paths = file_paths[:1]
 
         if not file_paths:
-            return "No matching downloaded certificate files found to ingest."
+            raise RuntimeError("No matching downloaded certificate files found to ingest.")
 
         new_record_ids: List[str] = []
         updated_record_ids: List[str] = []
+        extracted_summaries: List[str] = []
+        ingest_errors: List[str] = []
         for path in file_paths:
             fname = unquote(os.path.basename(path)).lower()
             file_source_url = next(
@@ -703,18 +755,30 @@ class IngestToDatabaseTool(BaseTool):
                 detail = ingest_document_file(path, file_source_url, status_callback=status_callback)
                 new_record_ids.extend(detail.get("new_records", []))
                 updated_record_ids.extend(detail.get("updated_records", []))
+                for c in detail.get("certificates", []):
+                    extracted_summaries.append(
+                        f"Component: {c.get('component')}, Supplier: {c.get('supplier')}, "
+                        f"Country: {c.get('country')}, Authority: {c.get('authority')}, "
+                        f"Cert #: {c.get('certif_number')}, Issue Date: {c.get('issue_date')}, "
+                        f"Exp Date: {c.get('exp_date')}, Link: {c.get('cert_link')}"
+                    )
             except Exception as exc:
                 logger.error(f" Ingest failed for {path}: {exc}")
+                ingest_errors.append(f"{os.path.basename(path)}: {exc}")
+
+        if not new_record_ids and not updated_record_ids and ingest_errors:
+            raise RuntimeError(f"Failed to ingest certificate file(s): {'; '.join(ingest_errors)}")
 
         target_str = f" for '{target_file}'" if target_file else ""
+        details_block = f" Extracted Metadata: {'; '.join(extracted_summaries)}" if extracted_summaries else ""
         if updated_record_ids and not new_record_ids:
             suffix = f" ({', '.join(updated_record_ids[:5])})"
-            return f"Updated existing certificate record(s){target_str} in the database{suffix}."
+            return f"Updated existing certificate record(s){target_str} in the database{suffix}.{details_block}"
         elif new_record_ids and updated_record_ids:
-            return f"Added {len(new_record_ids)} new certificate(s) and updated {len(updated_record_ids)} existing record(s){target_str} in the database."
+            return f"Added {len(new_record_ids)} new certificate(s) and updated {len(updated_record_ids)} existing record(s){target_str} in the database.{details_block}"
         else:
             suffix = f" ({', '.join(new_record_ids[:5])})" if new_record_ids else ""
-            return f"Added {len(new_record_ids)} new certificate(s){target_str} to the database{suffix}."
+            return f"Added {len(new_record_ids)} new certificate(s){target_str} to the database{suffix}.{details_block}"
 
 class ExecuteRawSQLTool(BaseTool):
     """
@@ -742,29 +806,37 @@ class ExecuteRawSQLTool(BaseTool):
 
     @staticmethod
     def generate_sql(objective: str) -> str:
-        """Dynamically generate SQL just-in-time using the database schema and an LLM."""
+        """Dynamically generate SQL just-in-time using the live database schema (with column types) and an LLM."""
         from storage.dynamic_schema import list_all_user_tables, get_table_columns
-        from core.prompts import SQL_GENERATOR_SYSTEM_PROMPT
+        from core.prompts import config_sql_generator_system_prompt
         
         schema_lines = []
         try:
             tables = list_all_user_tables()
             for t in tables:
                 tname = t["table_name"]
-                cols = [c["column_name"] for c in get_table_columns(tname)]
+                cols = [f"{c['column_name']} ({c['data_type']})" for c in get_table_columns(tname)]
                 schema_lines.append(f"- {tname}: {', '.join(cols)}")
             schema_block = "\n".join(schema_lines)
         except Exception as e:
             schema_block = f"(Schema unavailable: {e})"
             
-        system_prompt = SQL_GENERATOR_SYSTEM_PROMPT.replace("{OBJECTIVE}", objective).replace("{SCHEMA}", schema_block)
+        system_prompt = config_sql_generator_system_prompt(objective=objective, schema=schema_block)
         
         try:
             import json
             from core.llm import generate_json
-            raw_response = generate_json(system_prompt=system_prompt, user_prompt="", disable_thinking=True)
+            raw_response = generate_json(
+                system_prompt=system_prompt,
+                user_prompt=f"OBJECTIVE: {objective}\n\nReturn ONLY the raw JSON output matching the schema.",
+                disable_thinking=True,
+                response_prefix='{"sql_query":',
+            )
             parsed = json.loads(raw_response)
-            return parsed.get("sql_query", "").strip()
+            sql = str(parsed.get("sql_query", "")).strip()
+            sql = re.sub(r"^```(?:sql)?\s*", "", sql, flags=re.IGNORECASE).strip()
+            sql = re.sub(r"\s*```$", "", sql).strip()
+            return sql
         except Exception as e:
             return f"-- Failed to generate SQL: {e}"
 
@@ -776,9 +848,9 @@ class ExecuteRawSQLTool(BaseTool):
         params = kwargs.get("params") or {}
         
         if not sql_query:
-            description = str(kwargs.get("description") or "Execute raw SQL query")
+            description = str(kwargs.get("description") or kwargs.get("objective") or "Execute raw SQL query")
             sql_query = ExecuteRawSQLTool.generate_sql(description)
-            if sql_query.startswith("-- Failed"):
+            if not sql_query or sql_query.startswith("-- Failed"):
                 raise ValueError(f"sql_query is required and lazy generation failed: {sql_query}")
             
         with get_db_session() as db:
@@ -790,10 +862,12 @@ class ExecuteRawSQLTool(BaseTool):
                     rows = result.fetchall()
                     data = [dict(row._mapping) for row in rows]
                     db.commit()
-                    return {"status": "success", "rowcount": len(data), "data": data}
+                    return {"status": "success", "rowcount": len(data), "data": data, "sql": sql_query}
                     
                 db.commit()
-                return {"status": "success", "rowcount": rowcount, "message": "SQL query executed successfully."}
+                from storage.backup import export_database_to_sql
+                export_database_to_sql()
+                return f"Successfully executed SQL affecting {rowcount} record(s): {sql_query}"
             except Exception as exc:
                 db.rollback()
                 logger.error(f" ExecuteRawSQLTool failed: {exc}")
@@ -801,6 +875,7 @@ class ExecuteRawSQLTool(BaseTool):
 
 
 class DeleteRecordTool(BaseTool):
+    """Deletes one or more records from a database table matching a target_id, filters, or delete_all."""
     name: str = "delete_record"
     requires_approval: bool = True
 
@@ -821,31 +896,14 @@ class DeleteRecordTool(BaseTool):
     def execute(self, **kwargs: Any) -> Any:
         from core.agent.db_editor import build_mutation_sql, execute_mutation
         from storage.database import get_db_session
+        from storage.dynamic_schema import resolve_physical_table_name
 
-        table_name = kwargs.get("table_name")
+        table_name = resolve_physical_table_name(kwargs.get("table_name") or "certificates")
         target_id = (kwargs.get("target_id") or kwargs.get("certificate_id") or kwargs.get("target_file") or "").strip()
-        filters = kwargs.get("filters") or {}
+        filters = kwargs.get("filters") or kwargs.get("row_filter") or {}
         delete_all = bool(kwargs.get("delete_all"))
-        row_filter = kwargs.get("row_filter")
+        description = str(kwargs.get("description") or "").strip()
 
-        if not table_name and (target_id or filters or delete_all):
-            # Default to certificates if no table specified but cert params provided
-            table_name = "certificates"
-            
-        if not table_name:
-            return "Cannot delete record: table_name is required."
-
-        if row_filter:
-            # Generic deletion via strict row filter
-            try:
-                mutation = build_mutation_sql("delete", table_name, values={}, row_filter=row_filter)
-                with get_db_session() as db:
-                    count = execute_mutation(db, mutation)
-                    return f"Successfully deleted {count} record(s) from table '{table_name}'."
-            except Exception as exc:
-                return f"Failed to delete record from '{table_name}': {exc}"
-
-        # Fuzzy / Complex Deletion
         try:
             if target_id:
                 mutation = build_mutation_sql("delete", table_name, values={}, fuzzy_match_query=target_id)
@@ -854,17 +912,20 @@ class DeleteRecordTool(BaseTool):
             elif delete_all:
                 mutation = build_mutation_sql("delete", table_name, values={}, allow_full_table=True)
             else:
-                return f"No target_id, filters, or delete_all specified for table '{table_name}'."
+                raise ValueError(f"No literal target_id, filters, or delete_all specified for table '{table_name}'.")
                 
             with get_db_session() as db:
                 count = execute_mutation(db, mutation)
-                if count > 0:
-                    filter_str = f" matching '{target_id}'" if target_id else (f" matching {filters}" if filters else " (all records)")
-                    return f"Successfully deleted {count} record(s) from '{table_name}'{filter_str}."
-                else:
-                    return f"No records found in '{table_name}' to delete."
-        except Exception as exc:
-            return f"Failed to delete record from '{table_name}': {exc}"
+                from storage.backup import export_database_to_sql
+                export_database_to_sql()
+                filter_str = f" matching '{target_id}'" if target_id else (f" matching {filters}" if filters else " (all records)")
+                return f"Successfully deleted {count} record(s) from '{table_name}'{filter_str}."
+        except ValueError:
+            objective = (
+                f"Generate a single PostgreSQL DELETE statement on table '{table_name}'. "
+                f"Task description: {description}. Filters/criteria: {filters or target_id}."
+            )
+            return ExecuteRawSQLTool().execute(objective=objective)
 
 
 class UpdateRecordTool(BaseTool):
@@ -889,15 +950,17 @@ class UpdateRecordTool(BaseTool):
     def execute(self, **kwargs) -> str:
         from core.agent.db_editor import build_mutation_sql, execute_mutation
         from storage.database import get_db_session
+        from storage.dynamic_schema import resolve_physical_table_name
 
-        table_name = kwargs.get("table_name") or "certificates"
-        values = kwargs.get("values") or {}
-        filters = kwargs.get("filters") or {}
+        table_name = resolve_physical_table_name(kwargs.get("table_name") or "certificates")
+        values = kwargs.get("values") or kwargs.get("updates") or {}
+        filters = kwargs.get("filters") or kwargs.get("row_filter") or {}
         target_id = kwargs.get("target_id")
         allow_full_table = bool(kwargs.get("allow_full_table", False))
+        description = str(kwargs.get("description") or "").strip()
 
-        if not values:
-            return "Cannot update record: values to update are required."
+        if not values and not description:
+            raise ValueError("Cannot update record: 'values' or 'description' is required.")
 
         try:
             mutation = build_mutation_sql(
@@ -913,8 +976,13 @@ class UpdateRecordTool(BaseTool):
                 from storage.backup import export_database_to_sql
                 export_database_to_sql()
                 return f"Successfully updated {count} record(s) in table '{table_name}' with {values}."
-        except Exception as exc:
-            return f"Failed to update records in '{table_name}': {exc}"
+        except ValueError:
+            objective = (
+                f"Generate a single PostgreSQL UPDATE statement on table '{table_name}'. "
+                f"Task description: {description}. Requested updates: {values}. Filter criteria: {filters or target_id}. "
+                f"If replacing a year on a DATE column, preserve the month and day (e.g. MAKE_DATE or REPLACE(col::text, old, new)::date)."
+            )
+            return ExecuteRawSQLTool().execute(objective=objective)
 
 
 def get_tool_registry() -> Dict[str, BaseTool]:
@@ -933,7 +1001,6 @@ def get_tool_registry() -> Dict[str, BaseTool]:
         IngestToDatabaseTool.name: IngestToDatabaseTool(),
         DeleteRecordTool.name: DeleteRecordTool(),
         UpdateRecordTool.name: UpdateRecordTool(),
-        WebDownloaderTool.name: WebDownloaderTool(),
         DataConverterTool.name: DataConverterTool(),
         EmailDraftingTool.name: EmailDraftingTool(),
         RememberFactTool.name: RememberFactTool(),

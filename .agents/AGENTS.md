@@ -2,7 +2,15 @@
 
 ## 0. Session Start — Mandatory Context Loading
 - **READ `handoff_report.md` FIRST:** At the start of every new session, the agent MUST read `/home/mouadnadzi3/rf-compliance-platform/handoff_report.md` before doing any work. It is the single source of truth for the current architecture, live production status, model registry, benchmark results, and all engineering decisions.
-- **Current repo layout (2026-08-24 restructure):** FastAPI app lives in `server/` (`server.main:app`, `server.config`), AI engines in `core/` (formerly `engines/`), schemas in `schemas/`, DB layer in `storage/`, Streamlit UI in `ui/app.py`. Runtime data is consolidated under `data/`. See §3 of the handoff report for the full tree.
+- **Current repo layout:** FastAPI app lives in `server/` (`server.main:app`, `server.config`), AI engines in `core/` (formerly `engines/`), schemas in `schemas/`, DB layer in `storage/`, React 18 TypeScript SPA frontend in `frontend/` (served statically by FastAPI on `:8000`; legacy Streamlit UI is decommissioned). Runtime data is consolidated under `data/`. See section 3 of the handoff report for the full tree.
+
+## 0.1 Systemic Engineering & Problem-Solving Doctrine (Mandatory)
+Every problem, bug, or feature request in this codebase MUST be approached from a high-level architectural perspective using systemic root-cause solutions. Narrow-scope workarounds and point fixes are strictly forbidden:
+- **No Narrow Regex Heuristics or Point-Fix DSLs:** Never patch symptoms by adding narrow regexes (such as hardcoded greeting/anaphora word lists, regex type-guessing on untyped database values, or regex index extraction from user prompts) or custom JSON operator DSLs tailored to a single test prompt. Identify why the system failed structurally and fix the underlying architecture.
+- **Long-Term Memory (`agent_memories`) is the Single Source of Truth for Prompts:** Shared agent identity, tone, platform capabilities, registered tools, and canonical table schemas (`table_schema:<physical_table_name>` enriched with live PostgreSQL column names and data types) reside exclusively in Long-Term Memory (`core/agent/memory.py::format_memories_for_prompt`) and are injected into every prompt via the `config_*` functions in `core/prompts.py`.
+- **Keep Sub-Prompts Clean and Task-Specific:** Each prompt template in `core/prompts.py` must contain only its specific task role, input/output contract, and JSON schema. Never repeat global identity, capability lists, or narrow single-case guardrails across individual sub-prompts.
+- **Schema-Driven & Type-Safe Database Operations:** Always resolve table names to physical PostgreSQL tables via `storage.dynamic_schema.resolve_physical_table_name`. Validate literal mutations against live `information_schema.columns` data types (`core/agent/db_editor.py::_validate_typed_literal`) without mutating values in non-date columns. Delegate complex or conditional SQL expressions to `ExecuteRawSQLTool` against the live typed schema.
+- **Session-Scoped State & Deterministic Error Handling:** Never use process-global mutable singletons to share state across chat turns; derive session context deterministically from conversation history (`extract_artifacts_from_history`). Propagate tool failures via explicit exceptions rather than substring-matching error words in human-readable strings.
 
 ## 1. Primary Production Directives — GCP NVIDIA L4 Instance & Docker Architecture (Active Production Host)
 
@@ -10,17 +18,17 @@
 - **Active Production Host:** GCP NVIDIA L4 GPU Instance (24 GB VRAM, Driver `580.173.02`, CUDA `13.0`).
 - **Working Directory:** `/home/mouadnadzi3/rf-compliance-platform` (bind-mounted directly to `/app` inside the `rf_app` container).
 - **Container Stack (`docker-compose.yaml`):**
-  - `rf_app` (`rf-compliance-platform-app`): Runs FastAPI backend (`:8000`) and Streamlit UI (`:8501`).
+  - `rf_app` (`rf-compliance-platform-app`): Runs FastAPI backend and serves the compiled React SPA (`frontend/dist`) on `:8000`.
   - `rf_postgres_db` (`pgvector/pgvector:pg16`): Persistent PostgreSQL 16 database with pgvector extension (`:5432`).
 - **Production Execution:** All operations, services, and API calls run natively inside the Docker container ecosystem. Colab-specific ingress workarounds (`cloudflared`/`localtunnel`) and ephemeral sandbox workarounds are completely superseded in Production.
 
 ### B. GPU VRAM & Hardware Acceleration
 - **Active Hardware:** Single GCP NVIDIA L4 GPU (24 GB VRAM footprint).
-- **VRAM Coexistence:** Both GLM-OCR (~2.2 GB VRAM) and Qwen3.8-27B GGUF (~6.3 GB VRAM) co-exist in GPU VRAM, leaving ~15 GB VRAM headroom.
-- **Model Quantization Rules:** Model quantization format/precision (e.g. `UD-IQ1_M` / `UD-IQ2_M`) must remain locked during debugging. Do not upgrade to FP16 or unquantized weights without evaluating VRAM impact.
+- **VRAM Coexistence:** Both GLM-OCR (~2.5 GB VRAM) and Qwen3.8-27B GGUF (~11 GB VRAM) co-exist in GPU VRAM, leaving ~10.5 GB VRAM headroom.
+- **Model Quantization Rules:** Model quantization format/precision (e.g. `UD-IQ3_XXS` / `UD-IQ2_M`) must remain locked during debugging. Do not upgrade to FP16 or unquantized weights without evaluating VRAM impact.
 
 ### C. Git Directives
-- **No Automatic Host Sync:** There is no automated sync to the remote GCP server anymore. Files are edited directly in this workspace, which is bind-mounted to `/app` inside the `rf_app` container. Manual `scp`/SSH syncs are no longer performed. If containerized app files (`server/main.py`, `ui/app.py`, `server/config.py`, etc.) are modified, restart the service container (`sudo docker restart rf_app`) for the changes to take effect.
+- **No Automatic Host Sync:** There is no automated sync to the remote GCP server anymore. Files are edited directly in this workspace, which is bind-mounted to `/app` inside the `rf_app` container. Manual `scp`/SSH syncs are no longer performed. If containerized app files (`server/main.py`, `server/config.py`, `core/*`, etc.) are modified, restart the service container (`sudo docker restart rf_app`) for the changes to take effect. If `frontend/src/*` files are modified, run `cd frontend && npm run build` before restarting `rf_app`.
 - **Git Commit & Push Threshold:** Do NOT commit or push for minor UI tweaks, styling adjustments, formatting fixes, or routine file syncs. Git commits and `git push origin main` are strictly reserved for **major feature implementations, core engine integrations, milestone completions, or when the user explicitly requests a commit/push**.
 
 ### D. Code Style Directives
@@ -84,7 +92,7 @@ You are executing, testing, and developing code for a production GCP NVIDIA L4 G
 ### A. Production Hardware & Container Runtime
 - **Hardware:** GCP NVIDIA L4 GPU instance (24 GB VRAM, Driver `580.173.02`, CUDA `13.0`).
 - **Container Infrastructure:** Deployed natively via `docker-compose.yaml`.
-  - `rf_app`: FastAPI backend (`:8000`) and Streamlit UI (`:8501`).
+  - `rf_app`: FastAPI backend and compiled React SPA (`:8000`).
   - `rf_postgres_db`: PostgreSQL 16 + pgvector (`:5432`).
 - **Path Isolation:** All container operations map directly to `/home/mouadnadzi3/rf-compliance-platform` mounted into `/app`.
 
@@ -93,4 +101,4 @@ You are executing, testing, and developing code for a production GCP NVIDIA L4 G
 - **Environment Ingestion:** Ingest configuration and environment secrets securely from environment files or OS environment variables injected into the Docker container context.
 
 ### C. Legacy Sandbox Ingress Workarounds (Superseded in Production)
-- In the production GCP environment, ports `8000` (FastAPI) and `8501` (Streamlit) are served directly. Reverse tunneling workarounds (`cloudflared`/`localtunnel`) and `.streamlit/config.toml` CORS overrides required for ephemeral Colab runtimes are not required in production.
+- In the production GCP environment, port `8000` (FastAPI + React SPA) is served directly. Reverse tunneling workarounds (`cloudflared`/`localtunnel`) and `.streamlit/config.toml` CORS overrides required for ephemeral Colab runtimes are not required in production.

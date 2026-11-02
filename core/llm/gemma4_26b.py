@@ -165,6 +165,7 @@ class Gemma4_26BEngine(BaseLLMEngine):
         user_prompt: str,
         disable_thinking: bool = False,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        response_prefix: str = "",
     ) -> str:
         """
         Assemble the Gemma 4 native turn-format prompt and execute completion.
@@ -174,6 +175,8 @@ class Gemma4_26BEngine(BaseLLMEngine):
             blocks.append(f"<start_of_turn>system\n{system_prompt}<end_of_turn>\n")
         blocks.append(f"<start_of_turn>user\n{user_prompt}<end_of_turn>\n")
         blocks.append("<start_of_turn>model\n")
+        if response_prefix:
+            blocks.append(response_prefix)
         prompt = "".join(blocks)
 
         response = self._llm(
@@ -184,4 +187,5 @@ class Gemma4_26BEngine(BaseLLMEngine):
             echo=False,
             stop=["<end_of_turn>", "<|im_end|>", "<|endoftext|>"],
         )
-        return response["choices"][0]["text"]
+        text = response["choices"][0]["text"]
+        return f"{response_prefix}{text}" if response_prefix else text

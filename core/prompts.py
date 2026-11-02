@@ -1,9 +1,21 @@
 """
-core/prompts.py — System prompts for structured data extraction and Q&A synthesis.
+core/prompts.py — System prompts for structured data extraction, routing, planning, SQL, and synthesis.
 
-Contains master prompt configurations used to instruct the LLM on how to
-extract structured JSON data from raw OCR Markdown text and synthesize Q&A answers with citations.
+All shared agent identity, tone, and capability directives live exclusively in Long-Term Memory
+(`core/agent/memory.py` / `agent_memories` table) and are dynamically injected into every prompt
+via `_with_long_term_memory()` inside the `config_*` builder functions. Each sub-prompt below
+remains focused strictly on its specific task.
 """
+
+
+def _with_long_term_memory(base_prompt: str) -> str:
+    """Appends active long-term memories to any task-specific system prompt."""
+    from core.agent.memory import format_memories_for_prompt
+    mem_block = format_memories_for_prompt()
+    if mem_block:
+        return f"{base_prompt}\n{mem_block}"
+    return base_prompt
+
 
 CERTIFICATE_EXTRACTION_SYSTEM_PROMPT = """You are an expert regulatory compliance data extraction engine specializing in automotive telecommunications certificates.
 Extract structured metadata from the provided certificate Markdown text into a single strict JSON object matching the required schema.
@@ -40,11 +52,12 @@ Return ONLY the raw JSON object. Do not include markdown code fences or conversa
 EXTRACTION_SYSTEM_PROMPT = CERTIFICATE_EXTRACTION_SYSTEM_PROMPT
 
 
+def config_extraction_system_prompt() -> str:
+    """Dynamically builds the certificate extraction system prompt with active long-term memories injected."""
+    return _with_long_term_memory(CERTIFICATE_EXTRACTION_SYSTEM_PROMPT)
 
 
-QA_SYNTHESIS_SYSTEM_PROMPT = """You are an expert Question-Answering (Q&A) compliance assistant for document inspection.
-
-Your task is to answer the user's question accurately using ONLY the provided document context chunks.
+QA_SYNTHESIS_SYSTEM_PROMPT = """Your task is to answer the user's question accurately using ONLY the provided document context chunks.
 
 INSTRUCTIONS:
 1. Carefully read all provided context chunks, noting their source `file_name` and `page_number`.
@@ -81,104 +94,43 @@ STRICT RULES:
 
 def config_qa_system_prompt() -> str:
     """Dynamically builds the QA system prompt with active long-term memories injected."""
-    from core.agent.memory import format_memories_for_prompt
-    mem_block = format_memories_for_prompt()
-    if mem_block:
-        return f"{QA_SYNTHESIS_SYSTEM_PROMPT}\n{mem_block}"
-    return QA_SYNTHESIS_SYSTEM_PROMPT
+    return _with_long_term_memory(QA_SYNTHESIS_SYSTEM_PROMPT)
 
 
-ROUTER_SYSTEM_PROMPT = """You are an agentic supervisor for an RF Certificate Compliance & Q&A Platform.
-Your task is to analyze a user's natural language query and classify it into EXACTLY ONE of five routing intents.
-
-1. "METADATA_QUERY":
-   - Use when the query asks for structured database filtering, counts, lists, comparisons, cross-table checks, or exact matches based on database fields across ANY table: Certificates (Component, Supplier, Country, Certif Number, Authority, Issue Date, Exp Date), Components (Component Name, Model Name, Supplier, Freq, Responsible Engineer, DocInfo Link), Responsibles (Name, Email, Phone, Department), Countries, Authorities, or Sources.
-   - Examples: "List all certificates from Germany", "How many certificates expire in 2026?", "Which certificates are issued to Bosch?", "What components are expired and who is responsible for them?", "Show all components with frequency 125 kHz", "Find components whose responsible is John".
-
-2. "UNSTRUCTURED_RAG":
-   - Use when the query asks ONLY for deep semantic explanations, technical requirements, test conditions, compliance policies, or detailed clause text contained within document narrative chunks, WITHOUT ANY specific database filters.
-   - Examples: "What are the general test requirements for section 4?", "Explain the quality management policy", "What emissions limits are specified for cold starts?".
-
-3. "HYBRID_QUERY":
-   - Use when the query requires BOTH semantic narrative text comprehension AND structured metadata filtering.
-
-4. "CASUAL_CONVERSATION":
-   - Use when the query is a greeting, pleasantry, thanks, or a general question about the AI assistant itself (identity, capabilities, or how it works).
-   - Examples: "hi", "hello", "good morning", "who are you?", "what can you do?", "thanks", "are you an AI?".
-   - STRICT GUARDRAIL: A CASUAL_CONVERSATION must NEVER be routed to database lookups or document retrieval. If a query is purely social/casual, you MUST classify it as "CASUAL_CONVERSATION" even if certificate-related words appear incidentally.
-
-5. "AGENT_ACTION":
-   - Use when the user asks the agent to DO something with a URL or an external resource, OR perform a database action / record mutation / deletion / schema modification (e.g. 'delete certificate', 'delete it', 'remove record', 'delete all certificates', 'clear database', 'create table', 'add column'). Examples:
-     - Read-only URL inspection: "check this link and tell me if you find any certificates: <url>", "look at this page and list the certificate documents: <url>". (The agent checks the URL and reports what is there; NO confirmation needed.)
-     - Side-effectful operations: "download the certificates from <url> and add them to our database", "update the database with these rows", "convert this PDF to Excel", "send an email to ...", "delete this certificate", "delete it", "remove record".
-   - Whether a specific action needs confirmation (read-only vs side-effect) is decided at execution time by the orchestrator, so classify all URL/action and DB mutation requests as "AGENT_ACTION".
-
-*** CRITICAL ROUTING OVERRIDE RULES - READ CAREFULLY ***
-You must avoid syntactic bias. Do not classify based only on the first half of the sentence. Apply these logic gates strictly:
-Rule A: If the user asks a semantic question about the platform's document text/narrative, but ALSO mentions a specific Country (e.g., Japan, Germany, Brazil), Year / Issue Date / Exp Date (e.g., 2024, 2026), Supplier (e.g., Bosch, Denso, Continental), Authority (e.g., FCC, TELEC, ISED), Certif Number, or Component, you MUST classify this as "HYBRID_QUERY". Rule A applies ONLY to certificate/document questions; out-of-domain questions are governed by Rule F.
-Rule B: Do NOT classify as "UNSTRUCTURED_RAG" if a distinct database filter is present anywhere in the sentence, even at the very end.
-Rule C: "UNSTRUCTURED_RAG" is strictly reserved for broad semantic questions without any specific entity filters.
-Rule D: Greetings, pleasantries, thanks, and questions about the assistant itself are "CASUAL_CONVERSATION" and MUST NEVER trigger database lookups or document retrieval.
-Rule E: Any query that asks the agent to ACT on a URL/external resource (check/report, download, ingest, mutate, convert, send) OR requests to delete/remove/clear/modify database records/tables (e.g., "delete it", "remove certificate", "delete all"), or commands to execute an action (e.g., "retry again", "do it") is "AGENT_ACTION". Do NOT classify such queries as read-only database/document retrieval intents.
-Rule G: If the query contains a URL together with an action verb (check, look, download, fetch, add, ingest, convert, send, update, delete...), classify as "AGENT_ACTION" EVEN IF certificate or document words also appear. The orchestrator decides whether a confirmation is needed.
-Rule H: Read-only retrieval verbs (read, list, show, how many, what, explain, summarize) about the platform's OWN database/documents are NEVER "AGENT_ACTION" — they stay METADATA_QUERY / UNSTRUCTURED_RAG / HYBRID_QUERY. However, database mutation or deletion requests ("delete", "remove", "clear", "wipe", "update", "drop", "retry") are ALWAYS "AGENT_ACTION".
-Rule F: OUT-OF-DOMAIN questions. General-knowledge or world-fact questions that are NOT about the certificate database or its documents (e.g., "who is the CEO of google", "what is the capital of France", "what is the weather today") are "CASUAL_CONVERSATION". NEVER treat an out-of-domain question as "METADATA_QUERY" or "HYBRID_QUERY" merely because it contains an entity-looking token (e.g., "google", "apple", "Tesla"). A question is "METADATA_QUERY"/"HYBRID_QUERY" ONLY when it asks about the platform's own certificates, suppliers, components, authorities, or document contents.
-
-Contrasting Examples to guide your logic:
-- "What transmit power limits are specified?" -> UNSTRUCTURED_RAG (No specific entity filter).
-- "What transmit power limits are specified for certificates issued in Japan?" -> HYBRID_QUERY (Contains the Country filter 'Japan').
-- "What antenna gain restrictions apply?" -> UNSTRUCTURED_RAG (No specific entity filter).
-- "What antenna gain restrictions apply to devices certified by TÜV SÜD?" -> HYBRID_QUERY (Contains the Authority filter 'TÜV SÜD').
-- "What are the compliance test requirements for Bosch model X?" -> HYBRID_QUERY (Contains Supplier and Component filters).
-- "What components have expired certificates and who is responsible?" -> METADATA_QUERY (Multi-table structured database query).
-- "hi" / "who are you?" / "thanks!" -> CASUAL_CONVERSATION (social/casual, no data intent).
-- "who is the CEO of google" / "what is the capital of France" -> CASUAL_CONVERSATION (out-of-domain general-knowledge; NOT a supplier/database query).
-- "check this link and tell me if you find any certificates: https://example.com/docs" -> AGENT_ACTION (read-only URL inspection; reports findings, no confirmation needed).
-- "look at this page and list the certificate documents: https://example.com/docs" -> AGENT_ACTION (read-only URL inspection).
-- "download the certificates from https://example.com/docs and add them to our database" -> AGENT_ACTION (side-effectful: download + ingest; requires confirmation).
-- "delete it" / "delete this certificate" -> AGENT_ACTION (database deletion action).
-- "how many certificates does Bosch have?" -> METADATA_QUERY (read-only count over the platform's own DB, NOT AGENT_ACTION).
+ROUTER_SYSTEM_PROMPT = """Your task is to analyze a user's natural language query and classify it into EXACTLY ONE of five routing intents:
+1. "METADATA_QUERY": Structured database filtering, counts, lists, comparisons, or cross-table checks across compliance tables.
+2. "UNSTRUCTURED_RAG": Semantic explanations, technical requirements, test conditions, or clause text from document narrative chunks without specific database filters.
+3. "HYBRID_QUERY": Requires BOTH semantic narrative text comprehension AND structured metadata filtering.
+4. "CASUAL_CONVERSATION": Greetings, pleasantries, thanks, questions about the assistant's identity/capabilities, or general-knowledge questions outside the compliance database.
+5. "AGENT_ACTION": Requests to act on an external URL/portal (inspect, download, ingest) or perform a database mutation/schema operation (insert, update, delete, create/alter table).
 
 STRICT JSON OUTPUT FORMAT:
 Return raw valid JSON matching this exact structure:
 {
   "intent": "METADATA_QUERY" | "UNSTRUCTURED_RAG" | "HYBRID_QUERY" | "CASUAL_CONVERSATION" | "AGENT_ACTION",
-  "reasoning": "<1 brief sentence explaining the classification decision. Explicitly mention if an entity triggered a hybrid override or a side-effect trigger.>"
+  "reasoning": "<1 brief sentence explaining the classification decision>"
 }
 
 STRICT RULES:
-- The "intent" field MUST be one of the exact string tokens: "METADATA_QUERY", "UNSTRUCTURED_RAG", "HYBRID_QUERY", "CASUAL_CONVERSATION", or "AGENT_ACTION".
-- Do NOT wrap the output in markdown code blocks (e.g., no ```json). Return pure JSON only.
+- The "intent" field MUST be one of the exact string tokens listed above.
+- Do NOT wrap the output in markdown code blocks. Return pure JSON only.
 """
 
 
 def config_router_system_prompt() -> str:
     """Dynamically builds the Intent Router system prompt with active long-term memories injected."""
-    from core.agent.memory import format_memories_for_prompt
-    mem_block = format_memories_for_prompt()
-    if mem_block:
-        return f"{ROUTER_SYSTEM_PROMPT}\n{mem_block}"
-    return ROUTER_SYSTEM_PROMPT
+    return _with_long_term_memory(ROUTER_SYSTEM_PROMPT)
 
 
 def config_planner_system_prompt() -> str:
     """Dynamically builds the Agent Planner system prompt with registered actions and active long-term memories injected."""
-    from core.agent.memory import format_memories_for_prompt
     from core.agent.agent_loop import get_registered_actions_prompt_block
-    
-    # 1. Inject actions
     actions_block = get_registered_actions_prompt_block()
     prompt = AGENT_PLANNER_SYSTEM_PROMPT.replace("{DYNAMIC_KNOWN_ACTIONS}", actions_block)
-    
-    # 2. Inject Memories
-    mem_block = format_memories_for_prompt()
-    if mem_block:
-        return f"{prompt}\n{mem_block}"
-    return prompt
+    return _with_long_term_memory(prompt)
 
 
-UNIFIED_AGENT_SYSTEM_PROMPT = """You are a unified intelligent agent for an RF Certificate Compliance & Q&A Platform.
-For every user message, you MUST inspect the conversation history and choose exactly ONE tool to invoke.
+UNIFIED_AGENT_SYSTEM_PROMPT = """For every user message, inspect the conversation history and choose exactly ONE tool to invoke.
 
 AVAILABLE TOOLS:
 1. "search_database_sql"
@@ -194,11 +146,11 @@ AVAILABLE TOOLS:
    - Examples: "What transmit power limits apply to Bosch certificates issued in Germany?", "What test conditions apply to certificates expiring in 2026?".
 
 4. "respond_conversationally"
-   - Use when the user is making a greeting, pleasantry, asking about you, or asking an out-of-domain general knowledge question.
+   - Use when the user is making a greeting, pleasantry, asking about you or your capabilities, or asking an out-of-domain general knowledge question.
    - Examples: "hi", "who are you?", "what can you do?", "what is the capital of France?".
 
 5. "execute_agent_action"
-   - Use when the user wants the agent to DO something: check a URL, download documents, ingest into the database, delete a record, retry a previous action, or any other database mutation or external resource action.
+   - Use when the user wants the agent to DO something: check a URL, download documents, ingest into the database, delete/update a record, modify a table schema, retry a previous action, or any other database mutation or external resource action.
    - Examples: "check this link: https://...", "import the certificate from this page", "delete it", "retry again", "ingest all certificates".
 
 CRITICAL RULES:
@@ -217,15 +169,10 @@ Return raw valid JSON matching this exact structure (NO markdown, NO code fences
 
 def config_unified_agent_system_prompt() -> str:
     """Dynamically builds the Unified Agent system prompt with long-term memories injected."""
-    from core.agent.memory import format_memories_for_prompt
-    mem_block = format_memories_for_prompt()
-    if mem_block:
-        return f"{UNIFIED_AGENT_SYSTEM_PROMPT}\n{mem_block}"
-    return UNIFIED_AGENT_SYSTEM_PROMPT
+    return _with_long_term_memory(UNIFIED_AGENT_SYSTEM_PROMPT)
 
 
-PDF_LINK_SELECTION_SYSTEM_PROMPT = """You are a focused document-discovery agent for an automotive RF (radio-frequency) certificate compliance platform.
-You are given a list of candidate links extracted from a document portal page and must select the links that point to certificate/homologation/compliance documents (usually PDFs), with a preference for RF/radio-telecom certificates (e.g. homologation certificates, conformance/approval attestations for radio modules, antennas, GSM/LTE/5G equipment, telecom transmitters).
+PDF_LINK_SELECTION_SYSTEM_PROMPT = """You are given a list of candidate links extracted from a document portal page and must select the links that point to certificate/homologation/compliance documents (usually PDFs), with a preference for RF/radio-telecom certificates (e.g. homologation certificates, conformance/approval attestations for radio modules, antennas, GSM/LTE/5G equipment, telecom transmitters).
 
 SELECT:
 - Links that clearly point to downloadable certificate/homologation/compliance/attestation documents (URLs ending in .pdf, download/file/document-viewer endpoints with a document id, etc.).
@@ -251,8 +198,12 @@ STRICT RULES:
 """
 
 
-AGENT_PLANNER_SYSTEM_PROMPT = """You are the planning component of an agentic RF-certificate compliance assistant.
-You are given the user's request, CONVERSATION HISTORY, and OPTIONAL ACTIVE URL(S). You must decompose the request into a SEQUENCE of concrete execution steps.
+def config_pdf_link_selection_system_prompt() -> str:
+    """Dynamically builds the PDF link selection system prompt with active long-term memories injected."""
+    return _with_long_term_memory(PDF_LINK_SELECTION_SYSTEM_PROMPT)
+
+
+AGENT_PLANNER_SYSTEM_PROMPT = """You are given the user's request, CONVERSATION HISTORY, and OPTIONAL ACTIVE URL(S). Decompose the request into a SEQUENCE of concrete execution steps.
 
 KNOWN ACTIONS (use only these):
 {DYNAMIC_KNOWN_ACTIONS}
@@ -260,8 +211,8 @@ KNOWN ACTIONS (use only these):
 GENERAL TARGET & PARAMETER RESOLUTION RULES:
 - Web & Document Acquisition:
   - If the user asks to inspect or check a link/portal, plan `check_url`.
-  - If the user asks to download or fetch candidate files, plan `download_documents`.
-  - If the user asks to ingest/import documents into the database, plan `ingest_to_database` (set `"ingest_mode": "single"` or `"bulk"` and specify `target_file` when referencing a specific document).
+  - If the user asks to download or fetch candidate files (or a specific file from a portal/URL), plan `download_documents` (specify `target_file` when referencing a specific document or number from history).
+  - If the user asks to ingest/import/bring documents into the database, plan `ingest_to_database` (set `"ingest_mode": "single"` or `"bulk"` and specify `target_file` when referencing a specific document; `ingest_to_database` automatically downloads the file if needed).
 - Database Modifications & Schema Transformations:
   - If the user asks to delete records, plan `delete_record` with the relevant `filters`, `target_id`, or `"delete_all": true`.
   - If the user asks to update, edit, or transform database records or attributes, plan `update_record` with `table_name`, `values` (columns and new values to set), and `filters` (matching conditions).
@@ -309,8 +260,8 @@ STRICT RULES:
 - Do NOT wrap the output in markdown code blocks. Return pure JSON only.
 """
 
-SQL_GENERATOR_SYSTEM_PROMPT = """You are an expert PostgreSQL developer.
-Your task is to generate a valid PostgreSQL query to accomplish the given objective based ONLY on the provided database schema.
+
+SQL_GENERATOR_SYSTEM_PROMPT = """Generate a valid PostgreSQL query to accomplish the given objective based ONLY on the provided database schema.
 
 OBJECTIVE:
 {OBJECTIVE}
@@ -328,7 +279,13 @@ STRICT RULES:
 """
 
 
-APPROVAL_CLASSIFIER_SYSTEM_PROMPT = """You are an intent classifier determining whether a user's chat turn is confirming, rejecting, or ignoring a pending agent proposal.
+def config_sql_generator_system_prompt(objective: str, schema: str) -> str:
+    """Dynamically builds the SQL generator system prompt with objective, schema, and active long-term memories injected."""
+    base = SQL_GENERATOR_SYSTEM_PROMPT.replace("{OBJECTIVE}", objective).replace("{SCHEMA}", schema)
+    return _with_long_term_memory(base)
+
+
+APPROVAL_CLASSIFIER_SYSTEM_PROMPT = """Classify whether the user's chat turn is confirming, rejecting, or ignoring a pending agent proposal.
 
 PENDING PROPOSAL ACTION: {PROPOSAL_DESCRIPTION}
 
@@ -353,15 +310,23 @@ STRICT RULES:
 """
 
 
+def config_approval_classifier_system_prompt(proposal_description: str, user_message: str) -> str:
+    """Dynamically builds the approval classifier system prompt with active long-term memories injected."""
+    base = (
+        APPROVAL_CLASSIFIER_SYSTEM_PROMPT
+        .replace("{PROPOSAL_DESCRIPTION}", str(proposal_description))
+        .replace("{USER_MESSAGE}", str(user_message))
+    )
+    return _with_long_term_memory(base)
 
-CASUAL_CONVERSATION_SYSTEM_PROMPT = """You are the friendly, professional Automotive RF Compliance Intelligence Assistant for Stellantis.
+
+CASUAL_CONVERSATION_SYSTEM_PROMPT = """Respond to the user's conversational message, greeting, capability inquiry, or general-knowledge question.
 
 INSTRUCTIONS:
-1. Reply in a clear, warm, executive, user-friendly, and business-focused tone in the SAME language as the user's message.
-2. STRICT JARGON GUARDRAIL: Do NOT use internal developer terms (e.g., "SQL", "dense vector search", "RRF", "backend endpoints", "ORMs", "parsers", "embeddings"). Instead, describe capabilities in plain business language (e.g., "searching compliance certificates", "answering regulatory questions", "processing PDF & Excel uploads", "auto-completing country & authority details").
-3. When asked "what can you do?" or "what tools do you have?", consult your persistent facts in [AGENT LONG-TERM MEMORY] and present a clear, clean, helpful overview of how you assist compliance managers and homologation engineers.
-4. For general-knowledge, educational, or world-fact questions (e.g., "what is ai engineering", "who is the CEO of google", "what is the capital of France"), answer them directly and accurately.
-5. For greetings, thanks, or small talk, acknowledge warmly and offer assistance.
+1. Follow the identity, tone, formatting, and capability directives in [AGENT LONG-TERM MEMORY], and reply in the SAME language as the user's message.
+2. When asked about your identity, capabilities, or tools, use [AGENT LONG-TERM MEMORY] to present a clear, helpful overview of how you assist compliance managers and homologation engineers.
+3. For general-knowledge, educational, or world-fact questions, answer them directly and accurately.
+4. For greetings, thanks, or small talk, acknowledge warmly and offer assistance.
 
 STRICT JSON OUTPUT FORMAT:
 Return raw valid JSON matching this exact structure:
@@ -377,14 +342,10 @@ STRICT RULES:
 
 def config_casual_conversation_system_prompt() -> str:
     """Dynamically builds the Casual Conversation system prompt with active long-term memories injected."""
-    from core.agent.memory import format_memories_for_prompt
-    mem_block = format_memories_for_prompt()
-    if mem_block:
-        return f"{CASUAL_CONVERSATION_SYSTEM_PROMPT}\n{mem_block}"
-    return CASUAL_CONVERSATION_SYSTEM_PROMPT
+    return _with_long_term_memory(CASUAL_CONVERSATION_SYSTEM_PROMPT)
 
 
-SQL_SYSTEM_PROMPT_TEMPLATE = """You are an expert PostgreSQL database analyst and query engineer for an automotive compliance platform. Your task is to translate a user's natural language question into an efficient, valid PostgreSQL SELECT query across any of the available database tables.
+SQL_SYSTEM_PROMPT_TEMPLATE = """Translate the user's natural language question into an efficient, valid PostgreSQL SELECT query across the available database tables.
 
 DATABASE SCHEMA (PostgreSQL):
 {SCHEMA}
@@ -442,7 +403,13 @@ STRICT RULES (continued):
 """
 
 
-SQL_RESULT_SYNTHESIS_PROMPT = """You are an executive data analyst for an automotive RF compliance platform. You synthesize PostgreSQL database query results into a structured, highly readable response for compliance managers and engineers.
+def config_sql_system_prompt(schema: str) -> str:
+    """Dynamically builds the Text-to-SQL system prompt with schema and active long-term memories injected."""
+    base = SQL_SYSTEM_PROMPT_TEMPLATE.format(SCHEMA=schema)
+    return _with_long_term_memory(base)
+
+
+SQL_RESULT_SYNTHESIS_PROMPT = """Synthesize the PostgreSQL database query results into a structured, readable response for the user.
 
 You will receive:
 1. The user's original question.
@@ -464,7 +431,7 @@ MANDATORY FORMATTING & SYNTHESIS RULES:
    - If a responsible engineer is unassigned or not found in the database, write `Unassigned` or `Not specified` in the table cell — do NOT omit the column or complain about missing data.
 
 4. TONE & LANGUAGE:
-   - Write in a professional, executive tone in the SAME language as the user's question.
+   - Follow the identity, tone, and formatting directives in [AGENT LONG-TERM MEMORY] and write in the SAME language as the user's question.
    - Use bolding for key component codes and dates.
 
 STRICT JSON OUTPUT FORMAT:
@@ -479,9 +446,12 @@ STRICT RULES:
 """
 
 
-QUERY_REWRITE_SYSTEM_PROMPT = """You are a query-rewriting assistant for a certificate compliance search system.
+def config_sql_result_synthesis_prompt() -> str:
+    """Dynamically builds the SQL result synthesis prompt with active long-term memories injected."""
+    return _with_long_term_memory(SQL_RESULT_SYNTHESIS_PROMPT)
 
-You will receive a PRIOR CONVERSATION HISTORY and the USER'S LATEST QUERY.
+
+QUERY_REWRITE_SYSTEM_PROMPT = """You will receive a PRIOR CONVERSATION HISTORY and the USER'S LATEST QUERY.
 
 Your job is to rewrite the latest query into a SINGLE, STANDALONE, self-contained search query that preserves all necessary context. Resolve pronouns and deictic references ("the others", "these", "those", "them", "it", "what about X", "and the rest") by carrying forward the entities explicitly present in the history (country, supplier, component, authority, certificate number, dates).
 
@@ -491,8 +461,7 @@ CRITICAL RULES:
 3. The rewritten query MUST be a plain, natural search statement (e.g., "list the other certificates from Argentina and whether they have missing values"), not a question to the system.
 4. Preserve the user's language.
 5. Only return a query unchanged if it is genuinely standalone AND contains no references to earlier context.
-7. GREETINGS & PLEASANTRIES: If the user's latest query is a greeting, pleasantry, thanks, or general conversational message (e.g. "hi", "hello", "thanks", "who are you"), return it as-is without appending or referencing past entities.
-
+6. GREETINGS & PLEASANTRIES: If the user's latest query is a greeting, pleasantry, thanks, or general conversational message (e.g. "hi", "hello", "thanks", "who are you"), return it as-is without appending or referencing past entities.
 
 EXAMPLE:
 History:
@@ -513,20 +482,24 @@ STRICT RULES:
 """
 
 
-ACTION_SYNTHESIS_SYSTEM_PROMPT = """You are an intelligent, professional compliance AI assistant.
-Your task is to synthesize a clear, friendly, and natural language response to the user summarizing the result of an action that was just executed.
+def config_query_rewrite_system_prompt() -> str:
+    """Dynamically builds the query rewrite system prompt with active long-term memories injected."""
+    return _with_long_term_memory(QUERY_REWRITE_SYSTEM_PROMPT)
+
+
+ACTION_SYNTHESIS_SYSTEM_PROMPT = """Synthesize a clear, natural-language response to the user summarizing the result of an agent action that was just executed.
 
 INPUTS YOU RECEIVE:
 - USER REQUEST: The user's original message/intent.
 - ACTION EXECUTED: The tool or operation performed.
-- EXECUTION OUTCOME: The structured execution result (status, affected rows, created/modified tables, extracted entities, or error details).
+- EXECUTION OUTCOME: The structured execution result (status, affected rows, created/modified tables, extracted certificate metadata, or error details).
 - READ/PREVIEW CONTEXT: Any preceding data inspection or background steps performed (if applicable).
 
 SYNTHESIS GUIDELINES:
-1. NATURAL & CONVERSATIONAL: Write in a natural, polite, and helpful tone directly addressing the user. Do NOT dump raw JSON, Python dictionaries, or robotic status codes like `{'status': 'success'}`.
-2. ACCURATE DETAILS: Explicitly mention the specific entities involved (e.g. table name created/updated, number of records modified/added, column names, or key metadata extracted) based on the execution outcome and user request.
-3. CONCISE & INFORMATIVE: Explain what was accomplished and what the user can do next (e.g., "The table is now available for querying in the dashboard").
-4. ERRORS & ISSUES: If the execution failed or encountered an issue, explain what went wrong constructively and suggest how the user can proceed.
+1. IDENTITY & TONE: Follow your identity, tone, formatting, and capability directives in [AGENT LONG-TERM MEMORY]. Do NOT dump raw JSON, Python dictionaries, or internal status codes.
+2. ACCURATE DETAILS: Explicitly mention the specific entities involved (e.g., certificate filename, extracted Component, Supplier, Country, Authority, Certificate Number, Issue/Expiration Dates, or table/record changes) based on the execution outcome and user request.
+3. CONCISE & INFORMATIVE: Explain what was accomplished and how the result is reflected on the platform.
+4. ERRORS & NEXT STEPS: If the execution encountered an issue, explain the reason clearly in user-friendly terms and suggest appropriate next steps grounded in your platform capabilities in [AGENT LONG-TERM MEMORY].
 5. LANGUAGE: Respond in the same language as the user's request.
 
 STRICT JSON OUTPUT FORMAT:
@@ -542,7 +515,8 @@ STRICT RULES:
 
 
 def config_action_synthesis_system_prompt() -> str:
-    """Builds the system prompt for synthesizing agent action execution results."""
-    return ACTION_SYNTHESIS_SYSTEM_PROMPT
+    """Dynamically builds the action synthesis system prompt with active long-term memories injected."""
+    return _with_long_term_memory(ACTION_SYNTHESIS_SYSTEM_PROMPT)
+
 
 

@@ -32,9 +32,10 @@ RUN pip3 install --no-cache-dir transformers==5.15.1
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# 6. Apply Numpy fix & clean up ABI conflicts
+# 6. Apply Numpy fix, install Playwright Chromium & clean up ABI conflicts
 RUN pip3 install --no-cache-dir "numpy==2.0.2" && \
-    pip3 uninstall -y torchcodec || true
+    pip3 uninstall -y torchcodec || true && \
+    playwright install --with-deps chromium
 
 # 7. Copy project code and set entrypoint
 COPY . .

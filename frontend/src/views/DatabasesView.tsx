@@ -57,6 +57,7 @@ const DatabasesView = () => {
   const [importedFiles, setImportedFiles] = useState<{ id: string; name: string; count: number }[]>([]);
   const [pendingImportRows, setPendingImportRows] = useState<any[]>([]);
   const [pendingImportFiles, setPendingImportFiles] = useState<File[] | null>(null);
+  const [pendingImportUsePipeline, setPendingImportUsePipeline] = useState<boolean>(true);
   const [fileProcessingStatus, setFileProcessingStatus] = useState<string | null>(null);
   const [lastImportStats, setLastImportStats] = useState<{ total: number; newCount: number; skippedCount: number; fileName: string } | null>(null);
 
@@ -65,6 +66,16 @@ const DatabasesView = () => {
   const [newColName, setNewColName] = useState('');
   const [newColSemanticType, setNewColSemanticType] = useState('auto');
   const [addingColumn, setAddingColumn] = useState(false);
+
+  // Delete Column Modal state
+  const [columnToDelete, setColumnToDelete] = useState<{ key: string; label: string } | null>(null);
+  const [deletingColumn, setDeletingColumn] = useState(false);
+
+  const isColumnDeletable = useCallback((colKey: string) => {
+    if (colKey === 'id' || colKey === 'created_at') return false;
+    if (selectedTable === 'RF Certificates' && colKey === 'certificate_id') return false;
+    return true;
+  }, [selectedTable]);
 
   // In-place cell editing state for link and email fields
   const [editingCell, setEditingCell] = useState<{ rowIdx: number; colKey: string } | null>(null);
@@ -89,6 +100,25 @@ const DatabasesView = () => {
     }
   };
 
+  const handleDeleteColumnConfirm = async () => {
+    if (!columnToDelete || !selectedTable) return;
+    setDeletingColumn(true);
+    try {
+      await api.deleteCustomTableColumn(selectedTable, columnToDelete.key);
+      setSaveStatus({
+        message: `Successfully deleted column "${columnToDelete.label}" from ${selectedTable}.`,
+        type: 'success'
+      });
+      setColumnToDelete(null);
+      await fetchTableData();
+    } catch (err: any) {
+      console.error("Failed to delete column:", err);
+      alert(`Error deleting column: ${err.message || 'Server error'}`);
+    } finally {
+      setDeletingColumn(false);
+    }
+  };
+
   // Close 3-dots menu on click outside
   useEffect(() => {
     const handleClickOutsideMore = (event: MouseEvent) => {
@@ -103,21 +133,23 @@ const DatabasesView = () => {
   // Fetch Table Data based on selected table (resets drawer & filters on table change, restores unsaved draft session)
   const fetchIdRef = useRef(0);
 
-  const fetchTableData = useCallback(async () => {
+  const fetchTableData = useCallback(async (silentRefresh: boolean = false) => {
     const fetchId = ++fetchIdRef.current;
     
-    setLoading(true);
-    setGridData([]);
-    setSaveStatus(null);
-    setProgress(null);
+    if (!silentRefresh) {
+      setLoading(true);
+      setGridData([]);
+      setSaveStatus(null);
+      setProgress(null);
+      setSortConfig(null);
+      setShowImportDrawer(false);
+      setLastImportStats(null);
+      setGlobalSearch('');
+      setFilterRows([]);
+    }
     setDirtyRowIndices(new Set());
     setSelectedRowIds(new Set());
-    setSortConfig(null);
-    setShowImportDrawer(false);
     setImportedFiles([]);
-    setLastImportStats(null);
-    setGlobalSearch('');
-    setFilterRows([]);
     try {
       let rows: any[] = [];
       let fetchedCols: any[] = [];
@@ -444,7 +476,7 @@ const toggleSelectAll = () => {
   const cancelRequestedRef = useRef(false);
 
   // Save Changes to Database with Live Progress Bar & Abort Capability
-  const handleSaveChangesToDatabase = async (rowsToSaveOverride?: any[], usePipeline: boolean = true) => {
+  const handleSaveChangesToDatabase = async (rowsToSaveOverride?: any[], usePipeline: boolean = pendingImportUsePipeline) => {
     cancelRequestedRef.current = false;
     let rowsToSave: any[] = [];
     if (rowsToSaveOverride) {
@@ -474,7 +506,7 @@ const toggleSelectAll = () => {
     });
 
     try {
-      if (selectedTable === "RF Certificates" && rowsToSave.length > 5) {
+      if (selectedTable === "RF Certificates") {
         const CHUNK_SIZE = 100;
         for (let i = 0; i < total; i += CHUNK_SIZE) {
           if (cancelRequestedRef.current) {
@@ -493,8 +525,13 @@ const toggleSelectAll = () => {
             statusText: `Batch saving records ${i + 1} to ${chunkEndIndex} of ${total}... (${pct}%)`
           });
 
-          await api.batchSaveCertificates(chunk);
-          savedCount += chunk.length;
+          try {
+            await api.batchSaveCertificates(chunk);
+            savedCount += chunk.length;
+          } catch (e: any) {
+            console.error("Error batch saving certificates:", e);
+            failedCount += chunk.length;
+          }
         }
       } else if (!isCoreTable) {
         // Batch saving for Custom Dynamic Tables
@@ -567,6 +604,7 @@ const toggleSelectAll = () => {
           setImportedFiles([]);
           setPendingImportRows([]);
           setDirtyRowIndices(new Set());
+          setShowImportDrawer(false);
           setSaveStatus({ message: `Successfully committed ${savedCount} record(s) to Database!`, type: 'success' });
         } else {
           setSaveStatus({ message: `Saved ${savedCount} record(s), ${failedCount} failed.`, type: 'error' });
@@ -577,7 +615,7 @@ const toggleSelectAll = () => {
     } finally {
       setSaving(false);
       setTimeout(() => setProgress(null), 1000);
-      await fetchTableData();
+      await fetchTableData(true);
     }
   };
 
@@ -747,6 +785,17 @@ const formatExcelDate = (val: any): string => {
 
           const normalizeKey = (k: string) => String(k || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
+          const HEADER_ALIASES: Record<string, string[]> = {
+            component: ['component', 'componentmodel', 'componentname', 'model', 'modelname', 'equipment', 'name'],
+            supplier: ['supplier', 'suppliermanufacturer', 'canonicalsupplier', 'manufacturer', 'vendor', 'brand'],
+            country: ['country', 'market', 'nation'],
+            certif_number: ['certifnumber', 'certificateno', 'certificatenumber', 'homologationnumber', 'certno', 'certnumber', 'approvalnumber'],
+            authority: ['authority', 'canonicalauthority', 'regulatoryauthority', 'agency', 'body'],
+            issue_date: ['issuedate', 'approvaldate', 'startdate', 'validfrom'],
+            exp_date: ['expdate', 'expirationdate', 'expirydate', 'validuntil', 'validto', 'enddate'],
+            cert_link: ['certlink', 'pdfdocumentlink', 'doclink', 'docinfolink', 'url', 'link', 'documenturl'],
+          };
+
           const importedRows = rawImportedRows.map(r => {
             if (!r || typeof r !== 'object') return r;
 
@@ -756,10 +805,20 @@ const formatExcelDate = (val: any): string => {
                 if (srcHeader && r[srcHeader] !== undefined && r[srcHeader] !== null) {
                   return r[srcHeader];
                 }
+                const reverseEntry = Object.entries(llmMapping).find(
+                  ([k, v]) => v === targetKey && r[k] !== undefined && r[k] !== null
+                );
+                if (reverseEntry) {
+                  return r[reverseEntry[0]];
+                }
               }
               if (r[targetKey] !== undefined) return r[targetKey];
               const normTarget = normalizeKey(targetKey);
-              const matchKey = Object.keys(r).find(k => normalizeKey(k) === normTarget);
+              const aliases = HEADER_ALIASES[targetKey] || [normTarget];
+              const matchKey = Object.keys(r).find(k => {
+                const nk = normalizeKey(k);
+                return nk === normTarget || aliases.includes(nk);
+              });
               if (matchKey && r[matchKey] !== undefined) return r[matchKey];
               return undefined;
             };
@@ -768,10 +827,10 @@ const formatExcelDate = (val: any): string => {
               const comp = getLlmVal('component') ?? r.component ?? r.Component ?? r.name;
               const rawSuppVal = getLlmVal('supplier') ?? r.supplier ?? r.Supplier ?? r.canonical_supplier;
               const ctry = getLlmVal('country') ?? r.country ?? r.Country;
-              const certNo = getLlmVal('certif_number') ?? r.certif_number ?? r['Certif Number'];
+              const certNo = getLlmVal('certif_number') ?? r.certif_number ?? r['Certif Number'] ?? r['Certificate No.'];
               const auth = getLlmVal('authority') ?? r.authority ?? r.Authority ?? r.canonical_authority;
-              const issueD = usePipeline ? formatExcelDate(getLlmVal('issue_date') ?? r.issue_date ?? r['Issue Date']) : (getLlmVal('issue_date') ?? r.issue_date ?? r['Issue Date'] ?? '');
-              const expD = usePipeline ? formatExcelDate(getLlmVal('exp_date') ?? r.exp_date ?? r.expiration_date ?? r['Expiration Date'] ?? r['Exp Date']) : (getLlmVal('exp_date') ?? r.exp_date ?? r.expiration_date ?? r['Expiration Date'] ?? r['Exp Date'] ?? '');
+              const issueD = formatExcelDate(getLlmVal('issue_date') ?? r.issue_date ?? r['Issue Date']);
+              const expD = formatExcelDate(getLlmVal('exp_date') ?? r.exp_date ?? r.expiration_date ?? r['Expiration Date'] ?? r['Exp Date']);
               const certL = getLlmVal('cert_link') ?? r.cert_link ?? r['PDF Document Link'] ?? r.url;
 
               let suppStr = rawSuppVal !== undefined ? String(rawSuppVal).trim() : '';
@@ -818,9 +877,16 @@ const formatExcelDate = (val: any): string => {
 
           const getSig = (r: any) => {
             if (selectedTable === 'RF Certificates' || selectedTable === 'certificates') {
-              const primary = (r.certif_number || r.component || r.canonical_authority || r.canonical_supplier || r.url || r.memory_key || r.name || '').toString().trim().toLowerCase();
-              const secondary = (r.country || r.supplier || r.authority || '').toString().trim().toLowerCase();
-              return `${primary}::${secondary}`;
+              const fields = [
+                r.component,
+                r.supplier,
+                r.country,
+                r.certif_number,
+                r.authority,
+                r.issue_date,
+                r.exp_date,
+              ].map(v => String(v || '').trim().toLowerCase());
+              return fields.join('::');
             } else {
               const vals = targetFields.map(tf => (r[tf] || '').toString().trim().toLowerCase());
               return vals.join('::');
@@ -828,7 +894,7 @@ const formatExcelDate = (val: any): string => {
           };
 
           const existingSignatures = new Set(
-            [...gridData, ...allNewRows].map(getSig).filter(sig => sig.replace(/:/g, '') !== '')
+            [...gridData, ...pendingImportRows, ...allNewRows].map(getSig).filter(sig => sig.replace(/:/g, '') !== '')
           );
 
           const uniqueRows = importedRows.filter(r => {
@@ -869,16 +935,19 @@ const formatExcelDate = (val: any): string => {
     });
 
     if (allNewRows.length > 0) {
-      setShowImportDrawer(false);
-      await handleSaveChangesToDatabase(allNewRows, usePipeline);
+      setPendingImportUsePipeline(usePipeline);
+      setPendingImportRows(prev => [...allNewRows, ...prev]);
+      setImportedFiles(prev => [...prev, ...newFileEntries]);
+      setShowImportDrawer(true);
 
       const duplicateNote = totalSkippedDuplicatesCount > 0 ? ` (${totalSkippedDuplicatesCount} duplicate row(s) skipped)` : '';
       const modeNote = usePipeline ? ' [Standardized]' : ' [As-Is]';
       setSaveStatus({
-        message: `${newlyAddedFilesCount} file(s) processed${modeNote}: ${newlyAddedRowsCount} new row(s) successfully imported${duplicateNote}.`,
+        message: `${newlyAddedFilesCount} file(s) staged${modeNote}: ${newlyAddedRowsCount} new row(s) ready in Preview${duplicateNote}. Review below and click "Confirm & Import to Database".`,
         type: 'success'
       });
     } else {
+      setShowImportDrawer(true);
       setSaveStatus({
         message: `0 new records to import (all duplicate or empty).`,
         type: 'error'
@@ -1471,6 +1540,26 @@ return (
                   </tbody>
                 </table>
               </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '0.6rem', marginTop: '0.35rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.8rem', color: '#ef4444', borderColor: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.06)' }}
+                  onClick={handleCancelChanges}
+                  disabled={saving}
+                >
+                  <XCircle size={14} /> Discard Queue
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ fontSize: '0.8rem', backgroundColor: '#10b981', borderColor: '#059669' }}
+                  onClick={() => handleSaveChangesToDatabase(undefined, pendingImportUsePipeline)}
+                  disabled={saving}
+                >
+                  <Save size={14} /> {saving ? 'Importing...' : `Confirm & Import ${pendingImportRows.length} Row(s) to Database`}
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -1617,12 +1706,51 @@ return (
                           {col.label}
                         </span>
 
-                        {/* Sort Indicator Arrow */}
-                        {sortConfig && sortConfig.key === col.key ? (
-                          sortConfig.direction === 'asc' ? <ArrowUp size={14} color="var(--brand-blue)" /> : <ArrowDown size={14} color="var(--brand-blue)" />
-                        ) : (
-                          <ArrowUpDown size={12} color="var(--text-tertiary)" style={{ opacity: 0.5 }} />
-                        )}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', flexShrink: 0 }}>
+                          {/* Sort Indicator Arrow */}
+                          {sortConfig && sortConfig.key === col.key ? (
+                            sortConfig.direction === 'asc' ? <ArrowUp size={14} color="var(--brand-blue)" /> : <ArrowDown size={14} color="var(--brand-blue)" />
+                          ) : (
+                            <ArrowUpDown size={12} color="var(--text-tertiary)" style={{ opacity: 0.5 }} />
+                          )}
+
+                          {/* Delete Column Button */}
+                          {isColumnDeletable(col.key) && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setColumnToDelete({ key: col.key, label: col.label });
+                              }}
+                              title={`Delete column "${col.label}"`}
+                              style={{
+                                background: 'transparent',
+                                border: 'none',
+                                cursor: 'pointer',
+                                padding: '2px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                color: 'var(--text-tertiary)',
+                                opacity: 0.6,
+                                borderRadius: '4px',
+                                transition: 'all 0.15s ease'
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.color = '#dc2626';
+                                e.currentTarget.style.opacity = '1';
+                                e.currentTarget.style.backgroundColor = 'rgba(220, 38, 38, 0.1)';
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.color = 'var(--text-tertiary)';
+                                e.currentTarget.style.opacity = '0.6';
+                                e.currentTarget.style.backgroundColor = 'transparent';
+                              }}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          )}
+                        </div>
                       </div>
 
                       {/* Column Resizer Handle */}
@@ -2297,6 +2425,112 @@ return (
               </button>
             </div>
           </form>
+        </div>
+      </div>
+    )}
+
+    {/* Delete Custom Column Confirmation Modal */}
+    {columnToDelete && (
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.55)',
+          backdropFilter: 'blur(3px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1200,
+          padding: '1rem'
+        }}
+        onClick={() => {
+          if (!deletingColumn) setColumnToDelete(null);
+        }}
+      >
+        <div
+          style={{
+            backgroundColor: 'var(--bg-surface)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '12px',
+            width: '100%',
+            maxWidth: '440px',
+            padding: '1.4rem',
+            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.25)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1.1rem'
+          }}
+          onClick={e => e.stopPropagation()}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+              <div style={{ padding: '0.45rem', borderRadius: '8px', backgroundColor: 'rgba(220, 38, 38, 0.1)', color: '#dc2626' }}>
+                <Trash2 size={18} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  Delete Column
+                </h3>
+                <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                  Table: "{selectedTable}"
+                </p>
+              </div>
+            </div>
+            <button
+              className="btn btn-secondary"
+              style={{ padding: '0.35rem', border: 'none', backgroundColor: 'transparent' }}
+              onClick={() => setColumnToDelete(null)}
+              disabled={deletingColumn}
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-primary)', lineHeight: 1.5 }}>
+            Are you sure you want to permanently delete the column <strong>"{columnToDelete.label}"</strong> (<code>{columnToDelete.key}</code>)?
+          </p>
+          <div style={{ padding: '0.65rem 0.8rem', borderRadius: '8px', backgroundColor: 'rgba(220, 38, 38, 0.08)', border: '1px solid rgba(220, 38, 38, 0.2)', fontSize: '0.78rem', color: '#dc2626', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <AlertCircle size={15} style={{ flexShrink: 0 }} />
+            <span>This action cannot be undone. All stored data in this column will be permanently dropped from the database.</span>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', marginTop: '0.3rem' }}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setColumnToDelete(null)}
+              disabled={deletingColumn}
+              style={{ fontSize: '0.82rem' }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={handleDeleteColumnConfirm}
+              disabled={deletingColumn}
+              style={{
+                fontSize: '0.82rem',
+                backgroundColor: '#dc2626',
+                color: '#fff',
+                border: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                cursor: deletingColumn ? 'not-allowed' : 'pointer'
+              }}
+            >
+              {deletingColumn ? (
+                <>
+                  <Loader2 size={14} className="spin" /> Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 size={14} /> Delete Column
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     )}

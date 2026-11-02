@@ -1,5 +1,5 @@
 # Project Handoff Report — RF Compliance Platform
-**Date:** 2026-09-15  
+**Date:** 2026-11-02  
 **Status:** LIVE IN PRODUCTION on GCP NVIDIA L4 Host  
 **Primary LLM:** Qwen3.8-27B GGUF UD-IQ3_XXS (`qwen3.8-27b-gguf`, 3-bit, 32k context)  
 **Primary OCR:** GLM-OCR (pure-HF transformers, `glm-ocr`)  
@@ -322,18 +322,10 @@ A generalized, table-agnostic data onboarding architecture designed for importin
    - **Cross-Column Data Rescue:** If mismatched data is detected (e.g. an email address inside a `phone` column), the system rescues the value into the `email` column if present in the target table; otherwise it clears the invalid cell.
 
 3. **Unified Long-Term Memory Architecture (`agent_memories` table):**
-   - All tables (built-in and dynamic) adhere to a canonical 5-key JSON schema:
-     ```json
-     {
-       "table_name": "Responsibles",
-       "description": "User defined dynamic database table for Responsibles.",
-       "target_fields": ["FirstName", "LastName", "Phone", "Email", "Mission/Comment"],
-       "registered_at": "2026-09-05T20:08:19.891464",
-       "last_updated": "2026-09-05T20:08:19.891464"
-     }
-     ```
-   - Legacy `sample_formatting` was eliminated across all memories in favor of zero-shot column-name-as-intent inference.
-   - Provides **Agent Context Awareness**: the AI agent understands the entire platform data landscape, table purposes, and available columns across sessions.
+   - Long-Term Memory (`core/agent/memory.py::format_memories_for_prompt`) is the **single source of truth** across all 13 prompt builders (`config_*` functions in `core/prompts.py`).
+   - All table schema entries use canonical physical PostgreSQL table names (`table_schema:certificates`, `table_schema:authority_lookups`, `table_schema:supplier_lookups`, `table_schema:sources`, `table_schema:agent_memories`, `table_schema:responsibles`, plus custom tables) and are dynamically enriched at prompt-generation time with live column names and PostgreSQL data types (`information_schema.columns`).
+   - Legacy `sample_formatting` and duplicate display-name schema keys (`table_schema:rf certificates`, `table_schema:authorities`, etc.) were eliminated in favor of zero-shot typed schema truth.
+   - Provides **Agent Context Awareness**: every prompt (routing, SQL generation, QA synthesis, casual conversation, action planning, action synthesis, approval classification, header mapping, batch standardization, scraper relevance, data conversion, query rewriting, extraction) shares the same authoritative knowledge of agent identity, capabilities, registered tools, and typed table schemas while keeping individual sub-prompts clean and task-specific.
 
 ---
 
@@ -516,10 +508,28 @@ cd frontend && npm run dev
 ### C. Non-Blocking Fast Semantic Profiling
 - **Sub-Millisecond Table Loading:** Replaced synchronous 27B LLM column profiling in `GET /api/v1/schema/tables/{table_name}/data` with [`fast_profile_table_columns`](file:///home/mouadnadzi3/rf-compliance-platform/server/main.py), reducing database table view response latency from 15-30s hanging to **37 milliseconds**.
 
-### D. 3-Tier Agent Memory Synchronization & Integrity
-- **Database `UNIQUE` Constraint:** Enforced `UNIQUE (memory_key)` on PostgreSQL table `agent_memories`.
-- **Real-Time Schema Memory Sync:** Wired [`sync_table_schema_memory`](file:///home/mouadnadzi3/rf-compliance-platform/storage/dynamic_schema.py) into all DDL mutation actions.
-- **Self-Healing Orphan Cleaner:** Automated [`cleanup_orphaned_schema_memories`](file:///home/mouadnadzi3/rf-compliance-platform/storage/dynamic_schema.py) purges stale `table_schema:` memories if tables are dropped manually outside the app.
+### E. Unified RF Certificate Normalization Engine (`core/normalization.py`)
+- **Centralized Normalization Rule:** Consolidated all country canonicalization (`USA`/`U.S.A.` -> `United States`, `UK` -> `United Kingdom`, `UAE` -> `United Arab Emirates`, etc.), supplier canonicalization, authority abbreviation resolution, and date formatting into [`core/normalization.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/normalization.py).
+- **Universal Pathway Integration:** Integrated into PDF extraction ([`core/extractor.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/extractor.py)), batch Excel/CSV import ([`server/main.py`](file:///home/mouadnadzi3/rf-compliance-platform/server/main.py)), single certificate save ([`server/main.py`](file:///home/mouadnadzi3/rf-compliance-platform/server/main.py)), recycle bin recovery, and startup database seeding ([`storage/seed_lookups.py`](file:///home/mouadnadzi3/rf-compliance-platform/storage/seed_lookups.py)).
+- **Database Migration:** Migrated 48 historical database records to canonical standards with zero data loss.
+
+### F. Systemic Prompt, Tooling, Scraper, & Database Mutation Architecture (2026-11-02)
+- **Single-Source-of-Truth Prompt Architecture (`core/prompts.py`, `core/agent/memory.py`, `server/main.py`):**
+  - Refactored all 13 prompt builders (`config_*` in [`core/prompts.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/prompts.py)) to inject Long-Term Memory via `_with_long_term_memory()`. Sub-prompts contain only their task-specific role and JSON output contract.
+  - Canonicalized all `table_schema:<physical_table_name>` entries in `agent_memories`, purged legacy display-name duplicates and nonexistent columns (`last_update`), and enriched `format_memories_for_prompt()` with live PostgreSQL column names and data types from `information_schema.columns`.
+- **Schema-Typed Literal Binding & SQL Delegation (`core/agent/db_editor.py`, `core/agent/tools.py`):**
+  - Removed narrow regex heuristics (`_normalize_table_name`, `_normalize_column_value`, `_is_like_filter`, `_normalize_filter_item`) from [`core/agent/db_editor.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/db_editor.py).
+  - Added [`_validate_typed_literal()`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/db_editor.py#L65-L105) to validate literal mutations strictly against live PostgreSQL column data types (`date`, `integer`/`numeric`, `text`) without mutating 4-digit strings in text columns (e.g. `component='2008'`).
+  - Wired [`UpdateRecordTool`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/tools.py#L931-L986) and [`DeleteRecordTool`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/tools.py#L877-L929) to delegate non-literal or conditional transformations directly to [`ExecuteRawSQLTool`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/tools.py#L783-L874), which generates standard PostgreSQL against the live typed schema using `response_prefix='{"sql_query":'`.
+- **Multi-Step Write Execution & Deterministic Error Propagation (`core/rag/orchestrator.py`, `core/agent/agent_loop.py`):**
+  - Updated [`answer_compliance_query_stream()`](file:///home/mouadnadzi3/rf-compliance-platform/core/rag/orchestrator.py#L766-L888) and [`_handle_chat_approval_stream()`](file:///home/mouadnadzi3/rf-compliance-platform/core/rag/orchestrator.py#L275-L349) to execute all planned `write_steps` sequentially (supporting compound operations such as `combine_columns` followed by `drop_columns`), with exception-based failure tracking (`step_failed`) and full payload preservation in [`stage_write_step()`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/agent_loop.py#L292-L379).
+- **Headless Browser Portal Scraping & Session-Scoped Artifacts (`Dockerfile`, `core/agent/scraper.py`, `core/agent/tools.py`, `core/agent/agent_loop.py`):**
+  - Installed Playwright Chromium (`playwright install --with-deps chromium`) in [`Dockerfile`](file:///home/mouadnadzi3/rf-compliance-platform/Dockerfile) for JS-rendered SPA portals.
+  - Scoped `_PDF_HINT_RE` in [`core/agent/scraper.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/scraper.py) to URL path+query (excluding domain names), removed duplicate `WebDownloaderTool` from `get_tool_registry()`, and replaced the process-global `_SHARED_ARTIFACTS` singleton with session-scoped [`extract_artifacts_from_history()`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/agent_loop.py#L50-L96).
+- **Excel Import Preview Modal, Scoped Chat Bubble CSS, & Uniform `response_prefix` (`core/base.py`, `core/llm/*`, `frontend/`):**
+  - Restored the interactive Preview & Mapping modal in [`frontend/src/views/DatabasesView.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/DatabasesView.tsx), added balanced JSON array/object extraction in [`core/base.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/base.py), and normalized bidirectional header mappings in `/api/v1/databases/map-headers`.
+  - Replaced inline `isUser` style overrides in [`frontend/src/components/Chat/ChatMessage.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/components/Chat/ChatMessage.tsx) and [`frontend/src/views/ChatView.css`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/ChatView.css) with scoped CSS custom properties (`--msg-text-color`, `--msg-accent-color`, `--msg-code-bg`, `--msg-quote-bg`, `--msg-border-color`).
+  - Standardized `response_prefix: str = ""` across `BaseLLMEngine` and all 7 LLM engine implementations in `core/llm/`.
 
 ---
 
@@ -527,41 +537,45 @@ cd frontend && npm run dev
 
 | Milestone | Status |
 |---|---|
-| Core FastAPI backend + PostgreSQL + pgvector schema | ✅ |
-| GLM-OCR pure-HF backend (replaced vLLM) | ✅ |
-| Qwen3.8-27B GGUF production LLM | ✅ |
-| OCR + LLM VRAM coexistence (no sequential unloading) | ✅ |
-| Deterministic 7-field extraction pipeline | ✅ |
-| Bidirectional Authority ↔ Country ↔ Supplier auto-fill | ✅ |
-| 183 global regulatory authority knowledge base | ✅ |
-| Empty cell invariance (zero placeholder strings) | ✅ |
-| Excel bulk import with LLM header mapping | ✅ |
-| RAG Q&A (intent router + SQL + hybrid dense retrieval) | ✅ |
-| SSE token-streaming chat | ✅ |
-| Chat session persistence (PostgreSQL) | ✅ |
-| Long-term AI memory (agent_memories) | ✅ |
-| HITL agentic proposal pipeline | ✅ |
-| Autonomous PDF scraper + scheduler | ✅ |
-| Dynamic multi-table database management | ✅ |
-| Recycle bin with record recovery | ✅ |
-| In-app AI notification system | ✅ |
-| React 18 TypeScript SPA frontend | ✅ |
-| Streamlit UI fully decommissioned | ✅ |
-| Port 8501 released; port 8000 only | ✅ |
-| Stale model cache purged (IQ1_M 6.3 GB removed) | ✅ |
-| Transparent duplicate import UX reporting (Scenario A & B) | ✅ |
-| Unified supplier canonicalization (PDF + CSV/Excel parity) | ✅ |
-| Database cleanup migration (1,314 supplier records standardized) | ✅ |
-| Bidirectional Authority ↔ Country DB auto-fill (18 records updated) | ✅ |
-| Long-Term Memory tool capabilities retrieval & casual prompt injection | ✅ |
-| AI Diffing batch standardizer (`llm_standardize_batch`) — 10x throughput boost | ✅ |
-| Strict column type enforcement with cross-column data rescue | ✅ |
-| Unified 5-key Long-Term Memory table schema architecture | ✅ |
-| Legacy `sample_formatting` memory purged in favor of zero-shot column intent | ✅ |
-| Raw Query Intent Routing & vector rewriter isolation | ✅ |
-| Bulk schema modification engine (`drop_columns`, `combine_columns`, `add_columns`) | ✅ |
-| Non-blocking fast semantic column profiler (37ms table data latency) | ✅ |
-| 3-Tier Agent Memory synchronization & PostgreSQL `UNIQUE` key integrity | ✅ |
+| Core FastAPI backend + PostgreSQL + pgvector schema | Completed |
+| GLM-OCR pure-HF backend (replaced vLLM) | Completed |
+| Qwen3.8-27B GGUF production LLM | Completed |
+| OCR + LLM VRAM coexistence (no sequential unloading) | Completed |
+| Deterministic 7-field extraction pipeline | Completed |
+| Bidirectional Authority / Country / Supplier auto-fill | Completed |
+| 183 global regulatory authority knowledge base | Completed |
+| Empty cell invariance (zero placeholder strings) | Completed |
+| Excel bulk import with LLM header mapping & preview modal | Completed |
+| RAG Q&A (intent router + SQL + hybrid dense retrieval) | Completed |
+| SSE token-streaming chat | Completed |
+| Chat session persistence (PostgreSQL) | Completed |
+| Long-term AI memory (agent_memories) | Completed |
+| HITL agentic proposal pipeline | Completed |
+| Autonomous PDF scraper + Playwright headless browser + scheduler | Completed |
+| Dynamic multi-table database management | Completed |
+| Recycle bin with record recovery | Completed |
+| In-app AI notification system | Completed |
+| React 18 TypeScript SPA frontend | Completed |
+| Streamlit UI fully decommissioned | Completed |
+| Port 8501 released; port 8000 only | Completed |
+| Stale model cache purged (IQ1_M 6.3 GB removed) | Completed |
+| Transparent duplicate import UX reporting (Scenario A & B) | Completed |
+| Unified supplier canonicalization (PDF + CSV/Excel parity) | Completed |
+| Database cleanup migration (1,314 supplier records standardized) | Completed |
+| Bidirectional Authority / Country DB auto-fill (18 records updated) | Completed |
+| Long-Term Memory single source of truth across all 13 prompt builders | Completed |
+| AI Diffing batch standardizer (`llm_standardize_batch`) — 10x throughput boost | Completed |
+| Strict column type enforcement with cross-column data rescue | Completed |
+| Canonical physical-table Long-Term Memory schema with live PostgreSQL data types | Completed |
+| Legacy `sample_formatting` memory purged in favor of zero-shot column intent | Completed |
+| Lazy query reformulation & vector rewriter isolation | Completed |
+| Bulk schema modification engine (`drop_columns`, `combine_columns`, `add_columns`) | Completed |
+| Multi-step write plan execution & deterministic exception-based error handling | Completed |
+| Schema-typed literal validation in `db_editor.py` + `ExecuteRawSQLTool` delegation | Completed |
+| Session-scoped `extract_artifacts_from_history` (no global mutable singletons) | Completed |
+| Non-blocking fast semantic column profiler (37ms table data latency) | Completed |
+| 3-Tier Agent Memory synchronization & PostgreSQL `UNIQUE` key integrity | Completed |
+| Unified RF Certificate Normalization Engine across all ingestion pathways (`core/normalization.py`) | Completed |
 
 ---
 
@@ -585,6 +599,7 @@ cd frontend && npm run dev
 |---|---|
 | [`server/main.py`](file:///home/mouadnadzi3/rf-compliance-platform/server/main.py) | All API endpoints, batch save, AI Diffing standardizer, fast column profiler |
 | [`server/config.py`](file:///home/mouadnadzi3/rf-compliance-platform/server/config.py) | Central config (engine selection, VRAM limits, paths) |
+| [`core/normalization.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/normalization.py) | Unified RF certificate normalizer (country, supplier, authority, date, empty cell invariance) |
 | [`core/extractor.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/extractor.py) | PDF ingestion pipeline + notification creation |
 | [`core/llm/qwen3_8_27b.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/llm/qwen3_8_27b.py) | Active production LLM engine |
 | [`core/ocr/glm_ocr.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/ocr/glm_ocr.py) | Active production OCR engine |
@@ -592,7 +607,7 @@ cd frontend && npm run dev
 | [`core/agent/tools.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/tools.py) | Registered agent tool registry & bulk schema tools |
 | [`storage/dynamic_schema.py`](file:///home/mouadnadzi3/rf-compliance-platform/storage/dynamic_schema.py) | Dynamic PostgreSQL DDL/DML & automatic memory sync |
 | [`schemas/extraction.py`](file:///home/mouadnadzi3/rf-compliance-platform/schemas/extraction.py) | All SQLAlchemy ORM models with unique constraints |
-| [`storage/seed_lookups.py`](file:///home/mouadnadzi3/rf-compliance-platform/storage/seed_lookups.py) | Authority/supplier knowledge base seeder |
+| [`storage/seed_lookups.py`](file:///home/mouadnadzi3/rf-compliance-platform/storage/seed_lookups.py) | Authority/supplier knowledge base seeder & DB migration |
 | [`data/lookups/authorities.json`](file:///home/mouadnadzi3/rf-compliance-platform/data/lookups/authorities.json) | 183 global regulatory authority definitions |
 | [`frontend/src/views/DatabasesView.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/DatabasesView.tsx) | Main compliance table UI + import workflow |
 | [`frontend/src/components/Navbar/Navbar.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/components/Navbar/Navbar.tsx) | Notification bell + unread badge |
@@ -601,4 +616,4 @@ cd frontend && npm run dev
 
 ---
 
-*Last updated: 2026-09-15 | Branch: `main`*
+*Last updated: 2026-11-02 | Branch: `main`*

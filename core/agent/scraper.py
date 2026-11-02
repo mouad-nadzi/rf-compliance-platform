@@ -279,12 +279,14 @@ def extract_links(html: str, base_url: str) -> List[DiscoveredLink]:
         if abs_url in seen:
             continue
         seen.add(abs_url)
+        parsed_abs = urlparse(abs_url)
+        path_and_query = f"{parsed_abs.path}?{parsed_abs.query}" if parsed_abs.query else parsed_abs.path
         links.append(
             DiscoveredLink(
                 url=abs_url,
                 source_page=base_url,
                 anchor_text=anchor,
-                is_pdf_hint=bool(_PDF_HINT_RE.search(abs_url)),
+                is_pdf_hint=bool(_PDF_HINT_RE.search(path_and_query)),
             )
         )
     return links
@@ -335,7 +337,7 @@ def filter_pdf_links_with_llm(
     Returns (selected_urls, reason). On LLM failure, falls back to the PDF-hint
     candidates to bound drift.
     """
-    from core.prompts import PDF_LINK_SELECTION_SYSTEM_PROMPT
+    from core.prompts import config_pdf_link_selection_system_prompt
     from core.llm import generate_json
 
     if not links:
@@ -349,9 +351,10 @@ def filter_pdf_links_with_llm(
     )
     try:
         raw_response = generate_json(
-            system_prompt=PDF_LINK_SELECTION_SYSTEM_PROMPT,
+            system_prompt=config_pdf_link_selection_system_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
+            response_prefix='{"selected_urls":',
         )
         parsed = json.loads(raw_response)
         if isinstance(parsed, dict):

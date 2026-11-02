@@ -37,11 +37,63 @@ class Step:
 
 @dataclass
 class RunArtifacts:
-    """State produced by read steps, consumed by write steps."""
+    """Session-scoped state produced by read steps or reconstructed from conversation history, consumed by write steps."""
     source_url: str = ""
     verified_urls: List[str] = field(default_factory=list)
     file_paths: List[str] = field(default_factory=list)
     checked_report: str = ""
+
+
+_INLINE_URL_RE = re.compile(r"https?://[^\s'\"<>)\]]+")
+
+
+def extract_artifacts_from_history(
+    history: Optional[List[Dict[str, str]]] = None,
+    explicit_urls: Optional[List[str]] = None,
+) -> RunArtifacts:
+    """
+    Reconstruct session-scoped RunArtifacts (source portal URLs and discovered PDF URLs)
+    directly from the current conversation's history and explicit query URLs.
+    Eliminates process-global state so sessions never collide and state survives restarts.
+    """
+    explicit = [u.rstrip(".,;").strip() for u in (explicit_urls or []) if u and u.strip()]
+    explicit_pdfs = [u for u in explicit if u.lower().split("?")[0].endswith(".pdf")]
+    explicit_portals = [u for u in explicit if u not in explicit_pdfs]
+
+    history_pdfs: List[str] = []
+    history_portals: List[str] = []
+
+    if history:
+        for turn in reversed(history):
+            content = str(turn.get("content", "") or "")
+            matches = [m.rstrip(".,;").strip() for m in _INLINE_URL_RE.findall(content) if m.strip()]
+            turn_pdfs = [u for u in matches if u.lower().split("?")[0].endswith(".pdf")]
+            turn_portals = [u for u in matches if u not in turn_pdfs]
+            if turn_pdfs and not history_pdfs:
+                for u in turn_pdfs:
+                    if u not in history_pdfs:
+                        history_pdfs.append(u)
+            for u in turn_portals:
+                if u not in history_portals:
+                    history_portals.append(u)
+
+    # If the user explicitly supplied a new portal URL not seen in history, start fresh for that portal
+    if explicit_portals and history_portals and explicit_portals[0] not in history_portals:
+        return RunArtifacts(
+            source_url=", ".join(explicit_portals),
+            verified_urls=list(explicit_pdfs),
+        )
+
+    portal_urls = explicit_portals or history_portals[:1]
+    verified_urls = list(explicit_pdfs)
+    for u in history_pdfs:
+        if u not in verified_urls:
+            verified_urls.append(u)
+
+    return RunArtifacts(
+        source_url=", ".join(portal_urls),
+        verified_urls=verified_urls,
+    )
 
 
 def get_registered_actions_prompt_block() -> str:
@@ -50,32 +102,58 @@ def get_registered_actions_prompt_block() -> str:
     registry = get_tool_registry()
     lines = []
     for idx, (name, tool) in enumerate(registry.items(), 1):
-        doc = (tool.__doc__ or "").strip().split("\\n")[0] if tool.__doc__ else name
+        doc = (tool.__doc__ or "").strip().splitlines()[0].strip() if tool.__doc__ else name
         if ":" in doc:
             doc = doc.split(":", 1)[1].strip()
         kind = "write" if tool.requires_approval else "read"
         req_approval = "THIS IS A DATABASE WRITE and requires human approval." if kind == "write" else "NO side effect, NO permission needed."
         lines.append(f'{idx}. "{name}" (kind "{kind}"): {doc} {req_approval}')
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 
 from core.utils.history import format_conversation_history as _format_history_block
 
 
+# The prefix injected into the assistant turn of every planner call.
+# llama.cpp's echo=False means the model's output starts AFTER these tokens,
+# so the model is physically forced to continue the JSON object — it cannot
+# produce a flat dict or any other format.
+_PLAN_SCHEMA_PREFIX = '{"is_direct_command":'
+
+
 def _llm_plan(
     query: str,
     urls: List[str],
     history: Optional[List[Dict[str, str]]] = None,
+    error_feedback: str = "",
 ) -> PlanResult:
-    """Ask the LLM to decompose the query into steps; returns PlanResult with empty steps on failure."""
+    """
+    Ask the LLM to decompose the query into a structured plan.
+
+    Uses response prefix injection: the assistant turn is pre-filled with
+    '{"is_direct_command":' so the model is forced at the token level to
+    continue with the correct schema. This eliminates the flat-dict failure
+    mode without any query-specific heuristics or retries.
+
+    When error_feedback is provided (ReAct retry loop), it is injected into
+    the user prompt so the planner can correct its previous failed step.
+
+    Returns PlanResult with empty steps on JSON parse failure.
+    """
     from core.prompts import config_planner_system_prompt
     from core.llm import generate_json
 
     history_text = _format_history_block(history)
     urls_formatted = ", ".join(urls) if urls else ""
+    error_block = (
+        f"PREVIOUS EXECUTION ERROR (re-plan to fix this):\n{error_feedback}\n\n"
+        if error_feedback
+        else ""
+    )
     user_prompt = (
         (f"{history_text}\n\n" if history_text else "")
+        + error_block
         + f"USER REQUEST: {query}\n\n"
         + (f"ACTIVE URL(S): {urls_formatted}\n\n" if urls_formatted else "")
         + "Return ONLY the raw JSON output matching the schema."
@@ -86,29 +164,32 @@ def _llm_plan(
             system_prompt=config_planner_system_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
+            response_prefix=_PLAN_SCHEMA_PREFIX,
         )
+        logger.info(f"PLANNER RAW RESPONSE:\n{raw_response}")
         parsed = json.loads(raw_response)
+
         is_direct = bool(parsed.get("is_direct_command", False))
         steps: List[Step] = []
+        from core.agent.tools import get_tool_registry
+        registry = get_tool_registry()
+
         for item in parsed.get("steps", []):
             action = str(item.get("action", "")).strip()
-            from core.agent.tools import get_tool_registry
-            registry = get_tool_registry()
             if action not in registry:
                 continue
             tool = registry[action]
             kind = "write" if tool.requires_approval else "read"
-            
-            # Dynamically ingest all schema-driven parameters from the planner
+
             payload: Dict[str, Any] = {}
             if primary_url:
                 payload["url"] = primary_url
                 payload["urls"] = urls
-            
+
             for k, v in item.items():
                 if k not in ("action", "kind", "description") and v is not None:
                     payload[k] = v
-            
+
             if "certificate_id" in payload and "target_id" not in payload:
                 payload["target_id"] = str(payload["certificate_id"])
 
@@ -122,20 +203,28 @@ def _llm_plan(
             )
         return PlanResult(steps=steps, is_direct_command=is_direct)
     except Exception as exc:
-        logger.warning(f" Agent planner failed ({exc}); using deterministic fallback.")
+        logger.warning(f" Agent planner failed ({exc}); returning empty plan.")
         return PlanResult(steps=[], is_direct_command=False)
+
+
 
 
 def plan_agent_action(
     query: str,
     urls: Union[str, List[str], None] = None,
     history: Optional[List[Dict[str, str]]] = None,
+    error_feedback: str = "",
 ) -> PlanResult:
     """
     Decompose an AGENT_ACTION query into a step plan using the LLM planner.
 
     Supports single URL strings or lists of URLs. If no URLs are provided,
     extracts all URLs from current query text.
+
+    error_feedback is used by the ReAct retry loop in orchestrator.py: when
+    a previous execution attempt failed, the error message is injected into
+    the planner prompt so it can correct its plan.
+
     Returns PlanResult with empty steps if no registered tool matches the request.
     """
     url_list: List[str] = []
@@ -144,18 +233,26 @@ def plan_agent_action(
     elif isinstance(urls, list):
         url_list = [u.strip() for u in urls if u and isinstance(u, str)]
 
-    # URL matcher for inline extraction
-    _url_re = re.compile(r"https?://[^\s'\"<>]+")
-
-    # If no URLs passed explicitly, extract all URLs from query text
+    # If no URLs passed explicitly, extract from query text or session history
     if not url_list:
-        matches = _url_re.findall(query or "")
+        matches = _INLINE_URL_RE.findall(query or "")
         for m in matches:
             u = m.rstrip(".,;").strip()
             if u and u not in url_list:
                 url_list.append(u)
 
-    plan_result = _llm_plan(query, url_list, history)
+    if not url_list and history:
+        hist_artifacts = extract_artifacts_from_history(history)
+        if hist_artifacts.source_url:
+            for u in hist_artifacts.source_url.split(","):
+                u = u.strip()
+                if u and u not in url_list:
+                    url_list.append(u)
+        for u in hist_artifacts.verified_urls:
+            if u not in url_list:
+                url_list.append(u)
+
+    plan_result = _llm_plan(query, url_list, history, error_feedback=error_feedback)
 
     # Ensure URL(s) are populated in step payloads if active URLs are present
     primary_url = url_list[0] if url_list else ""
@@ -258,7 +355,8 @@ def stage_write_step(write_step: Step, artifacts: RunArtifacts) -> Dict[str, Any
     elif target_file and target_file not in desc:
         desc = f"{desc} ({target_file})"
 
-    payload = {
+    payload = dict(write_step.payload)
+    payload.update({
         "action": write_step.action,
         "description": desc,
         "source_url": artifacts.source_url,
@@ -269,9 +367,7 @@ def stage_write_step(write_step: Step, artifacts: RunArtifacts) -> Dict[str, Any
         "filters": filters,
         "delete_all": delete_all,
         "row_filter": row_filter,
-    }
-    if "table_name" in write_step.payload:
-        payload["table_name"] = write_step.payload["table_name"]
+    })
 
     write_step.description = desc
 
@@ -296,7 +392,7 @@ def resolve_write_step(
     action = payload.get("action")
     tool = registry.get(action)
     if tool is None:
-        return "I couldn't resolve this action."
+        raise ValueError(f"Unknown write action '{action}'.")
         
     artifacts = RunArtifacts(
         source_url=payload.get("source_url", ""),

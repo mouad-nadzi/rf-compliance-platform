@@ -170,7 +170,7 @@ class Qwen3_8_27BEngine(BaseLLMEngine):
 
 # ── BaseLLMEngine hook ───────────────────────────────────────────────────
 
-    def _build_prompt(self, system_prompt: str, user_prompt: str, disable_thinking: bool) -> str:
+    def _build_prompt(self, system_prompt: str, user_prompt: str, disable_thinking: bool, response_prefix: str = "") -> str:
         """Assemble ChatML prompt with Qwen3 soft mode tag."""
         if not system_prompt:
             system_prompt = (
@@ -189,7 +189,7 @@ class Qwen3_8_27BEngine(BaseLLMEngine):
         return (
             f"<|im_start|>system\n{system_prompt}\n<|im_end|>\n"
             f"<|im_start|>user\n{user_prompt}\n<|im_end|>\n"
-            f"<|im_start|>assistant\n"
+            f"<|im_start|>assistant\n{response_prefix}"
         )
 
     def _sampling_params(self, disable_thinking: bool) -> Dict[str, Any]:
@@ -207,11 +207,12 @@ class Qwen3_8_27BEngine(BaseLLMEngine):
         user_prompt: str,
         disable_thinking: bool = False,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        response_prefix: str = "",
     ) -> str:
         """
         Assemble ChatML prompt (handling Qwen3.8 empty  thinking block) and execute completion.
         """
-        prompt = self._build_prompt(system_prompt, user_prompt, disable_thinking)
+        prompt = self._build_prompt(system_prompt, user_prompt, disable_thinking, response_prefix)
 
         response = self._llm(
             prompt,

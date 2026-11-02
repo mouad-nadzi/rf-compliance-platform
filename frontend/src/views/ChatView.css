@@ -126,11 +126,16 @@
 
 /* Modern Large Fixed-Width User Query Box */
 .message-row.user .message-bubble {
+  --msg-text-color: #ffffff;
+  --msg-accent-color: #ffffff;
+  --msg-code-bg: rgba(255, 255, 255, 0.2);
+  --msg-quote-bg: rgba(255, 255, 255, 0.12);
+  --msg-border-color: rgba(255, 255, 255, 0.3);
   width: 80%;
   max-width: 720px;
   padding: 1.1rem 1.4rem;
   background-color: var(--brand-blue);
-  color: #ffffff;
+  color: var(--msg-text-color);
   border-radius: 20px 20px 4px 20px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
   font-weight: 400;
@@ -141,10 +146,15 @@
 
 /* Agent Answer WITHOUT Box */
 .message-row.assistant .message-bubble {
+  --msg-text-color: var(--text-primary);
+  --msg-accent-color: var(--brand-blue);
+  --msg-code-bg: rgba(0, 0, 0, 0.06);
+  --msg-quote-bg: rgba(36, 56, 129, 0.04);
+  --msg-border-color: var(--border-color);
   width: 100%;
   background: transparent !important;
   background-color: transparent !important;
-  color: var(--text-primary);
+  color: var(--msg-text-color);
   border: none !important;
   box-shadow: none !important;
   padding: 0.25rem 0 !important;

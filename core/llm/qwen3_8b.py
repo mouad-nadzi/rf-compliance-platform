@@ -154,6 +154,7 @@ class Qwen3_8BGGUFEngine(BaseLLMEngine):
         user_prompt: str,
         disable_thinking: bool = False,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        response_prefix: str = "",
     ) -> str:
         """
         Assemble ChatML prompt with Qwen3 soft mode tag and execute completion.
@@ -176,6 +177,8 @@ class Qwen3_8BGGUFEngine(BaseLLMEngine):
             f"<|im_start|>user\n{user_prompt}\n<|im_end|>\n"
             f"<|im_start|>assistant\n"
         )
+        if response_prefix:
+            prompt = f"{prompt}{response_prefix}"
         temp = 0.7 if disable_thinking else 0.6
         top_p = 0.8 if disable_thinking else 0.95
 
@@ -187,4 +190,5 @@ class Qwen3_8BGGUFEngine(BaseLLMEngine):
             echo=False,
             stop=["<|im_end|>", "<|endoftext|>"],
         )
-        return response["choices"][0]["text"]
+        text = response["choices"][0]["text"]
+        return f"{response_prefix}{text}" if response_prefix else text

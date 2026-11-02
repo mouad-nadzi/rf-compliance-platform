@@ -22,9 +22,10 @@ _TMP_PDF_IMAGE_PATTERN = "temp_cert_page_{}.jpg"
 
 #: Reasoning-trace markers emitted by models before JSON answers.
 _THINKING_BLOCK_RE = re.compile(r"\s*<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL)
+_UNCLOSED_THINK_RE = re.compile(r"\s*<think(?:ing)?>.*$", re.DOTALL)
 _COT_BLOCK_RE = re.compile(r"\s*thinking.*?response\s*", re.DOTALL)
 _CHANNEL_BLOCK_RE = re.compile(r"\s*<\|channel\>.*?<channel\|\>\s*", re.DOTALL)
-_STRAY_THINK_TAG_RE = re.compile(r"\s*</?think>", re.DOTALL)
+_STRAY_THINK_TAG_RE = re.compile(r"\s*</?think(?:ing)?>", re.DOTALL)
 _FENCE_RE = re.compile(r"^\s*```[a-zA-Z]*\s*$|^```\s*$", re.MULTILINE)
 
 #: Balanced-brace JSON object matcher (handles nested braces up to 3 levels).
@@ -39,6 +40,7 @@ def strip_reasoning_traces(raw_content: str) -> str:
     """
     content = raw_content.strip()
     content = _THINKING_BLOCK_RE.sub("", content).strip()
+    content = _UNCLOSED_THINK_RE.sub("", content).strip()
     content = _COT_BLOCK_RE.sub("", content).strip()
     content = _CHANNEL_BLOCK_RE.sub("", content).strip()
     content = _STRAY_THINK_TAG_RE.sub("", content).strip()
@@ -51,47 +53,55 @@ def extract_json(raw_content: str) -> str:
     Parse or extract a strict JSON string from raw model output.
 
     Ladder (in order):
-      1. Scan raw content for a balanced-brace JSON object that parses.
-      2. Direct json.loads() on raw content.
-      3. Scrub reasoning traces, then re-run direct parse & balanced scan.
-      4. Fallback to "{}" if unparseable.
+      1. Scrub reasoning traces unconditionally first so JSON inside <think> is never matched.
+      2. Direct json.loads() on scrubbed content (if non-empty).
+      3. Scan scrubbed content with JSONDecoder.raw_decode (arbitrary nesting depth),
+         preferring the first non-empty JSON object over a leading empty "{}".
+      4. Fallback to scanning raw content if unclosed <think> contained the only JSON.
+      5. Fallback to "{}" if unparseable.
     """
     if not raw_content:
         return "{}"
 
+    decoder = json.JSONDecoder()
+
     def _first_parseable(candidate_text: str) -> str | None:
-        for json_match in _BALANCED_JSON_RE.finditer(candidate_text):
-            candidate = json_match.group(0)
+        fallback_empty: str | None = None
+        idx = 0
+        n = len(candidate_text)
+        while idx < n:
+            brace_pos = candidate_text.find("{", idx)
+            if brace_pos == -1:
+                break
             try:
-                json.loads(candidate)
-                return candidate
+                parsed, end_pos = decoder.raw_decode(candidate_text, brace_pos)
+                snippet = candidate_text[brace_pos:end_pos]
+                if isinstance(parsed, dict) and len(parsed) == 0:
+                    if fallback_empty is None:
+                        fallback_empty = snippet
+                    idx = end_pos
+                    continue
+                return snippet
             except json.JSONDecodeError:
-                continue
-        return None
+                idx = brace_pos + 1
+        return fallback_empty
+
+    content = strip_reasoning_traces(raw_content)
+    if content:
+        try:
+            parsed = json.loads(content)
+            if not (isinstance(parsed, dict) and len(parsed) == 0):
+                return content
+        except json.JSONDecodeError:
+            pass
+
+        scrubbed_hit = _first_parseable(content)
+        if scrubbed_hit is not None:
+            return scrubbed_hit
 
     raw_hit = _first_parseable(raw_content)
     if raw_hit is not None:
         return raw_hit
-
-    try:
-        json.loads(raw_content)
-        return raw_content
-    except json.JSONDecodeError:
-        pass
-
-    content = strip_reasoning_traces(raw_content)
-    if not content:
-        return "{}"
-
-    try:
-        json.loads(content)
-        return content
-    except json.JSONDecodeError:
-        pass
-
-    scrubbed_hit = _first_parseable(content)
-    if scrubbed_hit is not None:
-        return scrubbed_hit
 
     return "{}"
 
@@ -236,6 +246,7 @@ class BaseLLMEngine(ABC):
         user_prompt: str,
         disable_thinking: bool = False,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        response_prefix: str = "",
     ) -> str:
         """
         Execute model-specific prompt formatting, sampling parameter selection,
@@ -246,6 +257,10 @@ class BaseLLMEngine(ABC):
             user_prompt:      User query payload.
             disable_thinking: True for fast non-thinking mode; False for deep reasoning mode.
             max_tokens:       Maximum completion tokens to generate.
+            response_prefix:  Optional string to inject at the start of the assistant turn,
+                              forcing the model to continue from that exact prefix.
+                              The prefix is NOT included in the returned output (echo=False),
+                              so callers must prepend it back before parsing.
 
         Returns:
             The raw text output from the model (may contain reasoning traces).
@@ -258,15 +273,20 @@ class BaseLLMEngine(ABC):
         user_prompt: str = "",
         disable_thinking: bool = False,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        response_prefix: str = "",
     ) -> str:
         """
         Template method: executes _generate_raw() and extracts strict JSON output.
 
         Args:
-            system_prompt: System instructions for the completion.
-            user_prompt:   User-facing query / instruction payload.
+            system_prompt:   System instructions for the completion.
+            user_prompt:     User-facing query / instruction payload.
             disable_thinking: True for fast non-thinking mode; False for deep reasoning mode.
-            max_tokens: Maximum completion tokens to generate.
+            max_tokens:      Maximum completion tokens to generate.
+            response_prefix: Optional string injected at the start of the assistant turn
+                             to constrain the model's output format (prefix injection).
+                             When set, the model is forced to continue from this exact
+                             token sequence, making format deviations impossible.
 
         Returns:
             A raw JSON string parseable by json.loads().
@@ -291,13 +311,20 @@ class BaseLLMEngine(ABC):
                 user_prompt=user_prompt,
                 disable_thinking=disable_thinking,
                 max_tokens=max_tokens,
+                response_prefix=response_prefix,
             )
         except Exception as exc:
             logger.error(f" {self.__class__.__name__} completion failed: {exc}")
             return "{}"
 
+        # If a prefix was injected, the model's raw output is the continuation.
+        # Prepend the prefix back so extract_json sees the full valid JSON.
+        if response_prefix:
+            raw_content = response_prefix + raw_content
+
         logger.debug(f"Raw model output (first 500 chars): {raw_content[:500]}")
         return extract_json(raw_content)
+
 
     def generate_stream(
         self,

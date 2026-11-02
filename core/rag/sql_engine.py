@@ -26,6 +26,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from core.prompts import (
     SQL_SYSTEM_PROMPT_TEMPLATE,
     SQL_RESULT_SYNTHESIS_PROMPT,
+    config_sql_system_prompt,
+    config_sql_result_synthesis_prompt,
 )
 from schemas.extraction import CertificateMetadata
 
@@ -155,9 +157,9 @@ def build_schema_description() -> str:
 
 def build_sql_system_prompt() -> str:
     """
-    Builds the constrained Text-to-SQL system prompt with the live schema injected.
+    Builds the constrained Text-to-SQL system prompt with the live schema and long-term memories injected.
     """
-    return SQL_SYSTEM_PROMPT_TEMPLATE.format(SCHEMA=build_schema_description())
+    return config_sql_system_prompt(schema=build_schema_description())
 
 
 def _strip_sql_comments(sql: str) -> str:
@@ -253,7 +255,7 @@ def _parse_json_object(raw_json: str) -> Dict[str, Any]:
     return {}
 
 
-def generate_sql_query(user_query: str, history_text: str = "") -> str:
+def generate_sql_query(user_query: str, history_text: str = "", error_feedback: str = "") -> str:
     """
     Translates a natural language question into a PostgreSQL SELECT statement
     using the local LLM facade with schema-injection prompting.
@@ -261,6 +263,7 @@ def generate_sql_query(user_query: str, history_text: str = "") -> str:
     Args:
         user_query (str): The user's natural language question.
         history_text (str): Optional prior conversation history block.
+        error_feedback (str): Optional previous SQL execution error for self-correction.
 
     Returns:
         str: The generated SQL statement, or an empty string if generation failed.
@@ -268,10 +271,11 @@ def generate_sql_query(user_query: str, history_text: str = "") -> str:
     from core.llm import generate_json
 
     history_block = f"{history_text}\n\n" if history_text else ""
+    error_block = f"PREVIOUS EXECUTION ERROR TO FIX:\n{error_feedback}\n\n" if error_feedback else ""
     raw_json_response = generate_json(
         system_prompt=build_sql_system_prompt(),
         user_prompt=(
-            f"{history_block}USER QUESTION: {user_query}\n\n"
+            f"{history_block}{error_block}USER QUESTION: {user_query}\n\n"
             f"Return ONLY the raw JSON output matching the schema."
         ),
         disable_thinking=True,
@@ -350,7 +354,7 @@ def _synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, Any]], co
         from core.llm import generate_json
 
         raw_json_response = generate_json(
-            system_prompt=SQL_RESULT_SYNTHESIS_PROMPT,
+            system_prompt=config_sql_result_synthesis_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
         )
@@ -415,7 +419,7 @@ def _stream_synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, An
         from core.rag.qa import extract_answer_value
 
         for token in generate_stream(
-            system_prompt=SQL_RESULT_SYNTHESIS_PROMPT,
+            system_prompt=config_sql_result_synthesis_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
         ):
@@ -449,44 +453,68 @@ def stream_metadata_answer(user_query: str, db_session=None, history_text: str =
         yield FALLBACK_MESSAGE
         return
 
-    # 1. LLM  SQL translation
-    try:
-        sql = generate_sql_query(clean_query, history_text=history_text)
-    except Exception as e:
-        logger.warning(f"  Text-to-SQL generation failed: {e}")
-        yield FALLBACK_MESSAGE
-        return
-
-    if not sql or not _validate_sql(sql):
-        logger.warning(f"  Generated SQL failed validation. SQL: {sql!r}")
-        yield FALLBACK_MESSAGE
-        return
-
-    sql = _ensure_row_cap(sql)
-    logger.info(f" Executing generated SQL for METADATA_QUERY: {sql}")
+    MAX_SQL_RETRIES = 3
+    error_feedback = ""
+    sql = ""
+    rows = []
+    columns = []
 
     # 2. Open a local session if the caller did not supply one
     close_session_on_exit = False
     if db_session is None:
         from storage.database import SessionLocal
-
         db_session = SessionLocal()
         close_session_on_exit = True
 
-    # 3. Safe execution with graceful fallback
     try:
-        _enforce_read_only(db_session)
-        result = db_session.execute(text(sql))
-        columns = list(result.keys())
-        rows = [dict(row) for row in result.mappings().all()]
-    except SQLAlchemyError as e:
-        logger.warning(f"  SQLAlchemy error during metadata query execution: {e}")
-        try:
-            db_session.rollback()
-        except Exception as rollback_err:
-            logger.warning(f"  Rollback failed: {rollback_err}")
-        yield FALLBACK_MESSAGE
-        return
+        for attempt in range(MAX_SQL_RETRIES):
+            # 1. LLM SQL translation
+            try:
+                sql = generate_sql_query(clean_query, history_text=history_text, error_feedback=error_feedback)
+            except Exception as e:
+                logger.warning(f"  Text-to-SQL generation failed: {e}")
+                error_feedback = f"Text-to-SQL generation failed: {e}"
+                continue
+
+            if not sql or not _validate_sql(sql):
+                logger.warning(f"  Generated SQL failed validation. SQL: {sql!r}")
+                error_feedback = "Generated SQL failed validation (e.g. invalid syntax, mutating keywords, or multiple statements)."
+                continue
+
+            sql = _ensure_row_cap(sql)
+            logger.info(f" Executing generated SQL for METADATA_QUERY (attempt {attempt + 1}/{MAX_SQL_RETRIES}): {sql}")
+
+            # 3. Safe execution with graceful fallback
+            try:
+                _enforce_read_only(db_session)
+                result = db_session.execute(text(sql))
+                columns = list(result.keys())
+                rows = [dict(row) for row in result.mappings().all()]
+                error_feedback = ""
+                break # Success, exit retry loop
+            except SQLAlchemyError as e:
+                logger.warning(f"  SQLAlchemy error during metadata query execution: {e}")
+                error_feedback = f"PostgreSQL execution failed with error: {e}"
+                try:
+                    db_session.rollback()
+                except Exception as rollback_err:
+                    logger.warning(f"  Rollback failed: {rollback_err}")
+                continue # Retry
+            except Exception as e:
+                logger.warning(f"  Unexpected error during metadata query execution: {e}")
+                error_feedback = f"Unexpected error: {e}"
+                try:
+                    db_session.rollback()
+                except Exception as rollback_err:
+                    logger.warning(f"  Rollback failed: {rollback_err}")
+                continue # Retry
+
+        if error_feedback:
+            # If we exhausted retries and still have an error, yield fallback
+            logger.warning(f"  Exhausted {MAX_SQL_RETRIES} SQL retries. Last error: {error_feedback}")
+            yield FALLBACK_MESSAGE
+            return
+
     finally:
         if close_session_on_exit:
             db_session.close()
@@ -521,48 +549,67 @@ def execute_metadata_query(user_query: str, db_session, history_text: str = "") 
         logger.warning("Empty or blank user query provided to execute_metadata_query.")
         return FALLBACK_MESSAGE
 
-    # 1. LLM  SQL translation
-    try:
-        sql = generate_sql_query(clean_query, history_text=history_text)
-    except Exception as e:
-        logger.warning(f"  Text-to-SQL generation failed: {e}")
-        return FALLBACK_MESSAGE
-
-    if not sql or not _validate_sql(sql):
-        logger.warning(f"  Generated SQL failed validation. SQL: {sql!r}")
-        return FALLBACK_MESSAGE
-
-    sql = _ensure_row_cap(sql)
-    logger.info(f" Executing generated SQL for METADATA_QUERY: {sql}")
+    MAX_SQL_RETRIES = 3
+    error_feedback = ""
+    sql = ""
+    rows = []
+    columns = []
 
     # 2. Open a local session if the caller did not supply one
     close_session_on_exit = False
     if db_session is None:
         from storage.database import SessionLocal
-
         db_session = SessionLocal()
         close_session_on_exit = True
 
-    # 3. Safe execution with graceful fallback
     try:
-        _enforce_read_only(db_session)
-        result = db_session.execute(text(sql))
-        columns = list(result.keys())
-        rows = [dict(row) for row in result.mappings().all()]
-    except SQLAlchemyError as e:
-        logger.warning(f"  SQLAlchemy error during metadata query execution: {e}")
-        try:
-            db_session.rollback()
-        except Exception as rollback_err:
-            logger.warning(f"  Rollback failed: {rollback_err}")
-        return FALLBACK_MESSAGE
-    except Exception as e:
-        logger.warning(f"  Unexpected error during metadata query execution: {e}")
-        try:
-            db_session.rollback()
-        except Exception as rollback_err:
-            logger.warning(f"  Rollback failed: {rollback_err}")
-        return FALLBACK_MESSAGE
+        for attempt in range(MAX_SQL_RETRIES):
+            # 1. LLM SQL translation
+            try:
+                sql = generate_sql_query(clean_query, history_text=history_text, error_feedback=error_feedback)
+            except Exception as e:
+                logger.warning(f"  Text-to-SQL generation failed: {e}")
+                error_feedback = f"Text-to-SQL generation failed: {e}"
+                continue
+
+            if not sql or not _validate_sql(sql):
+                logger.warning(f"  Generated SQL failed validation. SQL: {sql!r}")
+                error_feedback = "Generated SQL failed validation (e.g. invalid syntax, mutating keywords, or multiple statements)."
+                continue
+
+            sql = _ensure_row_cap(sql)
+            logger.info(f" Executing generated SQL for METADATA_QUERY (attempt {attempt + 1}/{MAX_SQL_RETRIES}): {sql}")
+
+            # 3. Safe execution with graceful fallback
+            try:
+                _enforce_read_only(db_session)
+                result = db_session.execute(text(sql))
+                columns = list(result.keys())
+                rows = [dict(row) for row in result.mappings().all()]
+                error_feedback = ""
+                break # Success, exit retry loop
+            except SQLAlchemyError as e:
+                logger.warning(f"  SQLAlchemy error during metadata query execution: {e}")
+                error_feedback = f"PostgreSQL execution failed with error: {e}"
+                try:
+                    db_session.rollback()
+                except Exception as rollback_err:
+                    logger.warning(f"  Rollback failed: {rollback_err}")
+                continue # Retry
+            except Exception as e:
+                logger.warning(f"  Unexpected error during metadata query execution: {e}")
+                error_feedback = f"Unexpected error: {e}"
+                try:
+                    db_session.rollback()
+                except Exception as rollback_err:
+                    logger.warning(f"  Rollback failed: {rollback_err}")
+                continue # Retry
+
+        if error_feedback:
+            # If we exhausted retries and still have an error, yield fallback
+            logger.warning(f"  Exhausted {MAX_SQL_RETRIES} SQL retries. Last error: {error_feedback}")
+            return FALLBACK_MESSAGE
+
     finally:
         if close_session_on_exit:
             db_session.close()

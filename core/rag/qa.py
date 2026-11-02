@@ -11,7 +11,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from core.prompts import QA_SYNTHESIS_SYSTEM_PROMPT
+from core.prompts import QA_SYNTHESIS_SYSTEM_PROMPT, config_qa_system_prompt
 from schemas.qa import Citation, QAResponseSchema
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ def _build_qa_prompt(query: str, retrieved_chunks: List[Dict[str, Any]]) -> tupl
     user_prompt += f"USER QUESTION: {query}\n\n"
     user_prompt += "Return ONLY the raw JSON payload following the QAResponseSchema."
 
-    return QA_SYNTHESIS_SYSTEM_PROMPT, user_prompt
+    return config_qa_system_prompt(), user_prompt
 
 
 def answer_query_with_citations(

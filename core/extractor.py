@@ -20,47 +20,39 @@ try:
 except ImportError:
     relativedelta = None
 
-from core.prompts import CERTIFICATE_EXTRACTION_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT
+from core.prompts import CERTIFICATE_EXTRACTION_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, config_extraction_system_prompt
 from schemas.extraction import CertificateExtractionSchema, CertificateMetadata, CertificateChunk
 from storage.models import AuthorityLookup, SupplierLookup
 from core.rag.chunker import chunk_for_qa
 from core.rag.embeddings import get_embeddings_batch
-
-logger = logging.getLogger(__name__)
-
-# Sentinel date for non-expiring / indefinite ("2999-01-01") certificates.
-# Representing indefinite validity in the database.
-NO_EXPIRY_DATE = date(2999, 1, 1)
-NO_EXPIRY_DISPLAY = "Indefinite"
-
-NO_EXPIRY_MARKERS = (
-    "perpetual", "infinite", "indefinite", "permanent", "no expiry", "no expiration",
-    "1999-01-01", "1999/01/01", "2999-01-01", "2999/01/01", "9999-01-01", "9999/01/01"
+from core.normalization import (
+    NO_EXPIRY_DATE,
+    NO_EXPIRY_DISPLAY,
+    is_no_expiry as is_no_expiry_marker,
+    format_date_iso,
+    parse_date as _parse_iso_date,
+    normalize_country,
+    normalize_certificate_fields,
+    get_lookup_caches,
 )
 
-
-def is_no_expiry_marker(value) -> bool:
-    """True when a raw exp_date value explicitly denotes a non-expiring / indefinite certificate."""
-    if not value:
-        return False
-    val_str = str(value).strip().lower()
-    return val_str in NO_EXPIRY_MARKERS or val_str.startswith("1999") or val_str.startswith("2999") or val_str.startswith("9999")
+logger = logging.getLogger(__name__)
 
 
 def format_exp_date(value) -> Optional[str]:
     """Render an exp_date for user-facing display.
 
-    Maps the no-expiry sentinels (2999-01-01, 9999-01-01, year >= 2900) to "Indefinite";
+    Maps the no-expiry sentinels (2999-01-01, 9999-01-01, year >= 2900) to "Infinite";
     real dates are rendered as YYYY-MM-DD; NULL/empty stays None.
     """
     if not value:
         return None
     if isinstance(value, datetime):
-        if value.year >= 2900 or value.year <= 1999:
+        if value.year >= 2900:
             return NO_EXPIRY_DISPLAY
         return value.strftime("%Y-%m-%d")
     if isinstance(value, date):
-        if value.year >= 2900 or value.year <= 1999:
+        if value.year >= 2900:
             return NO_EXPIRY_DISPLAY
         return value.strftime("%Y-%m-%d")
     s = str(value).strip()
@@ -77,7 +69,6 @@ def _normalize_text(text: str) -> str:
 
 def find_matching_authority(db: Session, authority_text: Optional[str]):
     """Resolves a raw authority string to a matched AuthorityLookup row (or None)."""
-    from storage.models import AuthorityLookup
     raw_auth_norm = _normalize_text(authority_text)
     if not raw_auth_norm:
         return None
@@ -97,151 +88,39 @@ def find_matching_authority(db: Session, authority_text: Optional[str]):
 def enrich_certificate_metadata(
     data: CertificateExtractionSchema, db: Session
 ) -> CertificateExtractionSchema:
-    """Deterministically normalizes and enriches LLM extraction using SQL lookup tables."""
+    """Deterministically normalizes and enriches LLM extraction using unified normalization rules."""
     if not db:
         return data
 
-    # 1. Authority, Country & Standard Expiration Date Resolution
-    matched_auth = find_matching_authority(db, data.authority)
-    if matched_auth:
-        # Deterministically assign Country if missing or null
-        if not data.country or data.country.strip().lower() in [
-            "none",
-            "null",
-            "",
-            "not found",
-        ]:
-            data.country = matched_auth.country
+    norm_dict, _ = normalize_certificate_fields(
+        raw_component=data.component,
+        raw_supplier=data.supplier,
+        raw_country=data.country,
+        raw_certif_number=data.certif_number,
+        raw_authority=data.authority,
+        raw_issue_date=data.issue_date,
+        raw_exp_date=data.exp_date,
+        raw_cert_link=getattr(data, "cert_link", None),
+        db=db,
+    )
 
-        # Expiration date resolution driven by the authority's validity tier.
-        #   - "infinite"  -> non-expiring certificate ("Perpetual")
-        #   - numeric     -> issue_date + validity_years
-        #   - null        -> leave the raw extracted exp_date untouched
-        if not data.exp_date and matched_auth.standard_validity_years:
-            validity_str = str(matched_auth.standard_validity_years).strip().lower()
-            if validity_str == "infinite":
-                data.exp_date = "Perpetual"
-            else:
-                try:
-                    validity_years = int(float(validity_str))
-                except (ValueError, TypeError):
-                    validity_years = None
-                if validity_years is not None and data.issue_date:
-                    issue_dt = _parse_iso_date(data.issue_date)
-                    if issue_dt is not None:
-                        try:
-                            if relativedelta is not None:
-                                dt_exp = issue_dt + relativedelta(
-                                    years=validity_years
-                                )
-                            else:
-                                dt_exp = issue_dt.replace(
-                                    year=issue_dt.year + validity_years
-                                )
-                            data.exp_date = dt_exp.strftime("%Y-%m-%d")
-                        except Exception:
-                            pass
-
-    # 2. Supplier / Foreign OEM Canonicalization
-    raw_supp_norm = _normalize_text(data.supplier)
-    if raw_supp_norm:
-        suppliers = db.query(SupplierLookup).all()
-        for supp in suppliers:
-            canon_norm = _normalize_text(supp.canonical_supplier)
-            alias_norms = [_normalize_text(a) for a in (supp.aliases or [])]
-
-            if (
-                raw_supp_norm == canon_norm
-                or raw_supp_norm in alias_norms
-                or any(a in raw_supp_norm for a in alias_norms if len(a) >= 3)
-            ):
-                data.supplier = supp.canonical_supplier
-                break
+    if norm_dict.get("component"):
+        data.component = norm_dict["component"]
+    if norm_dict.get("supplier"):
+        data.supplier = norm_dict["supplier"]
+    if norm_dict.get("country"):
+        data.country = norm_dict["country"]
+    if norm_dict.get("authority"):
+        data.authority = norm_dict["authority"]
+    if norm_dict.get("certif_number"):
+        data.certif_number = norm_dict["certif_number"]
+    if norm_dict.get("issue_date_iso"):
+        data.issue_date = norm_dict["issue_date_iso"]
+    if norm_dict.get("exp_date_iso"):
+        data.exp_date = norm_dict["exp_date_iso"]
 
     return data
 
-
-FRENCH_MONTH_MAP = {
-    "janv": "jan", "janvier": "jan",
-    "févr": "feb", "fevr": "feb", "fév": "feb", "fev": "feb", "février": "feb", "fevrier": "feb",
-    "mars": "mar",
-    "avr": "apr", "avril": "apr",
-    "mai": "may",
-    "juin": "jun",
-    "juil": "jul", "jui": "jul", "juillet": "jul",
-    "août": "aug", "aout": "aug",
-    "sept": "sep", "septembre": "sep",
-    "oct": "oct", "octobre": "oct",
-    "nov": "nov", "novembre": "nov",
-    "déc": "dec", "dec": "dec", "décembre": "dec", "decembre": "dec",
-}
-
-
-def _parse_iso_date(date_str: Optional[str]) -> Optional[date]:
-    """
-    Safely converts arbitrary date strings (YYYY-MM-DD, timestamp strings, French month
-    abbreviations, DD-MMM-YY, etc.) into Python date objects.
-
-    Notes:
-    - 9999-01-01 (Excel "no expiry" sentinel) is stored as-is — do NOT treat it as None.
-    - "Perpetual" / "infinite" / "no expiry" markers normalize to the 9999-01-01 no-expiry
-      sentinel (NO_EXPIRY_DATE), keeping non-expiring certificates distinct from NULL.
-    - 2-digit years in regex fallback are mapped to 20xx (certificates are modern documents).
-    """
-    if not date_str or str(date_str).strip() in ("Not Found", "null", "None", ""):
-        return None
-
-    s = str(date_str).strip()
-
-    if is_no_expiry_marker(s):
-        return NO_EXPIRY_DATE
-
-    # Handle "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD 00:00:00"
-    if " " in s:
-        first_part = s.split()[0]
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", first_part):
-            try:
-                return datetime.strptime(first_part, "%Y-%m-%d").date()
-            except ValueError:
-                pass
-
-    # Try standard YYYY-MM-DD (covers 2999-01-01, 1999-01-01, etc.)
-    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
-        try:
-            parsed = datetime.strptime(s, "%Y-%m-%d").date()
-            if parsed.year <= 1999 or parsed.year >= 2900:
-                return NO_EXPIRY_DATE
-            return parsed
-        except ValueError:
-            pass
-
-    # Substitute French month abbreviations
-    s_lower = s.lower()
-    for fr, en in FRENCH_MONTH_MAP.items():
-        if fr in s_lower:
-            s_lower = re.sub(r'(?<=[\d\s\-_])' + re.escape(fr) + r'(?=[\d\s\-_]|$)', en, s_lower)
-            break
-
-    try:
-        import dateutil.parser
-        dt = dateutil.parser.parse(s_lower, dayfirst=True)
-        return dt.date()
-    except Exception:
-        # Fallback regex for DD-MM-YY or DD-MM-YYYY
-        m = re.search(r"(\d{1,2})[-/\s](\d{1,2})[-/\s](\d{2,4})", s)
-        if m:
-            d_val, m_num, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            if y < 100:
-                # Only in this path can we confirm the year was 2-digit in the source.
-                # Always map to 20xx for certificate documents (99  2099, 24  2024).
-                y += 2000
-            try:
-                return date(y, m_num, d_val)
-            except Exception:
-                pass
-
-    logger.warning(f"Unable to parse date string '{date_str}'.")
-    return None
 
 
 
@@ -281,7 +160,7 @@ def extract_certificate_data(
     flush_gpu_cache()
     ensure_headroom(MIN_FREE_VRAM_MB, "LLM extraction")
     raw_json_response = generate_json(
-        system_prompt=CERTIFICATE_EXTRACTION_SYSTEM_PROMPT,
+        system_prompt=config_extraction_system_prompt(),
         user_prompt=user_prompt,
         disable_thinking=False,
     )

@@ -62,6 +62,48 @@ def _render_preview(sql: str, params: Dict[str, Any]) -> str:
         return sql
 
 
+def _validate_typed_literal(col: str, value: Any, col_type: str) -> Any:
+    """
+    Validate that `value` is a literal compatible with the target column's PostgreSQL type.
+    Never mutates strings in non-date columns (e.g. component='2008' stays '2008').
+    Raises ValueError if `value` is a structured expression or type-incompatible string
+    (e.g. 'has 2999', 'before 2025', or bare '9999' on a DATE column) so the caller can
+    delegate complex expressions to SQL generation.
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        raise ValueError(f"Non-literal expression dict {value!r} for column '{col}' requires SQL generation.")
+
+    ctype = (col_type or "").lower()
+    if "date" in ctype or "timestamp" in ctype:
+        if isinstance(value, (date, datetime)):
+            return value
+        if isinstance(value, str):
+            s = value.strip()
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+                return s
+        raise ValueError(
+            f"Column '{col}' has PostgreSQL type '{col_type}' and requires a literal YYYY-MM-DD date (got {value!r})."
+        )
+
+    if "int" in ctype or "numeric" in ctype or "double" in ctype or "real" in ctype:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value
+        if isinstance(value, str) and re.fullmatch(r"[-+]?\d+(?:\.\d+)?", value.strip()):
+            return int(value.strip()) if "int" in ctype else float(value.strip())
+        raise ValueError(
+            f"Column '{col}' has PostgreSQL type '{col_type}' and requires a numeric literal (got {value!r})."
+        )
+
+    if isinstance(value, str):
+        s = value.strip()
+        if "%" in s or re.match(r"^\s*(?:I?LIKE|contains?|has|includes?|matching|<|>|!=|>=|<=)\b", s, re.IGNORECASE):
+            raise ValueError(f"Column '{col}' filter/value {value!r} contains an operator expression requiring SQL generation.")
+
+    return _validate_value(col, value)
+
+
 def build_mutation_sql(
     op: str,
     table: str,
@@ -71,19 +113,8 @@ def build_mutation_sql(
     allow_full_table: bool = False,
 ) -> Dict[str, Any]:
     """
-    Validate a structured mutation request and return a compiled, parameter-bound
-    SQL string plus its parameters for dry-run inspection.
-
-    Args:
-        op: "update" or "insert" (any other op, including "delete", is rejected).
-        table: one of the keys in ALLOWED_TABLES.
-        values: mapping of column -> value to write.
-        row_filter: mapping of column -> value identifying the target rows.
-            REQUIRED for "update" to prevent full-table updates.
-
-    Returns:
-        Dict with keys: op, table, sql (named-placeholder statement), params
-        (placeholder -> value), preview (literal-bound rendering for inspection).
+    Validate a literal key-value mutation request against live PostgreSQL table/column metadata
+    and return a compiled, parameter-bound SQL string plus its parameters.
     """
     op = str(op or "").strip().lower()
     if op not in SUPPORTED_OPS:
@@ -92,100 +123,88 @@ def build_mutation_sql(
             "DDL and raw DELETE statements are strictly blocked."
         )
 
+    from storage import dynamic_schema
+    table = dynamic_schema.resolve_physical_table_name(str(table or ""))
     table = _validate_identifier(table, "table")
 
-    # Dynamically fetch valid tables instead of using a static dictionary
-    from storage import dynamic_schema
     all_tables = [t["table_name"] for t in dynamic_schema.list_all_user_tables()]
-    # Also include core platform tables since list_all_user_tables excludes some internal ones,
-    # but core tables are listed in dynamic_schema.CORE_PLATFORM_TABLES
     valid_tables = set(all_tables) | dynamic_schema.CORE_PLATFORM_TABLES
-    
+
     if table not in valid_tables:
         raise ValueError(f"Table '{table}' is not in the allowed write set: {sorted(valid_tables)}")
 
-    allowed_cols = {col["column_name"] for col in dynamic_schema.get_table_columns(table)}
-    
+    col_meta = dynamic_schema.get_table_columns(table)
+    allowed_cols = {c["column_name"] for c in col_meta}
+    col_types = {c["column_name"]: c["data_type"] for c in col_meta}
+
     values = values or {}
     if op in ("update", "insert") and not values:
         raise ValueError("'values' must be a non-empty dictionary of column -> value.")
 
-    values = {str(k).strip(): v for k, v in values.items()}
-    for col in values:
+    cleaned_values: Dict[str, Any] = {}
+    for raw_col, val in values.items():
+        col = str(raw_col).strip()
         _validate_identifier(col, "column")
         if col not in allowed_cols:
             raise ValueError(f"Column '{col}' is not writable on table '{table}'.")
-        _validate_value(col, values[col])
+        cleaned_values[col] = _validate_typed_literal(col, val, col_types.get(col, "text"))
+    values = cleaned_values
 
     params: Dict[str, Any] = {}
 
     if op == "delete":
         if not row_filter and not fuzzy_match_query and not allow_full_table:
-            raise ValueError("'row_filter' or 'fuzzy_match_query' or 'allow_full_table' is required for delete mutations (prevents accidental full-table deletions).")
-            
-        where_clauses = []
-        
-        if row_filter:
-            row_filter = {str(k).strip(): v for k, v in row_filter.items()}
-            for col in row_filter:
-                _validate_identifier(col, "column")
-                if col not in allowed_cols:
-                    raise ValueError(f"Filter column '{col}' is not writable/filterable on table '{table}'.")
-                _validate_value(col, row_filter[col])
-            where_clauses.extend([f"{col} = :{col}_filter" for col in row_filter])
-            params.update({f"{col}_filter": val for col, val in row_filter.items()})
+            raise ValueError("'row_filter' or 'fuzzy_match_query' or 'allow_full_table' is required for delete mutations.")
 
-        if fuzzy_match_query:
-            # Construct an OR search across specific known text columns to mimic broad natural language lookup
-            fuzzy_cols = [c for c in allowed_cols if c in ("certificate_id", "component", "supplier", "certif_number", "file_name")]
-            if not fuzzy_cols:
-                raise ValueError(f"Table '{table}' does not support fuzzy_match_query (no recognizable text columns).")
-            fuzzy_clause = " OR ".join(f"{col} ILIKE :fuzzy_query" for col in fuzzy_cols)
-            if where_clauses:
-                where_clauses.append(f"({fuzzy_clause})")
-            else:
-                where_clauses.append(fuzzy_clause)
-            params["fuzzy_query"] = f"%{fuzzy_match_query}%"
-
-        where_clause = " AND ".join(where_clauses)
-        if where_clause:
-            sql = f"DELETE FROM {table} WHERE {where_clause}"
-        else:
-            sql = f"DELETE FROM {table}"
-
-    elif op == "update":
-        if not row_filter and not fuzzy_match_query and not allow_full_table:
-            raise ValueError("'row_filter' or 'fuzzy_match_query' or 'allow_full_table' is required for update mutations.")
-        
         where_clauses = []
         if row_filter:
-            row_filter = {str(k).strip(): v for k, v in row_filter.items()}
-            for col in row_filter:
+            for raw_col, val in row_filter.items():
+                col = str(raw_col).strip()
                 _validate_identifier(col, "column")
                 if col not in allowed_cols:
-                    raise ValueError(f"Filter column '{col}' is not writable on table '{table}'.")
-                _validate_value(col, row_filter[col])
-            where_clauses.extend([f"{col} = :{col}_filter" for col in row_filter])
-            params.update({f"{col}_filter": val for col, val in row_filter.items()})
+                    raise ValueError(f"Filter column '{col}' is not filterable on table '{table}'.")
+                typed_val = _validate_typed_literal(col, val, col_types.get(col, "text"))
+                where_clauses.append(f"{col} = :{col}_filter")
+                params[f"{col}_filter"] = typed_val
 
         if fuzzy_match_query:
             fuzzy_cols = [c for c in allowed_cols if c in ("certificate_id", "component", "supplier", "certif_number", "file_name")]
             if not fuzzy_cols:
                 raise ValueError(f"Table '{table}' does not support fuzzy_match_query.")
             fuzzy_clause = " OR ".join(f"{col} ILIKE :fuzzy_query" for col in fuzzy_cols)
-            if where_clauses:
-                where_clauses.append(f"({fuzzy_clause})")
-            else:
-                where_clauses.append(fuzzy_clause)
+            where_clauses.append(f"({fuzzy_clause})" if where_clauses else fuzzy_clause)
+            params["fuzzy_query"] = f"%{fuzzy_match_query}%"
+
+        where_clause = " AND ".join(where_clauses)
+        sql = f"DELETE FROM {table} WHERE {where_clause}" if where_clause else f"DELETE FROM {table}"
+
+    elif op == "update":
+        if not row_filter and not fuzzy_match_query and not allow_full_table:
+            raise ValueError("'row_filter' or 'fuzzy_match_query' or 'allow_full_table' is required for update mutations.")
+
+        where_clauses = []
+        if row_filter:
+            for raw_col, val in row_filter.items():
+                col = str(raw_col).strip()
+                _validate_identifier(col, "column")
+                if col not in allowed_cols:
+                    raise ValueError(f"Filter column '{col}' is not filterable on table '{table}'.")
+                typed_val = _validate_typed_literal(col, val, col_types.get(col, "text"))
+                where_clauses.append(f"{col} = :{col}_filter")
+                params[f"{col}_filter"] = typed_val
+
+        if fuzzy_match_query:
+            fuzzy_cols = [c for c in allowed_cols if c in ("certificate_id", "component", "supplier", "certif_number", "file_name")]
+            if not fuzzy_cols:
+                raise ValueError(f"Table '{table}' does not support fuzzy_match_query.")
+            fuzzy_clause = " OR ".join(f"{col} ILIKE :fuzzy_query" for col in fuzzy_cols)
+            where_clauses.append(f"({fuzzy_clause})" if where_clauses else fuzzy_clause)
             params["fuzzy_query"] = f"%{fuzzy_match_query}%"
 
         set_clause = ", ".join(f"{col} = :{col}" for col in values)
         where_clause = " AND ".join(where_clauses)
-        if where_clause:
-            sql = f"UPDATE {table} SET {set_clause} WHERE {where_clause}"
-        else:
-            sql = f"UPDATE {table} SET {set_clause}"
-        params.update({col: val for col, val in values.items()})
+        sql = f"UPDATE {table} SET {set_clause} WHERE {where_clause}" if where_clause else f"UPDATE {table} SET {set_clause}"
+        params.update(values)
     else:  # insert
         cols = list(values.keys())
         col_list = ", ".join(cols)

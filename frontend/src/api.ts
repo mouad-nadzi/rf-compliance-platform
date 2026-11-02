@@ -195,6 +195,17 @@ export const api = {
     return res.json();
   },
 
+  deleteCustomTableColumn: async (tableName: string, columnName: string): Promise<any> => {
+    const res = await fetch(`${API_BASE}/schema/tables/${encodeURIComponent(tableName)}/columns/${encodeURIComponent(columnName)}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) {
+      const err = await res.text().catch(() => '');
+      throw new Error(`Failed to delete column (${res.status}): ${err}`);
+    }
+    return res.json();
+  },
+
   getCustomTableRows: async (tableName: string): Promise<{ columns?: any[], records?: any[] }> => {
     const res = await fetch(`${API_BASE}/schema/tables/${encodeURIComponent(tableName)}/data`);
     if (!res.ok) return { columns: [], records: [] };

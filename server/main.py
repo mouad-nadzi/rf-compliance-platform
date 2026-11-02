@@ -221,9 +221,11 @@ def _seed_table_schema_memories():
 
     tables = [
         {
-            'table_name': 'RF Certificates',
-            'target_fields': ['component', 'supplier', 'country', 'certif_number', 'authority', 'issue_date', 'exp_date', 'cert_link', 'last_update'],
+            'table_name': 'certificates',
+            'display_name': 'RF Certificates',
+            'target_fields': ['certificate_id', 'component', 'supplier', 'country', 'certif_number', 'authority', 'issue_date', 'exp_date', 'cert_link', 'file_name'],
             'columns': {
+                'certificate_id': {'semantic_type': 'text', 'label': 'Certificate ID'},
                 'component': {'semantic_type': 'text', 'label': 'Component / Model'},
                 'supplier': {'semantic_type': 'supplier', 'label': 'Supplier / Manufacturer'},
                 'country': {'semantic_type': 'text', 'label': 'Country'},
@@ -232,12 +234,13 @@ def _seed_table_schema_memories():
                 'issue_date': {'semantic_type': 'date', 'label': 'Issue Date'},
                 'exp_date': {'semantic_type': 'date', 'label': 'Exp Date'},
                 'cert_link': {'semantic_type': 'url', 'label': 'PDF Document Link'},
-                'last_update': {'semantic_type': 'date', 'label': 'Last Update'}
+                'file_name': {'semantic_type': 'text', 'label': 'File Name'}
             },
             'description': 'Main database table storing Radio Frequency homologation certificates, equipment models, suppliers, regulatory bodies, issue/expiration dates, and document URLs.'
         },
         {
-            'table_name': 'Authorities',
+            'table_name': 'authority_lookups',
+            'display_name': 'Authorities',
             'target_fields': ['canonical_authority', 'abbreviation', 'country', 'standard_validity_years', 'aliases'],
             'columns': {
                 'canonical_authority': {'semantic_type': 'text', 'label': 'Canonical Authority'},
@@ -249,7 +252,8 @@ def _seed_table_schema_memories():
             'description': 'Master lookup table storing global regulatory bodies (e.g. ENTE NACIONAL DE COMUNICACIONES, ANATEL, ATT, FCC) and standard validity terms.'
         },
         {
-            'table_name': 'Suppliers',
+            'table_name': 'supplier_lookups',
+            'display_name': 'Suppliers',
             'target_fields': ['canonical_supplier', 'aliases'],
             'columns': {
                 'canonical_supplier': {'semantic_type': 'supplier', 'label': 'Canonical Supplier'},
@@ -258,7 +262,8 @@ def _seed_table_schema_memories():
             'description': 'Master lookup table storing foreign tier-1 automotive suppliers (e.g. Valeo, Bosch, Aptiv, Continental, Denso) and brand aliases.'
         },
         {
-            'table_name': 'Compliance Sources',
+            'table_name': 'sources',
+            'display_name': 'Compliance Sources',
             'target_fields': ['url', 'description', 'active'],
             'columns': {
                 'url': {'semantic_type': 'url', 'label': 'Source URL'},
@@ -268,7 +273,8 @@ def _seed_table_schema_memories():
             'description': 'Autonomous ingestion source portals and regulatory web sources monitored for compliance updates.'
         },
         {
-            'table_name': 'Agent Memories',
+            'table_name': 'agent_memories',
+            'display_name': 'Agent Memories',
             'target_fields': ['memory_key', 'fact_text', 'created_at'],
             'columns': {
                 'memory_key': {'semantic_type': 'badge', 'label': 'Category / Key'},
@@ -279,6 +285,7 @@ def _seed_table_schema_memories():
         },
         {
             'table_name': 'responsibles',
+            'display_name': 'Responsibles',
             'target_fields': ['firstname', 'lastname', 'phone', 'email', 'mission_comment'],
             'columns': {
                 'firstname': {'semantic_type': 'text', 'label': 'First Name'},
@@ -293,12 +300,23 @@ def _seed_table_schema_memories():
 
     try:
         with db.get_db_session() as session:
+            # Purge legacy UI-display-name schema keys so only canonical physical table keys exist
+            legacy_keys = (
+                "table_schema:rf certificates",
+                "table_schema:authorities",
+                "table_schema:suppliers",
+                "table_schema:compliance sources",
+                "table_schema:agent memories",
+            )
+            session.query(AgentMemory).filter(AgentMemory.memory_key.in_(legacy_keys)).delete(synchronize_session=False)
+
             for t in tables:
                 key = f'table_schema:{t["table_name"].lower()}'
                 existing = session.query(AgentMemory).filter(AgentMemory.memory_key == key).first()
                 now_iso = datetime.utcnow().isoformat()
                 schema_data = {
                     "table_name": t["table_name"],
+                    "display_name": t.get("display_name", t["table_name"]),
                     "description": t["description"],
                     "target_fields": t["target_fields"],
                     "columns": t.get("columns", {}),
@@ -309,12 +327,14 @@ def _seed_table_schema_memories():
                     mem = AgentMemory(memory_key=key, fact_text=json.dumps(schema_data))
                     session.add(mem)
                 else:
-                    # Update columns definition if missing
                     try:
                         cur = json.loads(existing.fact_text)
+                        cur["table_name"] = t["table_name"]
+                        cur["display_name"] = t.get("display_name", t["table_name"])
+                        cur["description"] = t["description"]
                         if "columns" not in cur or not cur["columns"]:
                             cur["columns"] = t.get("columns", {})
-                            existing.fact_text = json.dumps(cur)
+                        existing.fact_text = json.dumps(cur)
                     except Exception:
                         pass
             session.commit()
@@ -1349,21 +1369,19 @@ async def restore_recycle_bin_item(item_id: str, db: Session = Depends(get_db)):
 
         # ── Case 2: Individual RF Certificate Restoration ─────────────────────
         elif item.table_name in ["RF Certificates", "certificates"]:
-            def parse_d(val):
-                if not val or str(val).strip() in ['—', 'None', 'null', '']: return None
-                try: return datetime.strptime(str(val).strip()[:10], '%Y-%m-%d').date()
-                except: return None
-
+            from core.normalization import normalize_certificate_dict
+            norm_dict, _ = normalize_certificate_dict(rec_data, db=db)
             cert = CertificateMetadata(
                 certificate_id=rec_data.get("certificate_id") or uuid.uuid4().hex,
-                component=rec_data.get("component", ""),
-                supplier=rec_data.get("supplier", ""),
-                country=rec_data.get("country", ""),
-                certif_number=rec_data.get("certif_number", ""),
-                authority=rec_data.get("authority", ""),
-                issue_date=parse_d(rec_data.get("issue_date")),
-                exp_date=parse_d(rec_data.get("exp_date")),
-                cert_link=rec_data.get("cert_link", "")
+                component=norm_dict.get("component") or "",
+                supplier=norm_dict.get("supplier") or "",
+                country=norm_dict.get("country") or "",
+                certif_number=norm_dict.get("certif_number") or "",
+                authority=norm_dict.get("authority") or "",
+                issue_date=norm_dict.get("issue_date"),
+                exp_date=norm_dict.get("exp_date"),
+                cert_link=norm_dict.get("cert_link") or "",
+                file_name=norm_dict.get("file_name") or rec_data.get("file_name") or ""
             )
             db.merge(cert)
 
@@ -1448,57 +1466,25 @@ from schemas.extraction import CertificateExtractionSchema, CertificateMetadata
 
 @app.post("/api/v1/certificates")
 async def create_or_save_certificate(payload: dict = Body(...), db: Session = Depends(get_db)):
-    """Save or create a certificate record with flexible column header mapping."""
+    """Save or create a certificate record with unified normalization."""
     import uuid
-    from datetime import datetime
     try:
+        from core.normalization import normalize_certificate_dict
         cert_id = payload.get("id") or payload.get("certificate_id") or uuid.uuid4().hex
 
-        def parse_d(val):
-            if not val or str(val).strip() in ['—', 'None', 'null', '']: return None
-            val_str = str(val).strip()
-            if val_str.replace('.', '', 1).isdigit():
-                try:
-                    num = float(val_str)
-                    if 1000 < num < 100000:
-                        from datetime import timedelta
-                        return (datetime(1899, 12, 30) + timedelta(days=num)).date()
-                except Exception:
-                    pass
-            try: return datetime.strptime(val_str[:10], '%Y-%m-%d').date()
-            except Exception: pass
-            try:
-                from dateutil import parser as date_parser
-                return date_parser.parse(val_str, dayfirst=True).date()
-            except Exception: pass
-            for fmt in ('%d-%b-%y', '%d-%b-%Y', '%b-%d-%y', '%b-%d-%Y', '%d/%m/%Y', '%d/%m/%y', '%m/%d/%Y', '%m/%d/%y', '%Y/%m/%d', '%d-%m-%Y', '%d-%m-%y'):
-                try: return datetime.strptime(val_str, fmt).date()
-                except Exception: pass
-            return None
-
-        raw_supp_val = str(payload.get("supplier") or payload.get("Supplier") or payload.get("canonical_supplier") or "").strip()
-        if raw_supp_val and raw_supp_val not in ('—', 'N/A', 'Unknown'):
-            from storage.models import SupplierLookup
-            supplier_lookups = db.query(SupplierLookup).all()
-            supp_norm = raw_supp_val.lower()
-            for sl in supplier_lookups:
-                if sl.canonical_supplier:
-                    canon_norm = sl.canonical_supplier.strip().lower()
-                    alias_norms = [a.strip().lower() for a in (sl.aliases or []) if a]
-                    if supp_norm == canon_norm or supp_norm in alias_norms or any(a in supp_norm for a in alias_norms if len(a) >= 3):
-                        raw_supp_val = sl.canonical_supplier
-                        break
+        norm_dict, _ = normalize_certificate_dict(payload, db=db)
 
         cert = CertificateMetadata(
             certificate_id=str(cert_id),
-            component=str(payload.get("component") or payload.get("Component") or payload.get("name") or "").strip(),
-            supplier=raw_supp_val,
-            country=str(payload.get("country") or payload.get("Country") or "").strip(),
-            certif_number=str(payload.get("certif_number") or payload.get("Certif Number") or payload.get("H-27922") or "").strip(),
-            authority=str(payload.get("authority") or payload.get("Authority") or payload.get("canonical_authority") or "").strip(),
-            issue_date=parse_d(payload.get("issue_date") or payload.get("Issue Date")),
-            exp_date=parse_d(payload.get("exp_date") or payload.get("expiration_date") or payload.get("Expiration Date") or payload.get("Exp Date")),
-            cert_link=str(payload.get("cert_link") or payload.get("PDF Document Link") or payload.get("url") or '').strip()
+            component=norm_dict.get("component") or "",
+            supplier=norm_dict.get("supplier") or "",
+            country=norm_dict.get("country") or "",
+            certif_number=norm_dict.get("certif_number") or "",
+            authority=norm_dict.get("authority") or "",
+            issue_date=norm_dict.get("issue_date"),
+            exp_date=norm_dict.get("exp_date"),
+            cert_link=norm_dict.get("cert_link") or "",
+            file_name=norm_dict.get("file_name") or ""
         )
         db.merge(cert)
         db.commit()
@@ -1523,7 +1509,7 @@ def llm_standardize_row(raw_data: dict) -> dict:
     user_prompt = f"Raw Record: {json.dumps(raw_data)}"
 
     try:
-        raw_res = generate_json(system_prompt, user_prompt, disable_thinking=True, max_tokens=1024)
+        raw_res = generate_json(system_prompt, user_prompt, disable_thinking=True, max_tokens=1024, response_prefix="{")
         start = raw_res.find('{')
         end = raw_res.rfind('}') + 1
         if start != -1 and end > start:
@@ -1560,7 +1546,7 @@ def llm_standardize_batch(rows: list) -> list:
     user_prompt = f"Raw Records: {json.dumps(payload_rows)}"
 
     try:
-        raw_res = generate_json(system_prompt, user_prompt, disable_thinking=True, max_tokens=8192)
+        raw_res = generate_json(system_prompt, user_prompt, disable_thinking=True, max_tokens=8192, response_prefix="{")
         start = raw_res.find('{')
         end = raw_res.rfind('}') + 1
         if start != -1 and end > start:
@@ -1579,145 +1565,40 @@ def llm_standardize_batch(rows: list) -> list:
 
 @app.post("/api/v1/certificates/batch")
 async def batch_save_certificates(rows: list = Body(...), db: Session = Depends(get_db)):
-    """Batch save multiple certificate records into PostgreSQL in a single transaction with 100% LLM row standardization."""
+    """Batch save multiple certificate records into PostgreSQL in a single transaction with unified normalization."""
     import uuid
     from datetime import datetime
 
     try:
-        def parse_d(val):
-            if not val or str(val).strip() in ['—', 'None', 'null', '']: return None
-            val_str = str(val).strip()
-            if val_str.replace('.', '', 1).isdigit():
-                try:
-                    num = float(val_str)
-                    if 1000 < num < 100000:
-                        from datetime import timedelta
-                        return (datetime(1899, 12, 30) + timedelta(days=num)).date()
-                except Exception:
-                    pass
-            try: return datetime.strptime(val_str[:10], '%Y-%m-%d').date()
-            except Exception: pass
-            try:
-                from dateutil import parser as date_parser
-                return date_parser.parse(val_str, dayfirst=True).date()
-            except Exception: pass
-            for fmt in ('%d-%b-%y', '%d-%b-%Y', '%b-%d-%y', '%b-%d-%Y', '%d/%m/%Y', '%d/%m/%y', '%m/%d/%Y', '%m/%d/%y', '%Y/%m/%d', '%d-%m-%Y', '%d-%m-%y'):
-                try: return datetime.strptime(val_str, fmt).date()
-                except Exception: pass
-            return None
-
-        # Pre-cache AuthorityLookup and SupplierLookup maps for fast in-memory matching
-        from storage.models import AuthorityLookup, SupplierLookup
+        from core.normalization import normalize_certificate_dict, get_lookup_caches
         from schemas.extraction import NotificationItem
 
-        authority_lookups = db.query(AuthorityLookup).all()
-        country_to_auth_map = {}
-        auth_to_country_map = {}
-        for al in authority_lookups:
-            if al.country:
-                auth_target = al.abbreviation if al.abbreviation else al.canonical_authority
-                country_to_auth_map[al.country.strip().lower()] = auth_target
-                if al.abbreviation:
-                    auth_to_country_map[al.abbreviation.strip().lower()] = al.country
-                if al.canonical_authority:
-                    auth_to_country_map[al.canonical_authority.strip().lower()] = al.country
-                if isinstance(al.aliases, list):
-                    for alias in al.aliases:
-                        if alias:
-                            auth_to_country_map[alias.strip().lower()] = al.country
-
-        supplier_lookups = db.query(SupplierLookup).all()
-        alias_to_supp_map = {}
-        for sl in supplier_lookups:
-            if sl.canonical_supplier:
-                alias_to_supp_map[sl.canonical_supplier.strip().lower()] = sl.canonical_supplier
-                if isinstance(sl.aliases, list):
-                    for alias in sl.aliases:
-                        if alias:
-                            alias_to_supp_map[alias.strip().lower()] = sl.canonical_supplier
-
+        caches = get_lookup_caches(db)
         new_certs = []
         autofilled_events_count = 0
 
         for payload in rows:
             if not isinstance(payload, dict): continue
-            cert_id = payload.get("id") or payload.get("certificate_id") or uuid.uuid4().hex
+            cert_id = payload.get("certificate_id") or payload.get("id") or uuid.uuid4().hex
 
-            # Capture original raw values before LLM / memory standardization
-            orig_auth = str(payload.get("authority") or payload.get("Authority") or payload.get("canonical_authority") or "").strip()
-            orig_supp = str(payload.get("supplier") or payload.get("Supplier") or payload.get("canonical_supplier") or "").strip()
-            orig_ctry = str(payload.get("country") or payload.get("Country") or "").strip()
+            norm_dict, autofilled = normalize_certificate_dict(payload, db=db, caches=caches)
 
-            std_payload = payload
-            if len(rows) <= 10:
-                std_payload = llm_standardize_row(payload)
+            raw_comp = norm_dict.get("component") or ""
+            raw_supp = norm_dict.get("supplier") or ""
+            raw_ctry = norm_dict.get("country") or ""
+            raw_cert_num = norm_dict.get("certif_number") or ""
+            raw_auth = norm_dict.get("authority") or ""
+            raw_issue = norm_dict.get("issue_date")
+            raw_exp = norm_dict.get("exp_date")
+            raw_link = norm_dict.get("cert_link") or ""
+            raw_file = norm_dict.get("file_name") or ""
 
-            raw_comp = str(std_payload.get("component") or std_payload.get("Component") or std_payload.get("name") or "Unknown").strip()
-            raw_supp = str(std_payload.get("supplier") or std_payload.get("Supplier") or std_payload.get("canonical_supplier") or "").strip()
-            raw_ctry = str(std_payload.get("country") or std_payload.get("Country") or "").strip()
-            raw_cert_num = str(std_payload.get("certif_number") or std_payload.get("Certif Number") or std_payload.get("H-27922") or "").strip()
-            raw_auth = str(std_payload.get("authority") or std_payload.get("Authority") or std_payload.get("canonical_authority") or "").strip()
-            raw_issue = str(std_payload.get("issue_date") or std_payload.get("Issue Date") or '').strip()
-            raw_exp = str(std_payload.get("exp_date") or std_payload.get("expiration_date") or std_payload.get("Expiration Date") or std_payload.get("Exp Date") or '').strip()
-            raw_link = str(std_payload.get("cert_link") or std_payload.get("PDF Document Link") or std_payload.get("url") or '').strip()
-
-            autofilled = []
-
-            # Primary Rule: Derive Country from Authority if Country is empty
-            if (not raw_ctry or raw_ctry in ('—', 'N/A', 'Unknown')) and raw_auth:
-                auth_key = raw_auth.lower()
-                if auth_key in auth_to_country_map:
-                    inferred_ctry = auth_to_country_map[auth_key]
-                    if inferred_ctry:
-                        raw_ctry = inferred_ctry
-                        autofilled.append(f'Country: "{raw_ctry}" (derived from Authority "{raw_auth}")')
-
-            # Complementary Rule: Derive Authority from Country if Authority is empty
-            if (not raw_auth or raw_auth in ('—', 'N/A', 'Unknown')) and raw_ctry:
-                ctry_key = raw_ctry.lower()
-                if ctry_key in country_to_auth_map:
-                    inferred_auth = country_to_auth_map[ctry_key]
-                    if inferred_auth:
-                        raw_auth = inferred_auth
-                        autofilled.append(f'Authority: "{raw_auth}" (derived from Country "{raw_ctry}")')
-
-            # Always canonicalize Supplier if provided, using SupplierLookup alias map
-            if raw_supp and raw_supp not in ('—', 'N/A', 'Unknown'):
-                supp_key = raw_supp.lower()
-                if supp_key in alias_to_supp_map:
-                    raw_supp = alias_to_supp_map[supp_key]
-                else:
-                    for alias_key, canon_val in alias_to_supp_map.items():
-                        if len(alias_key) >= 3 and alias_key in supp_key:
-                            raw_supp = canon_val
-                            break
-
-            # Smart Auto-Fill for empty Supplier: check if component name contains supplier alias
-            if (not raw_supp or raw_supp in ('—', 'N/A', 'Unknown')) and raw_comp:
-                comp_key = raw_comp.lower()
-                for alias_key, canon_val in alias_to_supp_map.items():
-                    if len(alias_key) >= 3 and alias_key in comp_key:
-                        raw_supp = canon_val
-                        autofilled.append(f'Supplier: "{raw_supp}" (derived from Component "{raw_comp}")')
-                        break
-
-            # Check if authority, supplier, or country was originally empty but got filled by LLM / memory
-            if (not orig_auth or orig_auth in ('—', 'N/A')) and raw_auth and raw_auth not in ('—', 'N/A'):
-                if not any(a.startswith('Authority:') for a in autofilled):
-                    autofilled.append(f'Authority: "{raw_auth}"')
-            if (not orig_supp or orig_supp in ('—', 'Unknown')) and raw_supp and raw_supp not in ('—', 'Unknown'):
-                if not any(a.startswith('Supplier:') for a in autofilled):
-                    autofilled.append(f'Supplier: "{raw_supp}"')
-            if (not orig_ctry or orig_ctry in ('—', 'Unknown')) and raw_ctry and raw_ctry not in ('—', 'Unknown'):
-                if not any(a.startswith('Country:') for a in autofilled):
-                    autofilled.append(f'Country: "{raw_ctry}"')
-
-            # Log notification ONLY if a genuine empty cell was auto-filled!
+            # Log notification if genuine empty cells were auto-filled
             if autofilled:
                 autofilled_events_count += 1
                 try:
                     notif = NotificationItem(
-                        title=f'AI Auto-Filled Empty Cell ({raw_comp})',
+                        title=f'AI Auto-Filled Empty Cell ({raw_comp or "Certificate"})',
                         message=f'AI auto-filled empty cell(s) for component "{raw_comp}": {", ".join(autofilled)} based on Authority Lookups & Long-Term Memory.',
                         category="standardization",
                         is_read=False,
@@ -1729,14 +1610,15 @@ async def batch_save_certificates(rows: list = Body(...), db: Session = Depends(
 
             cert = CertificateMetadata(
                 certificate_id=str(cert_id),
-                component=raw_comp or "",
-                supplier=raw_supp or "",
-                country=raw_ctry or "",
-                certif_number=raw_cert_num or "",
-                authority=raw_auth or "",
-                issue_date=parse_d(raw_issue),
-                exp_date=parse_d(raw_exp),
-                cert_link=raw_link
+                component=raw_comp,
+                supplier=raw_supp,
+                country=raw_ctry,
+                certif_number=raw_cert_num,
+                authority=raw_auth,
+                issue_date=raw_issue,
+                exp_date=raw_exp,
+                cert_link=raw_link,
+                file_name=raw_file
             )
             new_certs.append(cert)
 
@@ -1823,7 +1705,7 @@ def llm_profile_table_columns(table_name: str, column_names: list, sample_rows: 
     user_prompt = f"Table Name: {table_name}\nColumns: {json.dumps(column_names)}\nSample Data: {json.dumps(sample_snippet, default=str)}"
 
     try:
-        raw = generate_json(system_prompt, user_prompt, disable_thinking=True, max_tokens=1024)
+        raw = generate_json(system_prompt, user_prompt, disable_thinking=True, max_tokens=1024, response_prefix="{")
         start = raw.find('{')
         end = raw.rfind('}') + 1
         if start != -1 and end > start:
@@ -1880,10 +1762,12 @@ def get_or_create_table_schema_memory(db: Session, table_name: str, target_field
     Returns (profile, unmapped_columns).
     """
     from schemas.extraction import AgentMemory
+    from storage.dynamic_schema import resolve_physical_table_name
     import json
     from datetime import datetime
 
-    memory_key = f"table_schema:{table_name.strip().lower()}"
+    physical_table = resolve_physical_table_name(table_name)
+    memory_key = f"table_schema:{physical_table.strip().lower()}"
     existing_mem = db.query(AgentMemory).filter(AgentMemory.memory_key == memory_key).first()
 
     current_fields = target_fields if target_fields else (list(sample_row.keys()) if sample_row else [])
@@ -2044,14 +1928,39 @@ async def llm_map_spreadsheet_headers(payload: dict = Body(...), db: Session = D
         )
 
     try:
-        raw_json = generate_json(system_prompt, user_prompt, disable_thinking=True, max_tokens=512)
+        raw_json = generate_json(
+            system_prompt,
+            user_prompt,
+            disable_thinking=True,
+            max_tokens=512,
+            response_prefix='{"mapping":',
+        )
         start = raw_json.find('{')
         end = raw_json.rfind('}') + 1
         if start != -1 and end > start:
             res_obj = json.loads(raw_json[start:end])
+            raw_mapping = res_obj.get("mapping", {})
+            if not isinstance(raw_mapping, dict):
+                raw_mapping = {}
+
+            # Ensure mapping direction is always {target_field: incoming_header}
+            header_set = set(str(h) for h in headers)
+            target_set = set(str(t) for t in effective_target_fields)
+            clean_mapping = {}
+            for k, v in raw_mapping.items():
+                if not k or not v:
+                    continue
+                ks, vs = str(k), str(v)
+                if ks in target_set and vs in header_set:
+                    clean_mapping[ks] = vs
+                elif vs in target_set and ks in header_set:
+                    clean_mapping[vs] = ks
+                else:
+                    clean_mapping[ks] = vs
+
             return {
                 "status": "success",
-                "mapping": res_obj.get("mapping", {}),
+                "mapping": clean_mapping,
                 "standardized_sample": res_obj.get("standardized_sample", sample_row),
                 "unmapped_columns": unmapped_cols,
                 "permission_required": bool(unmapped_cols and not allow_new_columns)

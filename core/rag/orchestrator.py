@@ -36,44 +36,32 @@ logger = logging.getLogger(__name__)
 from core.utils.history import format_conversation_history as _format_history
 
 
-_ANAPHORA_RE = re.compile(
-    r"\b(the others|the other|these|those|them|this|that|it|they|"
-    r"what about|how about|and the rest|the rest|also|ones)\b",
-    re.IGNORECASE,
-)
-
-
 def _reformulate_query(user_query: str, history) -> str:
     """
     Rewrites the latest query into a standalone, self-contained query that carries
     forward entities from prior turns (resolves "the others", "these", "them", etc.).
 
     Falls back to the original query unchanged if no history exists or the LLM rewrite fails.
-    A deterministic anaphora fallback reconstructs the query from the last user turn
-    when the LLM returned the query unchanged despite clear references to prior context.
     """
     if not history:
-        return user_query
-
-    from core.rag.unified_agent import _is_conversational_query
-    if _is_conversational_query(user_query):
         return user_query
 
     history_text = _format_history(history)
     rewritten = user_query
 
     try:
-        from core.prompts import QUERY_REWRITE_SYSTEM_PROMPT
+        from core.prompts import config_query_rewrite_system_prompt
         from core.llm import generate_json
 
         raw_response = generate_json(
-            system_prompt=QUERY_REWRITE_SYSTEM_PROMPT,
+            system_prompt=config_query_rewrite_system_prompt(),
             user_prompt=(
                 f"{history_text}\n\n"
                 f"USER'S LATEST QUERY: {user_query}\n\n"
                 f"Return ONLY the raw JSON output matching the schema."
             ),
             disable_thinking=True,
+            response_prefix='{"rewritten_query":',
         )
 
         parsed = json.loads(raw_response)
@@ -83,20 +71,6 @@ def _reformulate_query(user_query: str, history) -> str:
                 rewritten = candidate
     except Exception as exc:
         logger.warning(f" Query reformulation failed ({exc}); using original query.")
-
-    # Deterministic fallback: if the LLM left an anaphoric query unchanged, rebuild
-    # it from the last user turn so downstream routing/SQL still has the context.
-    if rewritten.strip().lower() == user_query.strip().lower() and _ANAPHORA_RE.search(user_query):
-        last_user = ""
-        for turn in reversed(history or []):
-            if turn.get("role") == "user":
-                last_user = str(turn.get("content", "")).strip()
-                if last_user:
-                    break
-        if last_user:
-            fallback = f"{user_query.strip()} - referring to the certificates from the previous question: {last_user}"
-            logger.info(f" Anaphora fallback rewrite: '{user_query[:50]}' -> '{fallback[:90]}'")
-            return fallback
 
     if rewritten.strip() != user_query.strip():
         logger.info(f" Query rewritten: '{user_query[:50]}' -> '{rewritten[:80]}'")
@@ -121,6 +95,7 @@ def _casual_conversation_reply(user_query: str, history_text: str = "") -> str:
             system_prompt=config_casual_conversation_system_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
+            response_prefix='{"answer":',
         )
         parsed = json.loads(raw_response)
         if isinstance(parsed, dict):
@@ -181,6 +156,7 @@ def _synthesize_agent_action_reply(
             system_prompt=config_action_synthesis_system_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
+            response_prefix='{"answer":',
         )
         parsed = json.loads(raw_response)
         if isinstance(parsed, dict):
@@ -202,7 +178,7 @@ def _synthesize_agent_action_reply(
     return "Action executed successfully."
 
 
-_URL_RE = re.compile(r"https?://[^\s'\"<>]+")
+_URL_RE = re.compile(r"https?://[^\s'\"<>)\]]+")
 
 
 def _extract_urls(query: str) -> List[str]:
@@ -246,17 +222,18 @@ def _handle_chat_approval_stream(
 
     decision = "NEW_QUERY"
     try:
-        from core.prompts import APPROVAL_CLASSIFIER_SYSTEM_PROMPT
+        from core.prompts import config_approval_classifier_system_prompt
         from core.llm import generate_json
 
-        system_prompt = APPROVAL_CLASSIFIER_SYSTEM_PROMPT.format(
-            PROPOSAL_DESCRIPTION=desc,
-            USER_MESSAGE=query,
+        system_prompt = config_approval_classifier_system_prompt(
+            proposal_description=desc,
+            user_message=query,
         )
         raw_res = generate_json(
             system_prompt=system_prompt,
             user_prompt=f"USER MESSAGE: {query}\n\nReturn ONLY raw JSON.",
             disable_thinking=True,
+            response_prefix='{"decision":',
         )
         parsed = json.loads(raw_res)
         if isinstance(parsed, dict):
@@ -271,11 +248,12 @@ def _handle_chat_approval_stream(
 
     if decision == "REJECT":
         try:
-            proposal_manager.update_status(proposal_id, "REJECTED")
+            for p in pending:
+                proposal_manager.update_status(p["proposal_id"], "REJECTED")
         except Exception as exc:
             logger.warning(f" Could not reject proposal {proposal_id}: {exc}")
             return
-        logger.info(f" Chat HITL: rejected AGENT_ACTION proposal {proposal_id}.")
+        logger.info(f" Chat HITL: rejected {len(pending)} AGENT_ACTION proposal(s) starting with {proposal_id}.")
         reply = (
             f"OK - I've rejected proposal `{proposal_id}`. No action was executed. "
             "Let me know if you'd like to try a different link or command."
@@ -298,56 +276,57 @@ def _handle_chat_approval_stream(
     if decision == "APPROVE":
         yield {"type": "status", "stage": "agent_action", "message": "Confirming approval..."}
         try:
-            proposal_manager.update_status(proposal_id, "APPROVED")
-            target = (proposal.get("payload") or {}).get("target_file") or ""
-            if target:
-                for other in proposal_manager.list_pending_proposals():
-                    if other.get("type") == "AGENT_ACTION":
-                        other_target = (other.get("payload") or {}).get("target_file") or ""
-                        if other_target == target:
-                            proposal_manager.update_status(other["proposal_id"], "APPROVED")
+            for p in pending:
+                proposal_manager.update_status(p["proposal_id"], "APPROVED")
         except Exception as exc:
             logger.warning(f" Could not approve proposal {proposal_id}: {exc}")
             return
 
-        logger.info(f" Chat HITL: approved AGENT_ACTION proposal {proposal_id}.")
+        logger.info(f" Chat HITL: approved {len(pending)} AGENT_ACTION proposal(s) starting with {proposal_id}.")
         from core.agent.agent_loop import resolve_write_step
 
-        target = (proposal.get("payload") or {}).get("target_file") or ""
-        target_suffix = f" for '{target}'" if target else ""
+        executed_outcomes = []
+        action_names = []
+        action_descs = []
 
-        q: queue.Queue = queue.Queue()
+        for p in pending:
+            p_payload = p.get("payload") or {}
+            action_names.append(p_payload.get("action") or "agent_action")
+            action_descs.append(p_payload.get("description") or p.get("sql_preview") or desc)
 
-        def _cb(stage_name: str, msg_text: str):
-            q.put({"type": "status", "stage": stage_name, "message": msg_text})
+            q: queue.Queue = queue.Queue()
 
-        exec_outcome = [None]
-        def _worker():
-            try:
-                exec_outcome[0] = resolve_write_step(proposal, status_callback=_cb)
-            except Exception as e:
-                exec_outcome[0] = f"Execution failed: {e}"
-            finally:
-                q.put(None)
+            def _cb(stage_name: str, msg_text: str, _q=q):
+                _q.put({"type": "status", "stage": stage_name, "message": msg_text})
 
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
+            exec_outcome = [None]
+            def _worker(_p=p, _cb_fn=_cb, _out=exec_outcome, _q=q):
+                try:
+                    _out[0] = resolve_write_step(_p, status_callback=_cb_fn)
+                except Exception as e:
+                    _out[0] = f"Execution failed: {e}"
+                finally:
+                    _q.put(None)
 
-        while True:
-            try:
-                item = q.get(timeout=0.05)
-                if item is None:
-                    break
-                yield item
-            except queue.Empty:
-                if not t.is_alive() and q.empty():
-                    break
+            t = threading.Thread(target=_worker, daemon=True)
+            t.start()
 
-        t.join()
+            while True:
+                try:
+                    item = q.get(timeout=0.05)
+                    if item is None:
+                        break
+                    yield item
+                except queue.Empty:
+                    if not t.is_alive() and q.empty():
+                        break
 
-        raw_outcome = exec_outcome[0]
-        action_name = (proposal.get("payload") or {}).get("action") or "agent_action"
-        action_desc = (proposal.get("payload") or {}).get("description") or proposal.get("sql_preview") or desc
+            t.join()
+            executed_outcomes.append(exec_outcome[0])
+
+        raw_outcome = executed_outcomes[0] if len(executed_outcomes) == 1 else "\n".join(str(o) for o in executed_outcomes)
+        action_name = ", ".join(action_names)
+        action_desc = "; ".join(action_descs)
 
         yield {"type": "status", "stage": "generation", "message": "Synthesizing result..."}
         reply = _synthesize_agent_action_reply(
@@ -418,9 +397,7 @@ def answer_compliance_query(
         # Route to AGENT_ACTION so the streaming path handles confirmation/rejection
         pass
 
-    # Resolve anaphoric follow-ups ("the others", "these", "them") into a
-    # standalone query carrying entities from the conversation history.
-    resolved_query = _reformulate_query(clean_query, history)
+    resolved_query = clean_query
 
     close_session_on_exit = False
     if db_session is None:
@@ -451,6 +428,7 @@ def answer_compliance_query(
         elif intent == QueryIntent.HYBRID_QUERY.value:
             # Path C: Dual-Path Hybrid (Structured SQL + Unstructured Vector RRF)
             logger.info(" Executing HYBRID_QUERY path (Dual-Path SQL + Vector RRF)...")
+            resolved_query = _reformulate_query(clean_query, history)
             try:
                 # Structured facts from SQL engine
                 sql_answer = execute_metadata_query(clean_query, db_session, history_text=history_text)
@@ -473,11 +451,11 @@ def answer_compliance_query(
                         f"and unstructured document details above. Preserve citation markers (e.g. <Page X>)."
                     )
 
-                    from core.prompts import QA_SYNTHESIS_SYSTEM_PROMPT
+                    from core.prompts import config_qa_system_prompt
                     from core.llm import generate_json
 
                     raw_response = generate_json(
-                        system_prompt=QA_SYNTHESIS_SYSTEM_PROMPT,
+                        system_prompt=config_qa_system_prompt(),
                         user_prompt=dual_prompt,
                         disable_thinking=False,
                     )
@@ -520,6 +498,7 @@ def answer_compliance_query(
         elif intent == QueryIntent.UNSTRUCTURED_RAG.value:
             # Path B: Standard UNSTRUCTURED_RAG (Hybrid RRF + Parent Expansion)
             logger.info(" Executing UNSTRUCTURED_RAG path (Hybrid RRF + Parent Expansion)...")
+            resolved_query = _reformulate_query(clean_query, history)
             hybrid_payload = retrieve_hybrid_context(resolved_query, db_session, top_k=5)
             sources = hybrid_payload.get("sources", [])
             context_text = hybrid_payload.get("context_text", "").strip()
@@ -538,6 +517,7 @@ def answer_compliance_query(
             # Safety net: unknown intent tokens should never reach here (router
             # validates against QueryIntent); treat as UNSTRUCTURED_RAG.
             logger.warning(f" Unhandled intent '{intent}'; falling back to UNSTRUCTURED_RAG path.")
+            resolved_query = _reformulate_query(clean_query, history)
             hybrid_payload = retrieve_hybrid_context(resolved_query, db_session, top_k=5)
             sources = hybrid_payload.get("sources", [])
             context_text = hybrid_payload.get("context_text", "").strip()
@@ -650,7 +630,7 @@ def answer_compliance_query_stream(
     if has_approval_events:
         return
 
-    resolved_query = _reformulate_query(clean_query, history)
+    resolved_query = clean_query
 
     close_session_on_exit = False
     if db_session is None:
@@ -688,6 +668,7 @@ def answer_compliance_query_stream(
 
         elif intent == QueryIntent.HYBRID_QUERY.value:
             yield {"type": "status", "stage": "retrieval", "message": "Combining database facts and document context..."}
+            resolved_query = _reformulate_query(clean_query, history)
             try:
                 sql_answer = execute_metadata_query(clean_query, db_session, history_text=history_text)
                 hybrid_payload = retrieve_hybrid_context(resolved_query, db_session, top_k=5)
@@ -763,12 +744,19 @@ def answer_compliance_query_stream(
             yield {"type": "status", "stage": "agent_action", "message": "Planning agent action..."}
             from core.agent.agent_loop import (
                 plan_agent_action, iter_read_steps, stage_write_step,
-                resolve_write_step, RunArtifacts
+                resolve_write_step, extract_artifacts_from_history
             )
-            urls = _extract_urls(clean_query)
+            explicit_urls = _extract_urls(clean_query)
+            artifacts = extract_artifacts_from_history(history=history, explicit_urls=explicit_urls)
+
+            urls = list(explicit_urls)
+            if not urls and artifacts.source_url:
+                urls = [u.strip() for u in artifacts.source_url.split(",") if u.strip()]
+            if not urls and artifacts.verified_urls:
+                urls = list(artifacts.verified_urls)
+
             plan_result = plan_agent_action(clean_query, urls=urls, history=history)
             primary_url = urls[0] if urls else ""
-            artifacts = RunArtifacts()
 
             _parts = []
             for step in plan_result.steps:
@@ -780,78 +768,130 @@ def answer_compliance_query_stream(
 
             write_steps = [s for s in plan_result.steps if s.kind == "write"]
             if write_steps:
-                write_step = write_steps[0]
                 is_direct = plan_result.is_direct_command
 
                 if is_direct:
-                    # Explicit direct user command -> execute immediately without asking for approval!
-                    yield {"type": "status", "stage": "agent_action", "message": "Executing database action..."}
-                    
+                    # Explicit direct user command -> execute all write_steps sequentially without asking for approval!
                     import queue
                     import threading
-                    q: queue.Queue = queue.Queue()
 
-                    def _cb(stage_name: str, msg_text: str):
-                        q.put({"type": "status", "stage": stage_name, "message": msg_text})
+                    MAX_AGENT_RETRIES = 3
+                    error_feedback = ""
+                    raw_res: Any = None
+                    executed_outcomes: List[Any] = []
+                    answer_text = ""
 
-                    target_f = write_step.payload.get("target_file")
-                    proposal_payload = dict(write_step.payload)
-                    proposal_payload.update({
-                        "action": write_step.action,
-                        "description": write_step.description,
-                        "source_url": artifacts.source_url,
-                        "file_paths": artifacts.file_paths,
-                        "verified_urls": artifacts.verified_urls,
-                    })
-                    dummy_proposal = {"payload": proposal_payload}
-
-                    exec_outcome = [None]
-                    def _worker():
-                        try:
-                            exec_outcome[0] = resolve_write_step(dummy_proposal, status_callback=_cb)
-                        except Exception as e:
-                            exec_outcome[0] = f"Execution failed: {e}"
-                        finally:
-                            q.put(None)
-
-                    t = threading.Thread(target=_worker, daemon=True)
-                    t.start()
-
-                    while True:
-                        try:
-                            item = q.get(timeout=0.05)
-                            if item is None:
-                                break
-                            yield item
-                        except queue.Empty:
-                            if not t.is_alive() and q.empty():
+                    for attempt in range(MAX_AGENT_RETRIES):
+                        if attempt > 0:
+                            yield {"type": "status", "stage": "agent_action", "message": f"Execution failed. Re-planning (attempt {attempt + 1}/{MAX_AGENT_RETRIES})..."}
+                            plan_result = plan_agent_action(clean_query, urls=urls, history=history, error_feedback=error_feedback)
+                            write_steps = [s for s in plan_result.steps if s.kind == "write"]
+                            if not write_steps:
+                                raw_res = "Failed to plan a valid recovery action."
                                 break
 
-                    t.join()
-                    raw_res = exec_outcome[0]
+                        executed_outcomes = []
+                        attempt_failed = False
 
+                        for step_idx, write_step in enumerate(write_steps, 1):
+                            step_desc = write_step.description or write_step.action
+                            yield {
+                                "type": "status",
+                                "stage": "agent_action",
+                                "message": f"Executing step {step_idx}/{len(write_steps)}: {step_desc} (attempt {attempt + 1})...",
+                            }
+
+                            q: queue.Queue = queue.Queue()
+
+                            def _cb(stage_name: str, msg_text: str, _q=q):
+                                _q.put({"type": "status", "stage": stage_name, "message": msg_text})
+
+                            proposal_payload = dict(write_step.payload)
+                            proposal_payload.update({
+                                "action": write_step.action,
+                                "description": write_step.description,
+                                "source_url": artifacts.source_url,
+                                "file_paths": artifacts.file_paths,
+                                "verified_urls": artifacts.verified_urls,
+                            })
+                            dummy_proposal = {"payload": proposal_payload}
+
+                            exec_outcome = [None]
+                            step_failed = [False]
+
+                            def _worker(_prop=dummy_proposal, _cb_fn=_cb, _out=exec_outcome, _fail=step_failed, _q=q):
+                                try:
+                                    _out[0] = resolve_write_step(_prop, status_callback=_cb_fn)
+                                except Exception as e:
+                                    _fail[0] = True
+                                    _out[0] = f"Execution failed: {e}"
+                                finally:
+                                    _q.put(None)
+
+                            t = threading.Thread(target=_worker, daemon=True)
+                            t.start()
+
+                            while True:
+                                try:
+                                    item = q.get(timeout=0.05)
+                                    if item is None:
+                                        break
+                                    yield item
+                                except queue.Empty:
+                                    if not t.is_alive() and q.empty():
+                                        break
+
+                            t.join()
+
+                            if step_failed[0]:
+                                attempt_failed = True
+                                prior_str = f"Prior completed steps: {executed_outcomes}. " if executed_outcomes else ""
+                                error_feedback = f"{prior_str}Step {step_idx} ({write_step.action}) failed: {exec_outcome[0]}"
+                                raw_res = error_feedback
+                                break
+                            else:
+                                executed_outcomes.append(exec_outcome[0])
+
+                        if attempt_failed:
+                            continue
+                        else:
+                            error_feedback = ""
+                            if len(executed_outcomes) == 1:
+                                raw_res = executed_outcomes[0]
+                            else:
+                                raw_res = [
+                                    {"step": idx + 1, "action": ws.action, "outcome": out}
+                                    for idx, (ws, out) in enumerate(zip(write_steps, executed_outcomes))
+                                ]
+                            break
+
+                    action_summary = ", ".join(ws.action for ws in write_steps) if write_steps else "agent_action"
                     yield {"type": "status", "stage": "generation", "message": "Synthesizing response..."}
                     answer_text = _synthesize_agent_action_reply(
                         user_query=clean_query,
-                        action_name=write_step.action,
+                        action_name=action_summary,
                         execution_outcome=raw_res,
                         read_narrations=_parts,
                         history_text=history_text,
                     )
 
                 else:
-                    # Implicit action decided by agent -> stage proposal for HITL approval!
-                    try:
-                        stage_write_step(write_step, artifacts)
-                    except Exception as exc:
-                        logger.warning(f" Could not stage write step: {exc}")
+                    # Implicit action decided by agent -> stage all write_steps for HITL approval!
+                    staged_descs = []
+                    for ws in write_steps:
+                        try:
+                            stage_write_step(ws, artifacts)
+                        except Exception as exc:
+                            logger.warning(f" Could not stage write step: {exc}")
+                        target_f = ws.payload.get("target_file")
+                        desc = ws.description or ws.action
+                        if target_f and target_f not in desc:
+                            desc = f"{desc} ({target_f})"
+                        staged_descs.append(desc)
 
-                    target_f = write_step.payload.get("target_file")
-                    desc = write_step.description or 'add to the database'
-                    if target_f and target_f not in desc:
-                        desc = f"{desc} ({target_f})"
+                    combined_desc = "; ".join(staged_descs)
                     _parts.append(
-                        f"To do the final step ({desc}), "
+                        f"To do the final step ({combined_desc}), "
                         "I need your approval. Is that OK? Reply 'yes' to proceed or 'no' to cancel."
                     )
                     answer_text = "\n\n".join(_parts)
@@ -882,6 +922,7 @@ def answer_compliance_query_stream(
 
         elif intent == QueryIntent.UNSTRUCTURED_RAG.value:
             yield {"type": "status", "stage": "retrieval", "message": "Searching document context..."}
+            resolved_query = _reformulate_query(clean_query, history)
             hybrid_payload = retrieve_hybrid_context(resolved_query, db_session, top_k=5)
             sources = hybrid_payload.get("sources", [])
             context_text = hybrid_payload.get("context_text", "").strip()
@@ -905,6 +946,7 @@ def answer_compliance_query_stream(
             # Safety net: unknown intent tokens should never reach here; treat as UNSTRUCTURED_RAG.
             logger.warning(f" Unhandled intent '{intent}'; falling back to UNSTRUCTURED_RAG path.")
             yield {"type": "status", "stage": "retrieval", "message": "Searching document context..."}
+            resolved_query = _reformulate_query(clean_query, history)
             hybrid_payload = retrieve_hybrid_context(resolved_query, db_session, top_k=5)
             sources = hybrid_payload.get("sources", [])
             context_text = hybrid_payload.get("context_text", "").strip()
@@ -953,6 +995,6 @@ def answer_compliance_query_stream(
 
 
 def config_qa_system_prompt() -> str:
-    """Lazily returns the QA synthesis system prompt (avoids import cycle at module load)."""
-    from core.prompts import QA_SYNTHESIS_SYSTEM_PROMPT
-    return QA_SYNTHESIS_SYSTEM_PROMPT
+    """Lazily returns the QA synthesis system prompt with active long-term memories injected."""
+    from core.prompts import config_qa_system_prompt as _config_qa_system_prompt
+    return _config_qa_system_prompt()

@@ -39,7 +39,13 @@ const renderInline = (text: string): React.ReactNode[] => {
           href={linkMatch[2]}
           target="_blank"
           rel="noreferrer"
-          style={{ color: 'var(--brand-blue)', textDecoration: 'underline', fontWeight: 500 }}
+          style={{
+            color: 'var(--msg-accent-color, var(--brand-blue))',
+            textDecoration: 'underline',
+            textUnderlineOffset: '3px',
+            fontWeight: 500,
+            wordBreak: 'break-all'
+          }}
         >
           {linkMatch[1]}
         </a>
@@ -52,12 +58,12 @@ const renderInline = (text: string): React.ReactNode[] => {
         <code
           key={pIdx}
           style={{
-            backgroundColor: 'rgba(0,0,0,0.06)',
+            backgroundColor: 'var(--msg-code-bg, rgba(0, 0, 0, 0.06))',
             padding: '0.15rem 0.35rem',
             borderRadius: '4px',
             fontFamily: 'monospace',
             fontSize: '0.88em',
-            color: 'var(--text-primary)'
+            color: 'var(--msg-text-color, var(--text-primary))'
           }}
         >
           {part.slice(1, -1)}
@@ -68,7 +74,7 @@ const renderInline = (text: string): React.ReactNode[] => {
     // Bold Italic: ***text***
     if (part.startsWith('***') && part.endsWith('***') && part.length >= 6) {
       return (
-        <strong key={pIdx} style={{ fontWeight: 700, fontStyle: 'italic', color: 'var(--text-primary)' }}>
+        <strong key={pIdx} style={{ fontWeight: 700, fontStyle: 'italic', color: 'var(--msg-text-color, var(--text-primary))' }}>
           {part.slice(3, -3)}
         </strong>
       );
@@ -77,7 +83,7 @@ const renderInline = (text: string): React.ReactNode[] => {
     // Bold: **text**
     if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
       return (
-        <strong key={pIdx} style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+        <strong key={pIdx} style={{ fontWeight: 700, color: 'var(--msg-text-color, var(--text-primary))' }}>
           {part.slice(2, -2)}
         </strong>
       );
@@ -85,7 +91,7 @@ const renderInline = (text: string): React.ReactNode[] => {
 
     // Italic: *text*
     if (part.startsWith('*') && part.endsWith('*') && part.length >= 2) {
-      return <em key={pIdx}>{part.slice(1, -1)}</em>;
+      return <em key={pIdx} style={{ color: 'inherit' }}>{part.slice(1, -1)}</em>;
     }
 
     // Raw URL: https://...
@@ -96,7 +102,13 @@ const renderInline = (text: string): React.ReactNode[] => {
           href={part}
           target="_blank"
           rel="noreferrer"
-          style={{ color: 'var(--brand-blue)', textDecoration: 'underline', wordBreak: 'break-all' }}
+          style={{
+            color: 'var(--msg-accent-color, var(--brand-blue))',
+            textDecoration: 'underline',
+            textUnderlineOffset: '3px',
+            fontWeight: 500,
+            wordBreak: 'break-all'
+          }}
         >
           {part}
         </a>
@@ -273,27 +285,27 @@ const renderFormattedContent = (content: string) => {
         const textNodes = renderInline(block.text || '');
         if (block.level === 1) {
           return (
-            <h1 key={idx} style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-primary)', margin: '0.85rem 0 0.4rem 0' }}>
+            <h1 key={idx} style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--msg-text-color, var(--text-primary))', margin: '0.85rem 0 0.4rem 0' }}>
               {textNodes}
             </h1>
           );
         }
         if (block.level === 2) {
           return (
-            <h2 key={idx} style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)', margin: '0.75rem 0 0.35rem 0' }}>
+            <h2 key={idx} style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--msg-text-color, var(--text-primary))', margin: '0.75rem 0 0.35rem 0' }}>
               {textNodes}
             </h2>
           );
         }
         if (block.level === 3) {
           return (
-            <h3 key={idx} style={{ fontSize: '1.02rem', fontWeight: 600, color: 'var(--text-primary)', margin: '0.65rem 0 0.3rem 0' }}>
+            <h3 key={idx} style={{ fontSize: '1.02rem', fontWeight: 600, color: 'var(--msg-text-color, var(--text-primary))', margin: '0.65rem 0 0.3rem 0' }}>
               {textNodes}
             </h3>
           );
         }
         return (
-          <h4 key={idx} style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)', margin: '0.55rem 0 0.25rem 0' }}>
+          <h4 key={idx} style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--msg-text-color, var(--text-primary))', margin: '0.55rem 0 0.25rem 0' }}>
             {textNodes}
           </h4>
         );
@@ -326,7 +338,7 @@ const renderFormattedContent = (content: string) => {
                           return (
                             <td key={cIdx}>
                               <span className="chat-table-badge" style={{ background: 'rgba(16, 185, 129, 0.12)', color: '#059669', fontWeight: 600 }}>
-                                Indefinite
+                                Infinite
                               </span>
                             </td>
                           );
@@ -347,7 +359,7 @@ const renderFormattedContent = (content: string) => {
                         return (
                           <td key={cIdx}>
                             <span className="chat-table-badge" style={{ background: 'rgba(16, 185, 129, 0.12)', color: '#059669', fontWeight: 600 }}>
-                              Indefinite
+                              Infinite
                             </span>
                           </td>
                         );
@@ -386,7 +398,7 @@ const renderFormattedContent = (content: string) => {
           <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', margin: '0.4rem 0 0.6rem 0' }}>
             {block.items?.map((item, itemIdx) => (
               <div key={itemIdx} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', marginLeft: '0.4rem' }}>
-                <span style={{ color: 'var(--brand-blue)', fontWeight: 700, lineHeight: '1.4' }}>•</span>
+                <span style={{ color: 'var(--msg-accent-color, var(--brand-blue))', fontWeight: 700, lineHeight: '1.4' }}>•</span>
                 <div style={{ flex: 1, lineHeight: '1.55' }}>{renderInline(item)}</div>
               </div>
             ))}
@@ -399,7 +411,7 @@ const renderFormattedContent = (content: string) => {
           <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', margin: '0.4rem 0 0.6rem 0' }}>
             {block.items?.map((item, itemIdx) => (
               <div key={itemIdx} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', marginLeft: '0.4rem' }}>
-                <span style={{ color: 'var(--brand-blue)', fontWeight: 600, fontSize: '0.85rem', lineHeight: '1.6', minWidth: '1.2rem' }}>
+                <span style={{ color: 'var(--msg-accent-color, var(--brand-blue))', fontWeight: 600, fontSize: '0.85rem', lineHeight: '1.6', minWidth: '1.2rem' }}>
                   {itemIdx + 1}.
                 </span>
                 <div style={{ flex: 1, lineHeight: '1.55' }}>{renderInline(item)}</div>
@@ -414,10 +426,10 @@ const renderFormattedContent = (content: string) => {
           <div
             key={idx}
             style={{
-              borderLeft: '3.5px solid var(--brand-blue)',
+              borderLeft: '3.5px solid var(--msg-accent-color, var(--brand-blue))',
               padding: '0.45rem 0.85rem',
               margin: '0.6rem 0',
-              background: 'rgba(36, 56, 129, 0.04)',
+              background: 'var(--msg-quote-bg, rgba(36, 56, 129, 0.04))',
               borderRadius: '0 6px 6px 0',
               lineHeight: '1.55'
             }}
@@ -463,7 +475,7 @@ const renderFormattedContent = (content: string) => {
       }
 
       case 'hr': {
-        return <hr key={idx} style={{ border: 'none', borderTop: '1px solid var(--border-color)', margin: '1rem 0' }} />;
+        return <hr key={idx} style={{ border: 'none', borderTop: '1px solid var(--msg-border-color, var(--border-color))', margin: '1rem 0' }} />;
       }
 
       case 'paragraph':

@@ -47,21 +47,6 @@ VALID_TOOLS = set(TOOL_TO_INTENT.keys())
 from core.utils.history import format_conversation_history as _format_history
 
 
-import re
-
-_CONVERSATIONAL_EXACT_RE = re.compile(
-    r"^(hi|hello|hey|greetings|howdy|hola|bonjour|salut|good morning|good afternoon|good evening|"
-    r"thanks|thank you|merci|gracias|bye|goodbye|who are you\??|what are you\??|what can you do\??|"
-    r"help\??)$",
-    re.IGNORECASE,
-)
-
-
-def _is_conversational_query(query: str) -> bool:
-    clean = (query or "").strip()
-    return bool(_CONVERSATIONAL_EXACT_RE.match(clean))
-
-
 def unified_tool_select(
     query: str,
     history: Optional[List[Dict[str, str]]] = None,
@@ -74,17 +59,9 @@ def unified_tool_select(
         - "reasoning": one-sentence explanation
         - "intent": the equivalent legacy QueryIntent value (for API compat)
 
-    Falls back to "respond_conversationally" for conversational messages,
-    or "search_document_chunks" (UNSTRUCTURED_RAG) for other queries if the LLM
+    Falls back to "search_document_chunks" (UNSTRUCTURED_RAG) if the LLM
     fails or returns an unrecognized tool name.
     """
-    if _is_conversational_query(query):
-        return {
-            "tool": "respond_conversationally",
-            "reasoning": "Conversational greeting / pleasantry.",
-            "intent": QueryIntent.CASUAL_CONVERSATION.value,
-        }
-
     from core.llm import generate_json
     from core.prompts import config_unified_agent_system_prompt
 
@@ -104,6 +81,7 @@ def unified_tool_select(
             system_prompt=config_unified_agent_system_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
+            response_prefix='{"tool":',
         )
         parsed = json.loads(raw)
         tool = str(parsed.get("tool", "")).strip()

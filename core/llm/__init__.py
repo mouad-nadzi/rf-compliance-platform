@@ -46,6 +46,7 @@ def generate_json(
     user_prompt: str,
     disable_thinking: bool = False,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    response_prefix: str = "",
 ) -> str:
     """
     Executes a prompt against the active LLM selected in config.py
@@ -54,6 +55,10 @@ def generate_json(
     Supports dynamic mode routing (disable_thinking=True for fast routing,
     disable_thinking=False for deep Q&A / extraction). Each engine formats the
     system/user prompts into its own native chat template.
+
+    When response_prefix is set, the prefix is injected into the assistant turn
+    of the prompt, forcing the model to continue from that exact token sequence.
+    The prefix is prepended back to the raw output before JSON extraction.
 
     This is the public API consumed by extractor.py, rag/qa.py, and rag/router.py.
     """
@@ -64,6 +69,7 @@ def generate_json(
             user_prompt=user_prompt,
             disable_thinking=disable_thinking,
             max_tokens=max_tokens,
+            response_prefix=response_prefix,
         )
 
 

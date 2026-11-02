@@ -162,6 +162,7 @@ class Qwen3_35BEngine(BaseLLMEngine):
         user_prompt: str,
         disable_thinking: bool = False,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        response_prefix: str = "",
     ) -> str:
         """
         Assemble ChatML prompt (handling Qwen3.6 empty <think> block) and execute completion.
@@ -184,6 +185,8 @@ class Qwen3_35BEngine(BaseLLMEngine):
                 "<|im_start|>assistant\n<think>\n</think>\n",
                 1,
             )
+        if response_prefix:
+            prompt = f"{prompt}{response_prefix}"
 
         temp = 0.7 if disable_thinking else 0.6
         top_p = 0.8 if disable_thinking else 0.95
@@ -196,4 +199,5 @@ class Qwen3_35BEngine(BaseLLMEngine):
             echo=False,
             stop=["<|im_end|>", "<|endoftext|>"],
         )
-        return response["choices"][0]["text"]
+        text = response["choices"][0]["text"]
+        return f"{response_prefix}{text}" if response_prefix else text

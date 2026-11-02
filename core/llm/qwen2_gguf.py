@@ -132,6 +132,7 @@ class Qwen2GGUFEngine(BaseLLMEngine):
         user_prompt: str,
         disable_thinking: bool = False,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        response_prefix: str = "",
     ) -> str:
         """Assemble ChatML prompt and execute completion with json_object constraint."""
         if not system_prompt:
@@ -141,6 +142,8 @@ class Qwen2GGUFEngine(BaseLLMEngine):
             f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
             f"<|im_start|>assistant\n"
         )
+        if response_prefix:
+            prompt = f"{prompt}{response_prefix}"
         temp = 0.1 if disable_thinking else 0.7
 
         try:
@@ -158,4 +161,5 @@ class Qwen2GGUFEngine(BaseLLMEngine):
                 temperature=temp,
                 echo=False,
             )
-        return response["choices"][0]["text"]
+        text = response["choices"][0]["text"]
+        return f"{response_prefix}{text}" if response_prefix else text

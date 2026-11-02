@@ -421,13 +421,13 @@ def execute_unstructured_query(user_query: str, db_session=None, history_text: s
             return FALLBACK_NOT_FOUND_MESSAGE
 
         # 2. Build QA Synthesis Prompt Payload
-        from core.prompts import QA_SYNTHESIS_SYSTEM_PROMPT
+        from core.prompts import config_qa_system_prompt
         user_prompt = build_unstructured_qa_prompt(clean_query, context_text, history_text)
 
         # 3. LLM Answer Synthesis
         from core.llm import generate_json
         raw_json_response = generate_json(
-            system_prompt=QA_SYNTHESIS_SYSTEM_PROMPT,
+            system_prompt=config_qa_system_prompt(),
             user_prompt=user_prompt,
             disable_thinking=False,
         )
