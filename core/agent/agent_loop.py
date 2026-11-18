@@ -164,7 +164,9 @@ def _llm_plan(
             system_prompt=config_planner_system_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
+            max_tokens=512,
             response_prefix=_PLAN_SCHEMA_PREFIX,
+            hop_name="agent_planner",
         )
         logger.info(f"PLANNER RAW RESPONSE:\n{raw_response}")
         parsed = json.loads(raw_response)
@@ -289,7 +291,11 @@ def iter_read_steps(plan: List[Step], url: str, artifacts: RunArtifacts):
 
 
 
-def stage_write_step(write_step: Step, artifacts: RunArtifacts) -> Dict[str, Any]:
+def stage_write_step(
+    write_step: Step,
+    artifacts: RunArtifacts,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Stage a proposal for the write step, carrying its artifacts and descriptive payload."""
     from core.agent.proposals import proposal_manager
 
@@ -367,6 +373,7 @@ def stage_write_step(write_step: Step, artifacts: RunArtifacts) -> Dict[str, Any
         "filters": filters,
         "delete_all": delete_all,
         "row_filter": row_filter,
+        "session_id": session_id,
     })
 
     write_step.description = desc
@@ -375,6 +382,7 @@ def stage_write_step(write_step: Step, artifacts: RunArtifacts) -> Dict[str, Any
         "AGENT_ACTION",
         payload,
         sql_preview=desc or artifacts.source_url or None,
+        session_id=session_id,
     )
 
 

@@ -9,11 +9,11 @@ remains focused strictly on its specific task.
 
 
 def _with_long_term_memory(base_prompt: str) -> str:
-    """Appends active long-term memories to any task-specific system prompt."""
+    """Prepends active long-term memories to any task-specific system prompt so all prompts share an identical prefix."""
     from core.agent.memory import format_memories_for_prompt
     mem_block = format_memories_for_prompt()
     if mem_block:
-        return f"{base_prompt}\n{mem_block}"
+        return f"{mem_block.strip()}\n\n{base_prompt.strip()}"
     return base_prompt
 
 
@@ -75,7 +75,6 @@ INSTRUCTIONS:
 STRICT JSON OUTPUT FORMAT:
 You must return raw JSON matching this structure:
 {
-  "question": "<user question>",
   "answer": "<synthesized answer or fallback message>",
   "citations": [
     {
@@ -162,7 +161,7 @@ STRICT JSON OUTPUT FORMAT:
 Return raw valid JSON matching this exact structure (NO markdown, NO code fences):
 {
   "tool": "search_database_sql" | "search_document_chunks" | "search_hybrid" | "respond_conversationally" | "execute_agent_action",
-  "reasoning": "<one-sentence justification for tool selection>"
+  "reasoning": "<brief 5-10 word justification>"
 }
 """
 
@@ -279,9 +278,16 @@ STRICT RULES:
 """
 
 
-def config_sql_generator_system_prompt(objective: str, schema: str) -> str:
-    """Dynamically builds the SQL generator system prompt with objective, schema, and active long-term memories injected."""
-    base = SQL_GENERATOR_SYSTEM_PROMPT.replace("{OBJECTIVE}", objective).replace("{SCHEMA}", schema)
+def config_sql_generator_system_prompt(objective: str, schema: str = "") -> str:
+    """Dynamically builds the SQL generator system prompt with objective and active long-term memories injected."""
+    from core.agent.memory import format_memories_for_prompt
+    mem_block = format_memories_for_prompt()
+    effective_schema = (
+        "Refer to the authoritative (TABLE_SCHEMA:<table_name>) definitions in [AGENT LONG-TERM MEMORY] above."
+        if "TABLE_SCHEMA:" in mem_block
+        else schema
+    )
+    base = SQL_GENERATOR_SYSTEM_PROMPT.replace("{OBJECTIVE}", objective).replace("{SCHEMA}", effective_schema)
     return _with_long_term_memory(base)
 
 
@@ -350,99 +356,76 @@ SQL_SYSTEM_PROMPT_TEMPLATE = """Translate the user's natural language question i
 DATABASE SCHEMA (PostgreSQL):
 {SCHEMA}
 
-DATA CONVENTIONS & MULTI-TABLE RELATIONS:
-- PRIMARY TABLES:
-  1. `certificates`: Regulatory certificates (`certificate_id`, `component`, `supplier`, `country`, `certif_number`, `authority`, `issue_date`, `exp_date`, `cert_link`, `file_name`).
-  2. `components`: Vehicle components and assigned responsible engineers (`id`, `componentname`, `modelname`, `supplier`, `freq`, `id_responsible`, `docinfo_link`).
-  3. `responsibles`: Responsible engineer directory (`id`, `firstname`, `lastname`, `phone`, `email`, `mission_comment`).
-  4. `countries`: Country priority and metadata (`id`, `country_code`, `country`, `stla_current_priority`).
-  5. `authority_lookups`: Regulatory bodies (`id`, `canonical_authority`, `abbreviation`, `country`, `standard_validity_years`).
-  6. `supplier_lookups`: Canonical suppliers (`id`, `canonical_supplier`, `aliases`).
-  7. `sources`: Portals (`id`, `url`, `description`, `active`).
-
-- MULTI-TABLE JOINS & CROSS-CHECKS:
-  - When the user asks about components, certificates, and responsible engineers:
-    JOIN `certificates` with `components` matching component names or models:
-    `LEFT JOIN components ON LOWER(TRIM(certificates.component)) = LOWER(TRIM(components.componentname)) OR LOWER(TRIM(certificates.component)) = LOWER(TRIM(components.modelname))`
-  - To include the responsible engineer's details (name / email):
-    `LEFT JOIN responsibles ON LOWER(TRIM(components.id_responsible)) = LOWER(TRIM(responsibles.email)) OR components.id_responsible = responsibles.id::text`
-  - Use `LEFT JOIN` so records without an exact component/responsible match are still included.
-  - Always use `ILIKE` or `LOWER(TRIM(...))` when matching text attributes across tables.
-
-- DATES & EXPIRATION LOGIC:
-  - `exp_date` is a DATE column (YYYY-MM-DD).
-  - Indefinite / non-expiring / perpetual certificates are stored with `exp_date = '2999-01-01'`.
-  - Expired certificates: `exp_date < CURRENT_DATE` (always exclude indefinite certificates: `exp_date < CURRENT_DATE AND exp_date < '2900-01-01'`).
-  - Valid/active certificates: `exp_date >= CURRENT_DATE` (this naturally includes `2999-01-01` indefinite certificates).
-  - Indefinite / permanent certificates: `exp_date >= '2900-01-01'` or `exp_date = '2999-01-01'`.
-  - Expiring in year N: `EXTRACT(YEAR FROM exp_date) = 2026` (only for specific normal years, never 2999).
-  - Expiring soon (e.g. next 90 days): `exp_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '90 days'`.
-
-- ATTRIBUTE SELECTION:
-  - When asked for expired components with their responsible engineers:
-    Select clear descriptive columns (Component, Supplier, Expiration Date, Responsible Email / Name, Country, Authority):
-    `SELECT DISTINCT c.component, c.supplier, c.exp_date, c.country, c.authority, cmp.id_responsible AS responsible_email, r.firstname, r.lastname FROM certificates c LEFT JOIN components cmp ON LOWER(TRIM(c.component)) = LOWER(TRIM(cmp.componentname)) OR LOWER(TRIM(c.component)) = LOWER(TRIM(cmp.modelname)) LEFT JOIN responsibles r ON LOWER(TRIM(cmp.id_responsible)) = LOWER(TRIM(r.email)) WHERE c.exp_date < CURRENT_DATE AND c.exp_date < '2900-01-01' ORDER BY c.exp_date ASC LIMIT 50;`
+MULTI-TABLE JOINS & CONVENTIONS:
+- JOIN `certificates` with `components`:
+  `LEFT JOIN components ON LOWER(TRIM(certificates.component)) = LOWER(TRIM(components.componentname)) OR LOWER(TRIM(certificates.component)) = LOWER(TRIM(components.modelname))`
+- JOIN `components` with `responsibles`:
+  `LEFT JOIN responsibles ON LOWER(TRIM(components.id_responsible)) = LOWER(TRIM(responsibles.email)) OR components.id_responsible = responsibles.id::text`
+- Always use `ILIKE` or `LOWER(TRIM(...))` when matching text attributes across tables.
+- DATES & EXPIRATION LOGIC (`exp_date` is DATE YYYY-MM-DD):
+  - Indefinite / non-expiring certificates use `exp_date = '2999-01-01'`.
+  - Expired certificates: `exp_date < CURRENT_DATE AND exp_date < '2900-01-01'`.
+  - Valid/active certificates: `exp_date >= CURRENT_DATE`.
+  - Indefinite certificates: `exp_date >= '2900-01-01'`.
+  - Expiring in year N: `EXTRACT(YEAR FROM exp_date) = 2026`.
+  - Expiring soon (next 90 days): `exp_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '90 days'`.
+- When asked for expired components with responsible engineers, select descriptive columns (`c.component, c.supplier, c.exp_date, c.country, c.authority, cmp.id_responsible AS responsible_email, r.firstname, r.lastname`).
 
 STRICT RULES:
-1. Output ONLY a valid, single-statement PostgreSQL SELECT query (or WITH / CTE).
-2. NEVER generate DROP, UPDATE, DELETE, INSERT, ALTER, CREATE, TRUNCATE, GRANT, REVOKE, MERGE, CALL, or any other mutating statement. Read access only.
-3. Reference ONLY tables and columns that exist in the provided schema.
-4. Use COUNT(*) for "how many / number of" questions. Use GROUP BY for breakdowns.
-5. Limit large result lists to at most 100 rows.
+1. Output ONLY a valid, single-statement PostgreSQL SELECT query (or WITH / CTE). Read access only (no DDL/DML).
+2. Reference ONLY tables and columns that exist in the schema.
+3. Use COUNT(*) for "how many / number of" questions. Use GROUP BY for breakdowns.
+4. Limit large result lists to at most 100 rows.
 
 STRICT JSON OUTPUT FORMAT:
 Return raw valid JSON matching this exact structure:
 {{
-  "sql": "<your PostgreSQL SELECT statement>",
-  "explanation": "<one brief sentence describing what the query does>"
+  "sql": "<your PostgreSQL SELECT statement>"
 }}
 
 STRICT RULES (continued):
-- The "sql" field MUST contain a single SELECT statement and nothing else (no surrounding prose or code fences).
-- Do NOT wrap the output in markdown code blocks (e.g., no ```json). Return pure JSON only.
+- The "sql" field MUST contain a single SELECT statement and nothing else.
+- Do NOT wrap the output in markdown code blocks. Return pure JSON only.
 """
 
 
-def config_sql_system_prompt(schema: str) -> str:
-    """Dynamically builds the Text-to-SQL system prompt with schema and active long-term memories injected."""
-    base = SQL_SYSTEM_PROMPT_TEMPLATE.format(SCHEMA=schema)
+def config_sql_system_prompt(schema: str = "") -> str:
+    """Dynamically builds the Text-to-SQL system prompt with active long-term memories as single source of schema truth."""
+    from core.agent.memory import format_memories_for_prompt
+    mem_block = format_memories_for_prompt()
+    effective_schema = (
+        "Refer to the authoritative (TABLE_SCHEMA:<table_name>) definitions in [AGENT LONG-TERM MEMORY] above."
+        if "TABLE_SCHEMA:" in mem_block
+        else schema
+    )
+    base = SQL_SYSTEM_PROMPT_TEMPLATE.format(SCHEMA=effective_schema)
     return _with_long_term_memory(base)
 
 
-SQL_RESULT_SYNTHESIS_PROMPT = """Synthesize the PostgreSQL database query results into a structured, readable response for the user.
+SQL_RESULT_SYNTHESIS_PROMPT = """Write a concise 1-2 sentence executive summary answering the user's question based on the PostgreSQL query results.
 
 You will receive:
 1. The user's original question.
 2. The PostgreSQL query that was executed.
-3. The raw query results.
+3. A compact summary of the query results.
 
-MANDATORY FORMATTING & SYNTHESIS RULES:
-1. EXECUTIVE SUMMARY:
-   - Start with a clear 1-2 sentence executive summary answering the question directly (e.g., "Found **87** expired component certificates in the database. Below is the breakdown with their corresponding responsible engineers and suppliers:").
-
-2. STRUCTURED TABLES (MANDATORY FOR LISTS OF 2+ RECORDS):
-   - If presenting 2 or more records/components/certificates, **ALWAYS format them as a clean Markdown table**.
-   - Include clear, professional table headers (e.g., `| Component / Model | Supplier | Responsible Engineer | Expiration Date | Country / Authority |`).
-   - **CRITICAL ANTI-BULK RULE: NEVER dump unformatted comma-separated text blobs or massive run-on paragraphs of names.**
-   - If more than 15 records exist, present the top 10–15 most critical records in the table, followed by a clear summary note: `*(Showing top 15 of 87 total matching records)*`.
-
-3. RESPONSIBLE ENGINEERS & MISSING FIELDS:
-   - If a responsible engineer is found (email or name), display it clearly (e.g., `fatimaezzhara.farkaoui@external.stellantis.com` or `John Doe (john.doe@stellantis.com)`).
-   - If a responsible engineer is unassigned or not found in the database, write `Unassigned` or `Not specified` in the table cell — do NOT omit the column or complain about missing data.
-
-4. TONE & LANGUAGE:
+MANDATORY SYNTHESIS RULES:
+1. CONCISE EXECUTIVE SUMMARY ONLY:
+   - Write a direct 1-2 sentence executive summary answering the question (e.g., "There are **112** RF homologation certificates from **Brazil** recorded in the database." or "Found **5** recent RF homologation certificates for **Argentina** across suppliers including **Bosch** and **Valeo**. Below is the detailed breakdown:").
+   - When the result is a list of 2 or more rows, DO NOT generate a Markdown table or list all rows yourself — the platform automatically renders the complete structured Markdown table right below your summary.
+   - When the result is a single scalar value (such as a count) or a single record, state the complete answer clearly in 1-2 sentences using bolding for key figures, components, and dates.
+2. TONE & LANGUAGE:
    - Follow the identity, tone, and formatting directives in [AGENT LONG-TERM MEMORY] and write in the SAME language as the user's question.
-   - Use bolding for key component codes and dates.
 
 STRICT JSON OUTPUT FORMAT:
 Return raw valid JSON matching this exact structure:
 {{
-  "answer": "<your structured Markdown answer with summary and table>"
+  "answer": "<your 1-2 sentence executive summary>"
 }}
 
 STRICT RULES:
-- The "answer" field MUST contain the formatted Markdown response.
-- Do NOT wrap the outer output in markdown code blocks (e.g., no ```json). Return pure JSON only.
+- The "answer" field MUST contain ONLY the concise executive summary text.
+- Do NOT wrap the outer output in markdown code blocks. Return pure JSON only.
 """
 
 

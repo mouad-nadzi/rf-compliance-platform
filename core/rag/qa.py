@@ -77,21 +77,12 @@ def _build_qa_prompt(query: str, retrieved_chunks: List[Dict[str, Any]]) -> tupl
 
 def answer_query_with_citations(
     query: str,
-    retrieved_chunks: List[Dict[str, Any]]
+    retrieved_chunks: List[Dict[str, Any]],
+    disable_thinking: bool = True,
 ) -> QAResponseSchema:
     """
     Synthesizes a citation-backed answer for a user query given retrieved context chunks.
-
-    Args:
-        query (str): The user's natural language question.
-        retrieved_chunks (List[Dict[str, Any]]): Top relevant chunk dictionaries produced
-            by core/rag/retriever.py.
-
-    Returns:
-        QAResponseSchema: Validated Pydantic object containing question, synthesized answer,
-            and supporting citations.
     """
-    # Defensive check for empty inputs or empty chunks
     if not query or not query.strip() or not retrieved_chunks:
         logger.warning("Empty query or no retrieved chunks provided. Returning fallback response.")
         return QAResponseSchema(
@@ -100,32 +91,27 @@ def answer_query_with_citations(
             citations=[]
         )
 
-    # 1. Build prompt payload combining context chunks and query
     system_prompt, user_prompt = _build_qa_prompt(query, retrieved_chunks)
 
-    # 2. Invoke local LLM engine for JSON generation (Full Reasoning Mode)
     from core.llm import generate_json
     raw_json_response = generate_json(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
-        disable_thinking=False,
+        disable_thinking=disable_thinking,
+        max_tokens=1024,
+        response_prefix='{"answer": "' if disable_thinking else "",
+        hop_name="qa_synthesis",
     )
 
-    # 3. Parse and Validate with Pydantic schema
     try:
         parsed_response = QAResponseSchema.model_validate_json(raw_json_response)
-        
-        # Ensure question field matches original query if LLM altered it
         if not getattr(parsed_response, "question", None):
             parsed_response.question = query
-
         return parsed_response
 
     except Exception as e:
         logger.error(f"  JSON/Pydantic validation failed for Q&A synthesis: {e}")
         logger.debug(f"Raw Output: {raw_json_response}")
-        
-        # Return fallback QAResponseSchema to prevent system crash
         return QAResponseSchema(
             question=query,
             answer=FALLBACK_NOT_FOUND_MESSAGE,
@@ -205,35 +191,27 @@ def stream_synthesize_answer(
     system_prompt: str,
     user_prompt: str,
     query: str,
-    disable_thinking: bool = False,
+    disable_thinking: bool = True,
+    max_tokens: int = 1024,
+    hop_name: str = "qa_synthesis",
 ):
     """
     Streams a citation-backed answer generation token-by-token.
-
-    Surfaces progressive text token-by-token as the JSON 'answer' field populates,
-    while yielding raw thinking tokens separately during the reasoning phase.
-
-    Args:
-        system_prompt: System instructions for the completion.
-        user_prompt:   User-facing query / instruction payload.
-        query:         Original user question (used for final QAResponseSchema validation).
-        disable_thinking: True for fast non-thinking mode (e.g. casual replies).
-
-    Yields event dicts:
-      {"type": "thinking", "text": <raw reasoning tokens>}
-      {"type": "token", "text": <incremental answer text>}
-      {"type": "synthesis_done", "answer": ..., "citations": [...]}
     """
     from core.llm import generate_stream
 
     buffer = ""
     last_answer = ""
     in_thinking_block = False
+    prefix = '{"answer": "' if disable_thinking else ""
 
     for token in generate_stream(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         disable_thinking=disable_thinking,
+        max_tokens=max_tokens,
+        response_prefix=prefix,
+        hop_name=hop_name,
     ):
         buffer += token
 
@@ -262,7 +240,7 @@ def stream_synthesize_answer(
 
     answer, citations = parse_qa_response(buffer, query)
     final_answer = answer or last_answer
-    
+
     if not last_answer and final_answer:
         yield {"type": "token", "text": final_answer}
 

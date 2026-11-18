@@ -48,7 +48,7 @@ class GLMOCREngine(BaseOCREngine):
             logger.info(" GLM-OCR (HF) is already loaded, skipping reload.")
             return
 
-        logger.info(f"⏳ Loading '{self.MODEL_ID}' via transformers into GPU memory...")
+        logger.info(f" Loading '{self.MODEL_ID}' via transformers into GPU memory...")
         try:
             self._processor = AutoProcessor.from_pretrained(
                 self.MODEL_ID,
@@ -62,6 +62,7 @@ class GLMOCREngine(BaseOCREngine):
                 trust_remote_code=True,
                 cache_dir=cache_dir,
             ).eval()
+            logging.getLogger().setLevel(logging.INFO)
             logger.info(" GLM-OCR loaded successfully with Hugging Face execution core!")
         except Exception as e:
             logger.error(f" CRITICAL ERROR: Failed to load GLM-OCR via transformers. Details: {e}")

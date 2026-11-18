@@ -2,8 +2,20 @@ export interface ChatSession {
   id: string;
   title: string;
   created_at: string;
-  updated_at: string;
+  updated_at?: string;
   frozen: boolean;
+  is_streaming?: boolean;
+}
+
+export interface ActiveChatJob {
+  job_id: string;
+  session_id: string;
+  user_query?: string;
+  status: string;
+  thinking: string;
+  partial_answer: string;
+  intent: string;
+  event_count: number;
 }
 
 export interface ChatMessage {
@@ -34,6 +46,20 @@ export const api = {
     return Array.isArray(json) ? json : (json.messages || []);
   },
 
+  getSessionDetails: async (sessionId: string): Promise<{ messages: ChatMessage[]; active_job: ActiveChatJob | null; frozen: boolean }> => {
+    const res = await fetch(`${API_BASE}/chat/sessions/${sessionId}/messages`);
+    if (!res.ok) throw new Error('Failed to fetch session details');
+    const json = await res.json();
+    if (Array.isArray(json)) {
+      return { messages: json, active_job: null, frozen: false };
+    }
+    return {
+      messages: Array.isArray(json.messages) ? json.messages : [],
+      active_job: json.active_job || null,
+      frozen: Boolean(json.frozen),
+    };
+  },
+
   deleteSession: async (sessionId: string): Promise<void> => {
     const res = await fetch(`${API_BASE}/chat/sessions/${sessionId}`, {
       method: 'DELETE',
@@ -41,13 +67,17 @@ export const api = {
     if (!res.ok) throw new Error('Failed to delete session');
   },
 
-  startChatStream: async (query: string, sessionId?: string): Promise<{ job_id: string | null; session_id: string; frozen: boolean; answer?: string; intent?: string }> => {
+  startChatStream: async (
+    query: string,
+    sessionId?: string,
+    deepThinking?: boolean
+  ): Promise<{ job_id: string | null; session_id: string; frozen: boolean; answer?: string; intent?: string }> => {
     const res = await fetch(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ query, session_id: sessionId }),
+      body: JSON.stringify({ query, session_id: sessionId, deep_thinking: Boolean(deepThinking) }),
     });
     if (!res.ok) throw new Error('Failed to start chat stream');
     return res.json();

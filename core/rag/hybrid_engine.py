@@ -386,7 +386,12 @@ def build_unstructured_qa_prompt(user_query: str, context_text: str, history_tex
     )
 
 
-def execute_unstructured_query(user_query: str, db_session=None, history_text: str = "") -> str:
+def execute_unstructured_query(
+    user_query: str,
+    db_session=None,
+    history_text: str = "",
+    disable_thinking: bool = True,
+) -> str:
     """
     Full UNSTRUCTURED_RAG execution pipeline:
       1. Hybrid retrieval (Dense + Sparse + RRF + Parent Expansion).
@@ -429,7 +434,10 @@ def execute_unstructured_query(user_query: str, db_session=None, history_text: s
         raw_json_response = generate_json(
             system_prompt=config_qa_system_prompt(),
             user_prompt=user_prompt,
-            disable_thinking=False,
+            disable_thinking=disable_thinking,
+            max_tokens=1024,
+            response_prefix='{"answer": "' if disable_thinking else "",
+            hop_name="qa_synthesis",
         )
 
         # 4. Parse JSON answer output

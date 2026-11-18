@@ -387,6 +387,10 @@ async def lifespan(app: FastAPI):
     # Pre-seed Long-Term Memory profiles for all existing core tables
     _seed_table_schema_memories()
 
+    logging.getLogger().setLevel(logging.INFO)
+    from core.llm import warmup_prefix_cache
+    warmup_prefix_cache()
+
     logger.info("OCR and LLM engines resident in VRAM; embedding model in RAM.")
 
     # Start the autonomous background scheduler (APScheduler AsyncIOScheduler).
@@ -1849,7 +1853,7 @@ def get_or_create_table_schema_memory(db: Session, table_name: str, target_field
 
 @app.post("/api/v1/databases/map-headers")
 @app.post("/api/v1/certificates/map-headers")
-async def llm_map_spreadsheet_headers(payload: dict = Body(...), db: Session = Depends(get_db)):
+def llm_map_spreadsheet_headers(payload: dict = Body(...), db: Session = Depends(get_db)):
     """
     Table-Agnostic LLM Alignment Engine (Qwen):
     1. For existing tables: Fetches table schema and sample records from Long-Term Memory (agent_memories & DB), then maps headers and standardizes cell text.
@@ -2308,11 +2312,15 @@ class ChatRequest(BaseModel):
         default=None,
         description="Existing chat session id. If omitted or unknown, a new session is created.",
     )
+    deep_thinking: bool = Field(
+        default=False,
+        description="Opt-in deep chain-of-thought reasoning mode.",
+    )
 
 
 @app.get("/api/v1/chat/sessions")
 def list_chat_sessions():
-    """Lists all chat sessions (newest first) with title, message count, and freeze status."""
+    """Lists all chat sessions (newest first) with title, message count, freeze status, and live stream status."""
     from schemas.extraction import ChatMessage, ChatSession
 
     try:
@@ -2322,11 +2330,13 @@ def list_chat_sessions():
             result = []
             for row in rows:
                 count = db.query(ChatMessage).filter(ChatMessage.session_id == row.id).count()
+                active_job = _get_active_job_for_session(row.id)
                 result.append({
                     "id": row.id,
                     "title": row.title or "New chat",
                     "message_count": count,
                     "frozen": bool(row.frozen),
+                    "is_streaming": active_job is not None,
                     "created_at": row.created_at.isoformat() if row.created_at else "",
                 })
             return result
@@ -2350,6 +2360,8 @@ def delete_chat_session(session_id: str):
 
     with _CHAT_SESSIONS_LOCK:
         cached = _CHAT_SESSIONS.pop(session_id, None)
+    with _CHAT_STREAM_JOBS_LOCK:
+        _SESSION_ACTIVE_JOBS.pop(session_id, None)
     try:
         db = SessionLocal()
         try:
@@ -2372,7 +2384,7 @@ def delete_chat_session(session_id: str):
 
 @app.get("/api/v1/chat/sessions/{session_id}/messages")
 def get_chat_session_messages(session_id: str):
-    """Returns the full message history, context usage, and freeze status for a session."""
+    """Returns the full message history, context usage, freeze status, and any active streaming job for a session."""
     session = _get_chat_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found.")
@@ -2383,25 +2395,26 @@ def get_chat_session_messages(session_id: str):
         "usage_tokens": _session_usage_tokens(session),
         "context_threshold": config.CHAT_CONTEXT_FULL_THRESHOLD,
         "messages": session.get("messages", []),
+        "active_job": _get_active_job_for_session(session_id),
+    }
+
+
+@app.get("/api/v1/chat/sessions/{session_id}/active")
+def get_chat_session_active_job(session_id: str):
+    """Returns the currently running streaming job metadata for a session, or null if idle."""
+    return {
+        "session_id": session_id,
+        "active_job": _get_active_job_for_session(session_id),
     }
 
 
 @app.post("/api/v1/chat")
-async def chat_compliance_query(
+def chat_compliance_query(
     request: ChatRequest,
     db: Session = Depends(get_db),
 ):
     """
     Unified compliance Q&A chat endpoint with persistent multi-session history.
-
-    Routes queries through the central RAG orchestrator:
-      1. Intent classification (METADATA_QUERY, UNSTRUCTURED_RAG, HYBRID_QUERY).
-      2. Optimal execution path (Text-to-SQL, Hybrid Vector RRF, or Dual-Path).
-      3. Returns citation-backed answer, router decision, sources, and latency.
-
-    Context-window guard: a session freezes once its cumulative estimated prompt
-    budget crosses `config.CHAT_CONTEXT_FULL_THRESHOLD`; further turns return the
-    freeze message until the user opens a new session.
     """
     clean_query = (request.query or "").strip()
     if not clean_query:
@@ -2409,7 +2422,6 @@ async def chat_compliance_query(
 
     session = _get_or_create_chat_session(request.session_id)
 
-    # Frozen-session guard: no new turns accepted.
     if session.get("frozen", False):
         return {
             "answer": config.CHAT_CONTEXT_FULL_MESSAGE,
@@ -2423,7 +2435,6 @@ async def chat_compliance_query(
             "context_threshold": config.CHAT_CONTEXT_FULL_THRESHOLD,
         }
 
-    # Context-window budget guard: freeze the session if the new turn would overflow.
     projected_usage = _session_usage_tokens(session, clean_query)
     if projected_usage > config.CHAT_CONTEXT_FULL_THRESHOLD:
         with _CHAT_SESSIONS_LOCK:
@@ -2443,13 +2454,15 @@ async def chat_compliance_query(
 
     try:
         from core.rag import answer_compliance_query
+        prior_history = list(session.get("messages", []))
         response = answer_compliance_query(
             user_query=clean_query,
             db_session=db,
-            history=list(session.get("messages", [])),
+            history=prior_history,
+            session_id=session["id"],
+            deep_thinking=bool(request.deep_thinking),
         )
 
-        # Persist the turn into the session history.
         with _CHAT_SESSIONS_LOCK:
             session.setdefault("messages", []).append(
                 {"role": "user", "content": clean_query}
@@ -2460,7 +2473,6 @@ async def chat_compliance_query(
             if not session.get("title"):
                 session["title"] = clean_query[:60]
 
-        # Mirror the turn to PostgreSQL so it survives backend restarts.
         is_first_turn = len(session["messages"]) == 2
         _persist_chat_turn(
             session["id"],
@@ -2481,12 +2493,11 @@ async def chat_compliance_query(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Streaming Chat (Job-based SSE) — fixes UI freeze by decoupling inference from
-# the Streamlit script run. The pipeline runs in a background thread; the UI
-# consumes tokens via a tailing SSE endpoint while staying interactive.
+# Streaming Chat (Session-Independent Job-based SSE)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _CHAT_STREAM_JOBS: Dict[str, Dict[str, Any]] = {}
+_SESSION_ACTIVE_JOBS: Dict[str, str] = {}
 _CHAT_STREAM_JOBS_LOCK = threading.Lock()
 
 #: In-memory store of manual autonomous-discovery runs (dispatched from the
@@ -2505,19 +2516,51 @@ def _sse_event(event: Dict[str, Any]) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
 
-def _persist_streamed_turn(session_id: str, user_query: str, done_event: Dict[str, Any]) -> None:
-    """Records the streamed turn into the in-memory session and PostgreSQL."""
+def _get_active_job_for_session(session_id: str) -> Dict[str, Any] | None:
+    """Returns live streaming job metadata for a session if a turn is currently in-flight."""
+    if not session_id:
+        return None
+    with _CHAT_STREAM_JOBS_LOCK:
+        job_id = _SESSION_ACTIVE_JOBS.get(session_id)
+        if not job_id:
+            return None
+        job = _CHAT_STREAM_JOBS.get(job_id)
+        if not job or job.get("done"):
+            return None
+        return {
+            "job_id": job_id,
+            "session_id": session_id,
+            "user_query": job.get("user_query", ""),
+            "status": job.get("status", ""),
+            "thinking": job.get("thinking", ""),
+            "partial_answer": job.get("partial_answer", ""),
+            "intent": job.get("intent", ""),
+            "event_count": len(job.get("events", [])),
+        }
+
+
+def _persist_streamed_user_turn(session_id: str, user_query: str) -> None:
+    """Immediately records the user's message at stream start so session switches/reloads preserve it."""
+    title = None
+    with _CHAT_SESSIONS_LOCK:
+        session = _CHAT_SESSIONS.get(session_id)
+        if session is not None:
+            is_first = len(session.get("messages", [])) == 0
+            session.setdefault("messages", []).append({"role": "user", "content": user_query})
+            if not session.get("title"):
+                session["title"] = (user_query or "")[:60]
+            if is_first:
+                title = session["title"]
+    _persist_chat_turn(session_id, "user", user_query, title=title)
+
+
+def _persist_streamed_assistant_turn(session_id: str, done_event: Dict[str, Any]) -> None:
+    """Records the assistant's completed answer into the in-memory session and PostgreSQL."""
     answer = str(done_event.get("answer", ""))
     with _CHAT_SESSIONS_LOCK:
         session = _CHAT_SESSIONS.get(session_id)
         if session is not None:
-            session.setdefault("messages", []).append({"role": "user", "content": user_query})
-            session["messages"].append({"role": "assistant", "content": answer})
-            if not session.get("title"):
-                session["title"] = (user_query or "")[:60]
-        is_first_turn = bool(session and len(session.get("messages", [])) == 2)
-        title = session["title"] if is_first_turn else None
-    _persist_chat_turn(session_id, "user", user_query, title=title)
+            session.setdefault("messages", []).append({"role": "assistant", "content": answer})
     _persist_chat_turn(session_id, "assistant", answer)
 
 
@@ -2526,24 +2569,34 @@ def _run_chat_stream_job(
     user_query: str,
     session_id: str,
     history: List[Dict[str, str]],
+    deep_thinking: bool = False,
 ) -> None:
-    """Background worker: runs the streaming RAG pipeline and persists the turn.
-
-    Token/status events are appended immediately; the terminal `done` event is
-    only emitted AFTER the turn has been persisted, so a client that receives
-    `done` can immediately re-fetch the session history.
-    """
+    """Background worker: runs the streaming RAG pipeline and persists the assistant turn."""
     from core.rag import answer_compliance_query_stream
 
     done_event = None
     try:
         with _CHAT_INFERENCE_LOCK:
-            for evt in answer_compliance_query_stream(user_query=user_query, history=history):
+            for evt in answer_compliance_query_stream(
+                user_query=user_query,
+                history=history,
+                session_id=session_id,
+                deep_thinking=deep_thinking,
+            ):
                 if evt["type"] == "done":
                     evt["session_id"] = session_id
                     done_event = evt
                     break
                 with job["cond"]:
+                    if evt["type"] == "status":
+                        job["status"] = evt.get("message", "")
+                        if evt.get("intent"):
+                            job["intent"] = evt["intent"]
+                    elif evt["type"] == "thinking":
+                        job["thinking"] = job.get("thinking", "") + str(evt.get("text", ""))
+                    elif evt["type"] == "token":
+                        job["partial_answer"] = job.get("partial_answer", "") + str(evt.get("text", ""))
+                        job["status"] = ""
                     job["events"].append(evt)
                     job["cond"].notify_all()
     except Exception as exc:
@@ -2558,17 +2611,22 @@ def _run_chat_stream_job(
             "latency_ms": 0.0,
         }
 
-    # Persist the turn BEFORE signalling completion.
+    # Persist the assistant turn BEFORE signalling completion.
     if done_event is not None:
         try:
-            _persist_streamed_turn(session_id, user_query, done_event)
+            _persist_streamed_assistant_turn(session_id, done_event)
         except Exception as exc:
             logger.warning(f" Could not persist streamed chat turn: {exc}")
+
+    with _CHAT_STREAM_JOBS_LOCK:
+        if _SESSION_ACTIVE_JOBS.get(session_id) == job.get("job_id"):
+            _SESSION_ACTIVE_JOBS.pop(session_id, None)
 
     with job["cond"]:
         if done_event is not None:
             job["events"].append(done_event)
         job["done"] = True
+        job["status"] = ""
         job["cond"].notify_all()
 
 
@@ -2589,8 +2647,8 @@ def _purge_stale_chat_jobs() -> None:
 @app.post("/api/v1/chat/stream")
 def start_chat_stream(request: ChatRequest):
     """
-    Starts a streaming chat job. Returns immediately with a job_id; the answer is
-    consumed progressively via GET /api/v1/chat/stream/{job_id} (SSE).
+    Starts a streaming chat job. Immediately persists the user turn and registers
+    the active job under `session_id` so switching sessions or pages never loses state.
     """
     clean_query = (request.query or "").strip()
     if not clean_query:
@@ -2604,6 +2662,12 @@ def start_chat_stream(request: ChatRequest):
         "usage_tokens": _session_usage_tokens(session),
         "context_threshold": config.CHAT_CONTEXT_FULL_THRESHOLD,
     }
+
+    # If this specific session already has an active running job, return its job_id so the client attaches to it.
+    existing_active = _get_active_job_for_session(session["id"])
+    if existing_active is not None:
+        base_response["job_id"] = existing_active["job_id"]
+        return base_response
 
     if session.get("frozen", False):
         base_response.update({
@@ -2627,31 +2691,57 @@ def start_chat_stream(request: ChatRequest):
 
     _purge_stale_chat_jobs()
 
+    # Snapshot prior history BEFORE recording the new user turn
+    with _CHAT_SESSIONS_LOCK:
+        prior_history = list(session.get("messages", []))
+
+    try:
+        _persist_streamed_user_turn(session["id"], clean_query)
+    except Exception as exc:
+        logger.warning(f" Could not persist initial user turn: {exc}")
+
+    is_queued = _CHAT_INFERENCE_LOCK.locked()
+    initial_status = (
+        "Queued — waiting for active session task to complete..."
+        if is_queued
+        else "Understanding your request..."
+    )
+
     job_id = f"chat_{uuid.uuid4().hex[:12]}"
     job = {
-        "events": [],
+        "job_id": job_id,
+        "session_id": session["id"],
+        "user_query": clean_query,
+        "status": initial_status,
+        "thinking": "",
+        "partial_answer": "",
+        "intent": "",
+        "events": [{"type": "status", "stage": "queued", "message": initial_status}] if is_queued else [],
         "done": False,
         "cond": threading.Condition(),
         "created_at": datetime.now(timezone.utc).timestamp(),
     }
     with _CHAT_STREAM_JOBS_LOCK:
         _CHAT_STREAM_JOBS[job_id] = job
+        _SESSION_ACTIVE_JOBS[session["id"]] = job_id
 
     worker = threading.Thread(
         target=_run_chat_stream_job,
-        args=(job, clean_query, session["id"], list(session.get("messages", []))),
+        args=(job, clean_query, session["id"], prior_history, bool(request.deep_thinking)),
         daemon=True,
     )
     worker.start()
 
     base_response["job_id"] = job_id
+    base_response["usage_tokens"] = _session_usage_tokens(session)
     return base_response
 
 
 @app.get("/api/v1/chat/stream/{job_id}")
-def stream_chat_job(job_id: str):
+def stream_chat_job(job_id: str, from_index: int = Query(0, ge=0)):
     """
     Tails a streaming chat job and yields its events as Server-Sent Events.
+    Supports `from_index` so clients switching sessions or pages can resume or replay seamlessly.
     """
 
     def event_iterator():
@@ -2660,7 +2750,7 @@ def stream_chat_job(job_id: str):
         if job is None:
             yield _sse_event({"type": "error", "message": "Unknown or expired chat job."})
             return
-        sent = 0
+        sent = max(0, int(from_index))
         while True:
             with job["cond"]:
                 while sent >= len(job["events"]) and not job["done"]:
@@ -3395,7 +3485,7 @@ def insert_schema_table_data(table_name: str, payload: dict = Body(...)):
 
 
 @app.post("/api/v1/schema/tables/{table_name}/data/batch")
-async def batch_insert_schema_table_data(table_name: str, rows: list = Body(...), standardize: bool = Query(True)):
+def batch_insert_schema_table_data(table_name: str, rows: list = Body(...), standardize: bool = Query(True)):
     """Batch inserts multiple rows into a dynamic custom table with optional bulk LLM standardization."""
     from storage import dynamic_schema
     try:

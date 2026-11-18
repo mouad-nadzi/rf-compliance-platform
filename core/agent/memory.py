@@ -12,6 +12,23 @@ from schemas.extraction import AgentMemory
 
 logger = logging.getLogger(__name__)
 
+_MEMORY_PROMPT_CACHE: Dict[int, str] = {}
+
+
+def invalidate_memory_cache() -> None:
+    """Invalidates the in-memory formatted Long-Term Memory cache and downstream LLM prefix cache."""
+    _MEMORY_PROMPT_CACHE.clear()
+    try:
+        from core.rag.sql_engine import invalidate_schema_cache
+        invalidate_schema_cache()
+    except Exception:
+        pass
+    try:
+        from core.llm import invalidate_prefix_cache
+        invalidate_prefix_cache()
+    except Exception:
+        pass
+
 
 def save_agent_memory(
     memory_key: str,
@@ -34,12 +51,14 @@ def save_agent_memory(
         session.flush()
         session.refresh(row)
         logger.info(f" Saved long-term memory id={row.id} [{key}]: '{text[:60]}...'")
-        return {
+        res = {
             "id": row.id,
             "memory_key": row.memory_key,
             "fact_text": row.fact_text,
             "created_at": row.created_at.isoformat() if row.created_at else None,
         }
+    invalidate_memory_cache()
+    return res
 
 
 def get_active_memories(category: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
@@ -98,7 +117,8 @@ def delete_agent_memory(memory_id: int) -> bool:
             
             session.delete(row)
             logger.info(f" Moved long-term memory id={memory_id} to Recycle Bin.")
-            return True
+        invalidate_memory_cache()
+        return True
     except Exception as exc:
         logger.error(f" Failed to delete long-term memory id={memory_id}: {exc}")
         return False
@@ -111,6 +131,10 @@ def format_memories_for_prompt(limit: int = 30) -> str:
     concise table schema summaries so raw UI column JSON never crowds out core directives.
     """
     import json
+
+    cached = _MEMORY_PROMPT_CACHE.get(limit)
+    if cached is not None:
+        return cached
 
     memories = get_active_memories(limit=limit)
     if not memories:
@@ -162,7 +186,9 @@ def format_memories_for_prompt(limit: int = 30) -> str:
             lines.append(f"- ({m['memory_key'].upper()}): {raw_fact}")
 
     lines.append("[END LONG-TERM MEMORY]\n")
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    _MEMORY_PROMPT_CACHE[limit] = result
+    return result
 
 
 DEFAULT_IDENTITY_MEMORIES = [
@@ -211,5 +237,6 @@ def seed_base_identity_memories() -> None:
                         existing_row.fact_text = item["fact_text"]
                         logger.info(f" Updated base memory [{item['memory_key']}]: {item['fact_text'][:60]}...")
             session.commit()
+        invalidate_memory_cache()
     except Exception as exc:
         logger.warning(f" Could not seed base identity memories: {exc}")

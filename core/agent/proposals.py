@@ -60,34 +60,27 @@ class ProposalManager:
         proposal_type: str,
         payload: Dict[str, Any],
         sql_preview: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Stage a new PENDING proposal.
-
-        Args:
-            proposal_type: "DB_EDIT", "SEND_EMAIL", or "INGEST_DOCUMENT".
-            payload: action payload (e.g. {op, table, values, row_filter} for
-                DB_EDIT, {draft_id} for SEND_EMAIL, or {file_path, source_url}
-                for INGEST_DOCUMENT).
-            sql_preview: literal-bound SQL preview for human inspection (DB_EDIT).
-
-        Returns:
-            The stored proposal dict.
         """
         if proposal_type not in VALID_TYPES:
             raise ValueError(f"Invalid proposal type '{proposal_type}'; must be one of {VALID_TYPES}.")
 
+        resolved_session_id = session_id or (payload.get("session_id") if isinstance(payload, dict) else None)
         proposal_id = uuid.uuid4().hex[:12]
         proposal = {
             "proposal_id": proposal_id,
             "type": proposal_type,
+            "session_id": resolved_session_id,
             "payload": payload,
             "status": "PENDING",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "sql_preview": sql_preview,
         }
         self._write(proposal)
-        logger.info(f" Staged {proposal_type} proposal {proposal_id}.")
+        logger.info(f" Staged {proposal_type} proposal {proposal_id} (session={resolved_session_id}).")
         return proposal
 
     def get_proposal(self, proposal_id: str) -> Optional[Dict[str, Any]]:
@@ -102,9 +95,15 @@ class ProposalManager:
             logger.warning(f" Could not read proposal {proposal_id}: {exc}")
             return None
 
-    def list_pending_proposals(self) -> List[Dict[str, Any]]:
-        """Return all proposals currently in the PENDING state."""
-        return [p for p in self._list_all() if p.get("status") == "PENDING"]
+    def list_pending_proposals(self, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return proposals currently in the PENDING state, scoped to session_id when provided."""
+        pending = [p for p in self._list_all() if p.get("status") == "PENDING"]
+        if session_id:
+            return [
+                p for p in pending
+                if p.get("session_id") == session_id or p.get("session_id") is None
+            ]
+        return pending
 
     def list_all_proposals(self) -> List[Dict[str, Any]]:
         """Return all proposals, newest first."""

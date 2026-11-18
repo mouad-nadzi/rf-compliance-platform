@@ -332,6 +332,7 @@ class BaseLLMEngine(ABC):
         user_prompt: str = "",
         disable_thinking: bool = False,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        response_prefix: str = "",
     ):
         """
         Template method: streams the raw model output token-by-token.
@@ -345,6 +346,7 @@ class BaseLLMEngine(ABC):
             user_prompt:   User-facing query / instruction payload.
             disable_thinking: True for fast non-thinking mode; False for deep reasoning mode.
             max_tokens: Maximum completion tokens to generate.
+            response_prefix: Optional string injected at the start of the assistant turn.
 
         Yields:
             str: Incremental raw text chunks from the model.
@@ -361,6 +363,7 @@ class BaseLLMEngine(ABC):
             user_prompt=user_prompt,
             disable_thinking=disable_thinking,
             max_tokens=max_tokens,
+            response_prefix=response_prefix,
         )
 
     def _generate_stream(
@@ -369,16 +372,22 @@ class BaseLLMEngine(ABC):
         user_prompt: str,
         disable_thinking: bool = False,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        response_prefix: str = "",
     ):
         """
         Model-specific streaming hook. Default implementation yields the complete
         non-streaming result in one chunk. Engines that support incremental decoding
         (e.g. llama-cpp-python `stream=True`) override this to yield real tokens.
         """
-        yield self._generate_raw(
+        raw = self._generate_raw(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             disable_thinking=disable_thinking,
             max_tokens=max_tokens,
+            response_prefix=response_prefix,
         )
+        if response_prefix:
+            yield response_prefix + raw
+        else:
+            yield raw
 

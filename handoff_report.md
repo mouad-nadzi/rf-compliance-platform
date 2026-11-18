@@ -1,5 +1,5 @@
 # Project Handoff Report — RF Compliance Platform
-**Date:** 2026-11-02  
+**Date:** 2026-11-18  
 **Status:** LIVE IN PRODUCTION on GCP NVIDIA L4 Host  
 **Primary LLM:** Qwen3.8-27B GGUF UD-IQ3_XXS (`qwen3.8-27b-gguf`, 3-bit, 32k context)  
 **Primary OCR:** GLM-OCR (pure-HF transformers, `glm-ocr`)  
@@ -97,6 +97,7 @@ rf-compliance-platform/
 │   │   ├── qwen2_gguf.py      Qwen2-7B baseline engine
 │   │   ├── gemma4_26b.py      Gemma 4 26B engine (100% benchmark accuracy)
 │   │   ├── qwen_agentworld.py Qwen-AgentWorld-35B specialized agent engine
+│   │   ├── llama_server.py    HTTP client engine for llama-server sidecar
 │   │   └── __init__.py
 │   │
 │   ├── ocr/
@@ -171,7 +172,9 @@ rf-compliance-platform/
 ├── tests/
 │   ├── test_memory_engine.py
 │   ├── test_dynamic_schema.py
-│   └── test_dag_engine.py
+│   ├── test_dag_engine.py
+│   ├── test_normalization.py
+│   └── test_session_and_performance.py
 │
 ├── handoff_report.md           This file — read first in every new session
 ├── docker-compose.yaml         2-container stack (rf_app + rf_postgres_db)
@@ -238,6 +241,7 @@ Both OCR and LLM are co-resident in VRAM simultaneously. Sequential load/unload 
 | `qwen3-14b-gguf` | `core/llm/qwen3_14b.py` | `unsloth/Qwen3-14B-GGUF` UD-IQ1_M | Balanced model |
 | `qwen-agentworld-35b` | `core/llm/qwen_agentworld.py` | `unsloth/Qwen-AgentWorld-35B-A3B-GGUF` UD-IQ2_M | Specialized agentic model |
 | `qwen2-7b-gguf` | `core/llm/qwen2_gguf.py` | `Qwen/Qwen2-7B-Instruct-GGUF` Q4_K_M | Lightweight baseline |
+| `llama-server` | `core/llm/llama_server.py` | External `llama-server` HTTP sidecar | Optional multi-slot / MTP sidecar |
 
 ### Full OCR Registry
 
@@ -355,6 +359,7 @@ Passing strings silently triggers the no-flash-attn constructor fallback, pads t
 
 For Qwen3 models, `/no_think` and `/think` mode tags must be injected **inside the user block** — never after `<|im_start|>assistant\n`. The string placement rule is model-specific:
 - **Qwen3 8B/14B**: inject soft ` /no_think` at end of user block.
+- **Qwen3.8 27B**: emit `<think>\n\n</think>\n\n` after assistant header (`disable_thinking=True`) per GGUF `tokenizer.chat_template`.
 - **Qwen3.6/AgentWorld 35B**: inject already-closed `<think>\n</think>` after assistant header (Qwen3.6 ignores `/no_think`).
 - **Gemma 4**: fixed 0.7/0.8 sampling, no thinking tag.
 - **Qwen2 7B**: `response_format={"type": "json_object"}`.
@@ -488,7 +493,7 @@ cd frontend && npm run dev
 | Regulatory Authorities | **183** (all countries seeded in `data/lookups/authorities.json`) |
 | Suppliers | **50+** (alias mappings pre-cached for 100% canonical resolution) |
 | Active Model Cache | Qwen3.8-27B (11 GB) + GLM-OCR (2.5 GB) + bge-m3 (4.3 GB) = **17.8 GB** |
-| Tests | **5/5 passing** (`python3 -m unittest discover tests`) |
+| Tests | **21/21 passing** (`python3 -m unittest discover tests`) |
 | Table Schema Memories | Unified 5-key JSON schema across all 6 core & dynamic database tables in `agent_memories` |
 | Import Performance | AI Diffing batch standardizer achieves **10x speedup** (<60s for 88 rows) |
 | Git Status | Clean workspace, services fully containerized on GCP L4 host |
@@ -530,6 +535,28 @@ cd frontend && npm run dev
   - Restored the interactive Preview & Mapping modal in [`frontend/src/views/DatabasesView.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/DatabasesView.tsx), added balanced JSON array/object extraction in [`core/base.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/base.py), and normalized bidirectional header mappings in `/api/v1/databases/map-headers`.
   - Replaced inline `isUser` style overrides in [`frontend/src/components/Chat/ChatMessage.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/components/Chat/ChatMessage.tsx) and [`frontend/src/views/ChatView.css`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/ChatView.css) with scoped CSS custom properties (`--msg-text-color`, `--msg-accent-color`, `--msg-code-bg`, `--msg-quote-bg`, `--msg-border-color`).
   - Standardized `response_prefix: str = ""` across `BaseLLMEngine` and all 7 LLM engine implementations in `core/llm/`.
+
+### G. Inference Speed Optimization & Session-Independent Chat Lifecycle (2026-11-18)
+- **Native Qwen3.8 ChatML Non-Thinking Switch (`core/llm/qwen3_8_27b.py`):**
+  - Inspected the GGUF `tokenizer.chat_template` embedded in `Qwen3.8-27B-UD-IQ3_XXS.gguf` and replaced the legacy ` /no_think` user-block suffix (ignored by Qwen3.8 when `response_prefix` is empty) with the native `<|im_start|>assistant\n<think>\n\n</think>\n\n{response_prefix}` generation header for `disable_thinking=True`.
+  - Eliminated hidden `<think>...</think>` generation during SQL generation, SQL result synthesis, and casual replies, and added an opt-in **Deep Think** toggle in [`frontend/src/views/ChatView.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/ChatView.tsx).
+- **Sequence-State Prefix Checkpointing for Hybrid Recurrent (`qwen35`) Layers (`core/llm/qwen3_8_27b.py`, `core/prompts.py`, `core/agent/memory.py`):**
+  - Because `Qwen3.8-27B` uses `llama_memory_hybrid` (`llama_kv_cache` + `llama_memory_recurrent` Gated DeltaNet layers), standard `llama.cpp` partial KV truncation (`kv_cache_seq_rm` with `0 < p0 < n_tokens`) returns `false` after a completion finishes, previously forcing full prompt re-evaluation on every hop.
+  - Reordered [`_with_long_term_memory()`](file:///home/mouadnadzi3/rf-compliance-platform/core/prompts.py#L11-L17) so `[AGENT LONG-TERM MEMORY]` sits at token 0 of every prompt, followed by append-only conversation history segments, and implemented sequence-0 state snapshotting (`llama_state_seq_get_data` / `llama_state_seq_set_data`) at the exact prefix boundary (`n_batch=2048, n_ubatch=2048`), pre-warmed at container startup (`1014` tokens, `183.3 MB` state).
+  - Deduplicated `config_sql_system_prompt()` and `config_sql_generator_system_prompt()` so they reference the cached `TABLE_SCHEMA:*` definitions in `[AGENT LONG-TERM MEMORY]` instead of repeating 900 tokens of schema descriptions in the uncached suffix.
+  - Added in-memory caching with deterministic DDL/memory invalidation (`invalidate_memory_cache()`, `invalidate_schema_cache()`, `invalidate_prefix_cache()`) and bounded history compaction in [`core/utils/history.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/utils/history.py).
+- **Deterministic SQL Markdown Table Rendering & Per-Hop Hardware Telemetry (`core/rag/sql_engine.py`, `core/llm/__init__.py`):**
+  - [`core/rag/sql_engine.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/rag/sql_engine.py) now renders multi-row database results deterministically via `_build_markdown_table()` while the LLM generates only a concise 1-2 sentence executive summary (`max_tokens=180`, `response_prefix='{"answer": "'`), eliminating 20-30s of row-by-row LLM table transcription.
+  - Added native `llama_perf_context` per-hop telemetry (`[LLM_TELEMETRY]` logs and `timings` array on `done` events) tracking `prompt_tokens`, `cached_prefix_tokens`, `eval_prompt_tokens`, `completion_tokens`, `prefill_ms`, `decode_ms`, and `tok_per_s`.
+- **Verified 4-Turn Benchmark Results on GCP NVIDIA L4:**
+  - Greeting (`"hi"`): **13.93 s -> 4.79 s** (TTFT **9.36 s -> 2.46 s**, **2.9x faster**).
+  - Single SQL count (`"How many certificates are there from Brazil?"`): **30.35 s -> 7.31 s** (TTFT **26.71 s -> 6.22 s**, **4.15x faster**).
+  - Contextual SQL follow-up (`"and from Argentina?"`): **31.51 s -> 6.79 s** (TTFT **27.79 s -> 5.70 s**, **4.64x faster**).
+  - 5-row SQL table (`"list the 5 most recent ones from Argentina with supplier and expiry"`): **54.57 s -> 9.46 s** (TTFT **31.25 s -> 6.26 s**, **5.77x faster**).
+  - Cumulative 4-turn session latency: **130.36 s -> 28.35 s (4.60x end-to-end speedup)**.
+- **Session-Independent Chat Lifecycle & Scoped HITL Proposals (`server/main.py`, `core/agent/proposals.py`, `frontend/`):**
+  - Persists user turns immediately at stream start (`_persist_streamed_user_turn`), tracks active jobs per session (`_SESSION_ACTIVE_JOBS`, `GET /api/v1/chat/sessions/{id}/active`, `from_index` resume on `/api/v1/chat/stream/{job_id}`), and scopes HITL proposals by `session_id`.
+  - Lifted `EventSource` connections and per-session stream state into [`frontend/src/components/Layout/AppLayout.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/components/Layout/AppLayout.tsx) (`sessionStreams`) so switching sessions or navigating across views preserves live thinking, status, and streaming output without cross-session bleed.
 
 ---
 
@@ -576,6 +603,8 @@ cd frontend && npm run dev
 | Non-blocking fast semantic column profiler (37ms table data latency) | Completed |
 | 3-Tier Agent Memory synchronization & PostgreSQL `UNIQUE` key integrity | Completed |
 | Unified RF Certificate Normalization Engine across all ingestion pathways (`core/normalization.py`) | Completed |
+| Sequence-state prefix checkpointing (`qwen35`), native `<think>` switch, & 4.6x chat latency speedup | Completed |
+| Session-independent chat streaming (`AppLayout` global stream store + backend active job reattach + scoped HITL proposals) | Completed |
 
 ---
 
@@ -616,4 +645,4 @@ cd frontend && npm run dev
 
 ---
 
-*Last updated: 2026-11-02 | Branch: `main`*
+*Last updated: 2026-11-18 | Branch: `main`*

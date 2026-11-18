@@ -71,7 +71,7 @@ if PYDANTIC_AVAILABLE:
 
     class QAResponseSchema(BaseModel):
         question: str = Field(
-            ...,
+            default="",
             description="The original user query or question."
         )
         answer: str = Field(
@@ -89,6 +89,6 @@ else:
         supporting_quote: str
 
     class QAResponseSchema(BaseModel):
-        question: str
-        answer: str
+        question: str = ""
+        answer: str = ""
         citations: List[Citation] = []

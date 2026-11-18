@@ -81,7 +81,9 @@ def unified_tool_select(
             system_prompt=config_unified_agent_system_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
-            response_prefix='{"tool":',
+            max_tokens=96,
+            response_prefix='{"tool": "',
+            hop_name="router",
         )
         parsed = json.loads(raw)
         tool = str(parsed.get("tool", "")).strip()

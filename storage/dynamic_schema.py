@@ -127,6 +127,11 @@ def cleanup_orphaned_schema_memories() -> int:
             if deleted_count > 0:
                 db.commit()
                 logger.info(f"Purged {deleted_count} orphaned table_schema memory entries.")
+                try:
+                    from core.agent.memory import invalidate_memory_cache
+                    invalidate_memory_cache()
+                except Exception:
+                    pass
             return deleted_count
         except Exception as exc:
             db.rollback()
@@ -211,6 +216,11 @@ def sync_table_schema_memory(table_name: str) -> None:
                 for m in mems:
                     db.delete(m)
                 db.commit()
+                try:
+                    from core.agent.memory import invalidate_memory_cache
+                    invalidate_memory_cache()
+                except Exception:
+                    pass
                 return
 
             mem = mems[0] if mems else None
@@ -268,6 +278,11 @@ def sync_table_schema_memory(table_name: str) -> None:
                 db.add(new_mem)
             db.commit()
             logger.info(f"Synchronized schema memory for '{clean_table}' with fields {col_names}")
+            try:
+                from core.agent.memory import invalidate_memory_cache
+                invalidate_memory_cache()
+            except Exception:
+                pass
         except Exception as exc:
             db.rollback()
             logger.warning(f"Failed to sync schema memory for '{clean_table}': {exc}")

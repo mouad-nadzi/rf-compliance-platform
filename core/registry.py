@@ -35,6 +35,7 @@ LLM_REGISTRY: dict[str, str] = {
     "qwen2-7b-gguf":          "core.llm.qwen2_gguf.Qwen2GGUFEngine",
     "qwen3-14b-gguf":         "core.llm.qwen3_14b.Qwen3_14B_GGUFEngine",
     "qwen-agentworld-35b":    "core.llm.qwen_agentworld.QwenAgentWorld35BEngine",
+    "llama-server":           "core.llm.llama_server.LlamaServerEngine",
 }
 
 

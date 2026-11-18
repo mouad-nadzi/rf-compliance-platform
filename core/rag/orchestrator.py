@@ -22,7 +22,11 @@ from typing import Any, Dict, List, Optional
 
 from server import config
 from core.rag.unified_agent import QueryIntent, unified_tool_select
-from core.rag.sql_engine import execute_metadata_query, FALLBACK_MESSAGE as SQL_FALLBACK
+from core.rag.sql_engine import (
+    execute_metadata_query,
+    execute_sql_structured_context,
+    FALLBACK_MESSAGE as SQL_FALLBACK,
+)
 from core.rag.hybrid_engine import (
     retrieve_hybrid_context,
     execute_unstructured_query,
@@ -61,7 +65,9 @@ def _reformulate_query(user_query: str, history) -> str:
                 f"Return ONLY the raw JSON output matching the schema."
             ),
             disable_thinking=True,
-            response_prefix='{"rewritten_query":',
+            max_tokens=128,
+            response_prefix='{"rewritten_query": "',
+            hop_name="query_rewrite",
         )
 
         parsed = json.loads(raw_response)
@@ -95,7 +101,9 @@ def _casual_conversation_reply(user_query: str, history_text: str = "") -> str:
             system_prompt=config_casual_conversation_system_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
-            response_prefix='{"answer":',
+            max_tokens=384,
+            response_prefix='{"answer": "',
+            hop_name="casual_reply",
         )
         parsed = json.loads(raw_response)
         if isinstance(parsed, dict):
@@ -109,6 +117,51 @@ def _casual_conversation_reply(user_query: str, history_text: str = "") -> str:
         "Hello! I'm here to help with your certificate compliance questions. "
         "Ask me about suppliers, countries, expiry dates, or document contents."
     )
+
+
+def _build_action_synthesis_user_prompt(
+    user_query: str,
+    action_name: str,
+    execution_outcome: Any,
+    read_narrations: Optional[List[str]] = None,
+    history_text: str = "",
+) -> str:
+    """Builds a prefix-aligned user prompt for agent action synthesis."""
+    if isinstance(execution_outcome, dict):
+        outcome_str = json.dumps(execution_outcome, ensure_ascii=False, default=str)
+    elif execution_outcome is not None:
+        outcome_str = str(execution_outcome)
+    else:
+        outcome_str = "Action completed."
+
+    read_context = ""
+    if read_narrations:
+        valid_narrations = [str(n).strip() for n in read_narrations if n and str(n).strip()]
+        if valid_narrations:
+            read_context = "\n".join(f"- {n}" for n in valid_narrations)
+
+    prompt_parts = []
+    if history_text:
+        prompt_parts.append(history_text)
+    prompt_parts.append(f"USER REQUEST: {user_query}")
+    prompt_parts.append(f"ACTION EXECUTED: {action_name}")
+    prompt_parts.append(f"EXECUTION OUTCOME: {outcome_str}")
+    if read_context:
+        prompt_parts.append(f"INSPECTION / CONTEXT FINDINGS:\n{read_context}")
+    prompt_parts.append("\nReturn ONLY the raw JSON output matching the schema.")
+    return "\n\n".join(prompt_parts)
+
+
+def _fallback_action_outcome_str(execution_outcome: Any) -> str:
+    if isinstance(execution_outcome, dict):
+        status = execution_outcome.get("status", "completed")
+        msg = execution_outcome.get("message", "Action executed.")
+        rowc = execution_outcome.get("rowcount")
+        count_str = f" ({rowc} rows affected)" if rowc is not None and rowc >= 0 else ""
+        return f"{status.title()}: {msg}{count_str}"
+    elif execution_outcome:
+        return str(execution_outcome)
+    return "Action executed successfully."
 
 
 def _synthesize_agent_action_reply(
@@ -125,38 +178,22 @@ def _synthesize_agent_action_reply(
     from core.prompts import config_action_synthesis_system_prompt
     from core.llm import generate_json
 
-    outcome_str = ""
-    if isinstance(execution_outcome, dict):
-        outcome_str = json.dumps(execution_outcome, ensure_ascii=False, default=str)
-    elif execution_outcome is not None:
-        outcome_str = str(execution_outcome)
-    else:
-        outcome_str = "Action completed."
-
-    read_context = ""
-    if read_narrations:
-        valid_narrations = [str(n).strip() for n in read_narrations if n and str(n).strip()]
-        if valid_narrations:
-            read_context = "\n".join(f"- {n}" for n in valid_narrations)
-
-    prompt_parts = []
-    if history_text:
-        prompt_parts.append(f"CONVERSATION HISTORY:\n{history_text}")
-    prompt_parts.append(f"USER REQUEST: {user_query}")
-    prompt_parts.append(f"ACTION EXECUTED: {action_name}")
-    prompt_parts.append(f"EXECUTION OUTCOME: {outcome_str}")
-    if read_context:
-        prompt_parts.append(f"INSPECTION / CONTEXT FINDINGS:\n{read_context}")
-    prompt_parts.append("\nReturn ONLY the raw JSON output matching the schema.")
-
-    user_prompt = "\n\n".join(prompt_parts)
+    user_prompt = _build_action_synthesis_user_prompt(
+        user_query=user_query,
+        action_name=action_name,
+        execution_outcome=execution_outcome,
+        read_narrations=read_narrations,
+        history_text=history_text,
+    )
 
     try:
         raw_response = generate_json(
             system_prompt=config_action_synthesis_system_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
-            response_prefix='{"answer":',
+            max_tokens=512,
+            response_prefix='{"answer": "',
+            hop_name="action_synthesis",
         )
         parsed = json.loads(raw_response)
         if isinstance(parsed, dict):
@@ -166,16 +203,47 @@ def _synthesize_agent_action_reply(
     except Exception as exc:
         logger.warning(f" Agent action synthesis generation failed: {exc}")
 
-    # Fallback to human-readable structured message if synthesis LLM fails
-    if isinstance(execution_outcome, dict):
-        status = execution_outcome.get("status", "completed")
-        msg = execution_outcome.get("message", "Action executed.")
-        rowc = execution_outcome.get("rowcount")
-        count_str = f" ({rowc} rows affected)" if rowc is not None and rowc >= 0 else ""
-        return f"{status.title()}: {msg}{count_str}"
-    elif execution_outcome:
-        return str(execution_outcome)
-    return "Action executed successfully."
+    return _fallback_action_outcome_str(execution_outcome)
+
+
+def _stream_synthesize_agent_action_reply(
+    user_query: str,
+    action_name: str,
+    execution_outcome: Any,
+    collector: Dict[str, Any],
+    read_narrations: Optional[List[str]] = None,
+    history_text: str = "",
+):
+    """
+    Streams the agent action synthesis token-by-token in real time without artificial sleep delays.
+    """
+    from core.prompts import config_action_synthesis_system_prompt
+    from core.rag.qa import stream_synthesize_answer
+
+    user_prompt = _build_action_synthesis_user_prompt(
+        user_query=user_query,
+        action_name=action_name,
+        execution_outcome=execution_outcome,
+        read_narrations=read_narrations,
+        history_text=history_text,
+    )
+    for evt in stream_synthesize_answer(
+        config_action_synthesis_system_prompt(),
+        user_prompt,
+        user_query,
+        disable_thinking=True,
+        max_tokens=512,
+        hop_name="action_synthesis",
+    ):
+        if evt["type"] in ("token", "thinking"):
+            yield evt
+        elif evt["type"] == "synthesis_done":
+            collector["answer"] = evt.get("answer", "")
+
+    if not collector.get("answer"):
+        fb = _fallback_action_outcome_str(execution_outcome)
+        collector["answer"] = fb
+        yield {"type": "token", "text": fb}
 
 
 _URL_RE = re.compile(r"https?://[^\s'\"<>)\]]+")
@@ -199,21 +267,25 @@ def _extract_url(query: str) -> str:
 def _handle_chat_approval_stream(
     user_query: str,
     history: Optional[List[Dict[str, str]]] = None,
+    session_id: Optional[str] = None,
 ):
     """
     Generator: handles chat-based HITL confirmations for the most recent PENDING
-    AGENT_ACTION proposal and streams live status events (Running OCR, Extracting
-    metadata, Persisting to DB) while executing the approved action.
+    AGENT_ACTION proposal scoped to the active session and streams live status events.
     """
     import queue
     import threading
     from core.agent.proposals import proposal_manager
+    from core.llm import get_turn_telemetry
 
     query = str(user_query or "").strip()
     if not query:
         return
 
-    pending = [p for p in proposal_manager.list_pending_proposals() if p.get("type") == "AGENT_ACTION"]
+    pending = [
+        p for p in proposal_manager.list_pending_proposals(session_id=session_id)
+        if p.get("type") == "AGENT_ACTION"
+    ]
     if not pending:
         return
     proposal = pending[0]
@@ -233,7 +305,9 @@ def _handle_chat_approval_stream(
             system_prompt=system_prompt,
             user_prompt=f"USER MESSAGE: {query}\n\nReturn ONLY raw JSON.",
             disable_thinking=True,
-            response_prefix='{"decision":',
+            max_tokens=64,
+            response_prefix='{"decision": "',
+            hop_name="approval_classifier",
         )
         parsed = json.loads(raw_res)
         if isinstance(parsed, dict):
@@ -259,10 +333,7 @@ def _handle_chat_approval_stream(
             "Let me know if you'd like to try a different link or command."
         )
         yield {"type": "status", "stage": "agent_action", "message": "Proposal rejected."}
-        words = reply.split(" ")
-        for i, w in enumerate(words):
-            yield {"type": "token", "text": w + (" " if i < len(words) - 1 else "")}
-            time.sleep(0.012)
+        yield {"type": "token", "text": reply}
         yield {
             "type": "done",
             "answer": reply,
@@ -270,6 +341,7 @@ def _handle_chat_approval_stream(
             "reasoning": "User rejected pending agent action proposal.",
             "sources": [],
             "latency_ms": 0.0,
+            "timings": get_turn_telemetry(),
         }
         return
 
@@ -329,16 +401,15 @@ def _handle_chat_approval_stream(
         action_desc = "; ".join(action_descs)
 
         yield {"type": "status", "stage": "generation", "message": "Synthesizing result..."}
-        reply = _synthesize_agent_action_reply(
+        collector: Dict[str, Any] = {}
+        yield from _stream_synthesize_agent_action_reply(
             user_query=action_desc,
             action_name=action_name,
             execution_outcome=raw_outcome,
+            collector=collector,
+            history_text=_format_history(history),
         )
-
-        words = reply.split(" ")
-        for i, w in enumerate(words):
-            yield {"type": "token", "text": w + (" " if i < len(words) - 1 else "")}
-            time.sleep(0.012)
+        reply = collector.get("answer", "")
 
         yield {
             "type": "done",
@@ -347,39 +418,28 @@ def _handle_chat_approval_stream(
             "reasoning": "User approved pending agent action proposal.",
             "sources": [],
             "latency_ms": 0.0,
+            "timings": get_turn_telemetry(),
         }
         return
-
-
-
 
 
 def answer_compliance_query(
     user_query: str,
     db_session=None,
     history: Optional[List[Dict[str, str]]] = None,
+    session_id: Optional[str] = None,
+    deep_thinking: bool = False,
 ) -> Dict[str, Any]:
     """
     Unified entry point for query processing across all routing paths.
-
-    Args:
-        user_query (str): Natural language user question.
-        db_session: SQLAlchemy session (or None to auto-manage a local session).
-        history (Optional[List[Dict]]): Prior conversation turns ({role, content})
-            injected into LLM prompts so follow-up questions keep context.
-
-    Returns:
-        Dict[str, Any] standardized payload:
-            - answer (str): Synthesized natural language answer.
-            - intent (str): "METADATA_QUERY", "UNSTRUCTURED_RAG", "HYBRID_QUERY",
-              "CASUAL_CONVERSATION", or "AGENT_ACTION".
-            - reasoning (str): Explanation for router classification decision.
-            - sources (List[Dict]): List of source certificates and page references.
-            - latency_ms (float): Total processing latency in milliseconds.
     """
+    from core.llm import start_turn_telemetry, get_turn_telemetry
+
+    start_turn_telemetry()
     t_start = time.perf_counter()
     clean_query = str(user_query or "").strip()
     history_text = _format_history(history)
+    disable_thinking = not deep_thinking
 
     if not clean_query:
         return {
@@ -388,14 +448,8 @@ def answer_compliance_query(
             "reasoning": "Blank query submitted.",
             "sources": [],
             "latency_ms": 0.0,
+            "timings": [],
         }
-
-    # Chat-based HITL confirmation: handled synchronously via the proposal manager
-    from core.agent.proposals import proposal_manager
-    pending = [p for p in proposal_manager.list_pending_proposals() if p.get("type") == "AGENT_ACTION"]
-    if pending:
-        # Route to AGENT_ACTION so the streaming path handles confirmation/rejection
-        pass
 
     resolved_query = clean_query
 
@@ -407,7 +461,6 @@ def answer_compliance_query(
         close_session_on_exit = True
 
     try:
-        # Step 1: Unified tool selection (single LLM hop replaces 2-stage router)
         logger.info(f" Unified agent tool selection for: '{clean_query[:60]}...'")
         tool_decision = unified_tool_select(clean_query, history=history)
         intent = tool_decision.get("intent", QueryIntent.UNSTRUCTURED_RAG.value)
@@ -418,32 +471,28 @@ def answer_compliance_query(
         answer_text = ""
         sources: List[Dict[str, Any]] = []
 
-        # Step 2: Route Execution
         if intent == QueryIntent.METADATA_QUERY.value:
-            # Path A: Text-to-SQL
             logger.info(" Executing METADATA_QUERY path (Text-to-SQL)...")
-            answer_text = execute_metadata_query(clean_query, db_session, history_text=history_text)
+            answer_text = execute_metadata_query(
+                clean_query, db_session, history_text=history_text, disable_thinking=disable_thinking
+            )
             sources = [{"type": "database", "table": "certificates", "query_type": "relational_sql"}]
 
         elif intent == QueryIntent.HYBRID_QUERY.value:
-            # Path C: Dual-Path Hybrid (Structured SQL + Unstructured Vector RRF)
             logger.info(" Executing HYBRID_QUERY path (Dual-Path SQL + Vector RRF)...")
             resolved_query = _reformulate_query(clean_query, history)
             try:
-                # Structured facts from SQL engine
-                sql_answer = execute_metadata_query(clean_query, db_session, history_text=history_text)
-
-                # Unstructured context from Hybrid RRF
+                sql_facts = execute_sql_structured_context(clean_query, db_session, history_text=history_text)
                 hybrid_payload = retrieve_hybrid_context(resolved_query, db_session, top_k=5)
                 context_text = hybrid_payload.get("context_text", "").strip()
                 sources = hybrid_payload.get("sources", [])
 
-                if context_text and sql_answer and sql_answer != SQL_FALLBACK:
+                if context_text and sql_facts:
                     dual_prompt = (
                         f"{history_text}\n\n" if history_text else ""
                     ) + (
                         f"--- STRUCTURED METADATA FACTS (POSTGRESQL) ---\n"
-                        f"{sql_answer}\n\n"
+                        f"{sql_facts}\n\n"
                         f"--- UNSTRUCTURED DOCUMENT CONTEXT ---\n"
                         f"{context_text}\n\n"
                         f"USER QUESTION: {clean_query}\n\n"
@@ -457,7 +506,10 @@ def answer_compliance_query(
                     raw_response = generate_json(
                         system_prompt=config_qa_system_prompt(),
                         user_prompt=dual_prompt,
-                        disable_thinking=False,
+                        disable_thinking=disable_thinking,
+                        max_tokens=1024,
+                        response_prefix='{"answer": "' if disable_thinking else "",
+                        hop_name="hybrid_synthesis",
                     )
 
                     try:
@@ -471,32 +523,43 @@ def answer_compliance_query(
                         answer_text = re.sub(r"```(?:json)?\s*|\s*```", "", raw_response).strip()
 
                 elif context_text:
-                    answer_text = execute_unstructured_query(resolved_query, db_session, history_text=history_text)
+                    answer_text = execute_unstructured_query(
+                        resolved_query, db_session, history_text=history_text, disable_thinking=disable_thinking
+                    )
                 else:
-                    answer_text = sql_answer
+                    answer_text = execute_metadata_query(
+                        clean_query, db_session, history_text=history_text, disable_thinking=disable_thinking
+                    )
                     if not answer_text or answer_text == SQL_FALLBACK:
                         answer_text = FALLBACK_NOT_FOUND_MESSAGE
 
             except Exception as exc:
                 logger.warning(f" Dual-path hybrid execution failed: {exc}. Falling back to unstructured query.")
-                answer_text = execute_unstructured_query(resolved_query, db_session, history_text=history_text)
+                answer_text = execute_unstructured_query(
+                    resolved_query, db_session, history_text=history_text, disable_thinking=disable_thinking
+                )
 
         elif intent == QueryIntent.CASUAL_CONVERSATION.value:
-            # Path D: Casual conversation — short-circuit. No DB, no retrieval.
             logger.info(" Executing CASUAL_CONVERSATION path (no DB, no retrieval)...")
             answer_text = _casual_conversation_reply(clean_query, history_text)
 
         elif intent == QueryIntent.AGENT_ACTION.value:
             logger.info(" Executing AGENT_ACTION path (step-based execution)...")
             tokens = []
-            for event in answer_compliance_query_stream(user_query, db_session=db_session, history=history):
+            for event in answer_compliance_query_stream(
+                user_query,
+                db_session=db_session,
+                history=history,
+                session_id=session_id,
+                deep_thinking=deep_thinking,
+                reset_telemetry=False,
+            ):
                 if event.get("type") == "token":
                     tokens.append(event.get("text", ""))
             answer_text = "".join(tokens)
             sources = [{"type": "agent_action", "url": _extract_url(clean_query)}]
 
         elif intent == QueryIntent.UNSTRUCTURED_RAG.value:
-            # Path B: Standard UNSTRUCTURED_RAG (Hybrid RRF + Parent Expansion)
             logger.info(" Executing UNSTRUCTURED_RAG path (Hybrid RRF + Parent Expansion)...")
             resolved_query = _reformulate_query(clean_query, history)
             hybrid_payload = retrieve_hybrid_context(resolved_query, db_session, top_k=5)
@@ -504,18 +567,18 @@ def answer_compliance_query(
             context_text = hybrid_payload.get("context_text", "").strip()
 
             if context_text:
-                answer_text = execute_unstructured_query(resolved_query, db_session, history_text=history_text)
+                answer_text = execute_unstructured_query(
+                    resolved_query, db_session, history_text=history_text, disable_thinking=disable_thinking
+                )
             else:
-                # Relevance gate / low-signal query: the vector store had no usable
-                # context, so fall back to the structured metadata (SQL) path.
                 logger.info(" RAG retrieval yielded no usable context; falling back to metadata (SQL).")
-                answer_text = execute_metadata_query(clean_query, db_session, history_text=history_text)
+                answer_text = execute_metadata_query(
+                    clean_query, db_session, history_text=history_text, disable_thinking=disable_thinking
+                )
                 if not answer_text or answer_text == SQL_FALLBACK:
                     answer_text = FALLBACK_NOT_FOUND_MESSAGE
 
         else:
-            # Safety net: unknown intent tokens should never reach here (router
-            # validates against QueryIntent); treat as UNSTRUCTURED_RAG.
             logger.warning(f" Unhandled intent '{intent}'; falling back to UNSTRUCTURED_RAG path.")
             resolved_query = _reformulate_query(clean_query, history)
             hybrid_payload = retrieve_hybrid_context(resolved_query, db_session, top_k=5)
@@ -523,10 +586,14 @@ def answer_compliance_query(
             context_text = hybrid_payload.get("context_text", "").strip()
 
             if context_text:
-                answer_text = execute_unstructured_query(resolved_query, db_session, history_text=history_text)
+                answer_text = execute_unstructured_query(
+                    resolved_query, db_session, history_text=history_text, disable_thinking=disable_thinking
+                )
             else:
                 logger.info(" RAG retrieval yielded no usable context; falling back to metadata (SQL).")
-                answer_text = execute_metadata_query(clean_query, db_session, history_text=history_text)
+                answer_text = execute_metadata_query(
+                    clean_query, db_session, history_text=history_text, disable_thinking=disable_thinking
+                )
                 if not answer_text or answer_text == SQL_FALLBACK:
                     answer_text = FALLBACK_NOT_FOUND_MESSAGE
 
@@ -539,6 +606,7 @@ def answer_compliance_query(
             "reasoning": reasoning,
             "sources": sources,
             "latency_ms": round(latency_ms, 2),
+            "timings": get_turn_telemetry(),
         }
 
     except Exception as exc:
@@ -547,7 +615,9 @@ def answer_compliance_query(
         latency_ms = (t_end - t_start) * 1000.0
 
         try:
-            fallback_answer = execute_unstructured_query(resolved_query, db_session, history_text=history_text)
+            fallback_answer = execute_unstructured_query(
+                resolved_query, db_session, history_text=history_text, disable_thinking=disable_thinking
+            )
         except Exception:
             fallback_answer = FALLBACK_NOT_FOUND_MESSAGE
 
@@ -557,6 +627,7 @@ def answer_compliance_query(
             "reasoning": f"Emergency fallback triggered due to exception: {str(exc)}",
             "sources": [],
             "latency_ms": round(latency_ms, 2),
+            "timings": get_turn_telemetry(),
         }
 
     finally:
@@ -569,7 +640,9 @@ def _stream_and_collect(
     user_prompt: str,
     query: str,
     collector: Dict[str, Any],
-    disable_thinking: bool = False,
+    disable_thinking: bool = True,
+    max_tokens: int = 1024,
+    hop_name: str = "qa_synthesis",
 ):
     """
     Forwards streaming answer-token events from a synthesis and records the final
@@ -577,7 +650,14 @@ def _stream_and_collect(
     """
     from core.rag.qa import stream_synthesize_answer
 
-    for evt in stream_synthesize_answer(system_prompt, user_prompt, query, disable_thinking=disable_thinking):
+    for evt in stream_synthesize_answer(
+        system_prompt,
+        user_prompt,
+        query,
+        disable_thinking=disable_thinking,
+        max_tokens=max_tokens,
+        hop_name=hop_name,
+    ):
         if evt["type"] in ("token", "thinking"):
             yield evt
         elif evt["type"] == "synthesis_done":
@@ -589,24 +669,22 @@ def answer_compliance_query_stream(
     user_query: str,
     db_session=None,
     history: Optional[List[Dict[str, str]]] = None,
+    session_id: Optional[str] = None,
+    deep_thinking: bool = False,
+    reset_telemetry: bool = True,
 ):
     """
     Streaming variant of answer_compliance_query() for the interactive chat UI.
-
-    Performs the same routing/retrieval pipeline but emits the final answer
-    generation token-by-token. Yields event dicts:
-
-      {"type": "status", "stage": ..., "message": ...}
-      {"type": "token", "text": <incremental answer text>}
-      {"type": "done", "answer": ..., "intent": ..., "reasoning": ...,
-       "sources": [...], "latency_ms": ...}
-
-    For metadata-only (SQL) paths the answer has no LLM synthesis step, so a
-    single full token event is emitted instead.
     """
+    from core.llm import start_turn_telemetry, get_turn_telemetry
+
+    if reset_telemetry:
+        start_turn_telemetry()
+
     t_start = time.perf_counter()
     clean_query = str(user_query or "").strip()
     history_text = _format_history(history)
+    disable_thinking = not deep_thinking
 
     yield {"type": "status", "stage": "routing", "message": "Understanding your request..."}
 
@@ -618,13 +696,14 @@ def answer_compliance_query_stream(
             "reasoning": "Blank query submitted.",
             "sources": [],
             "latency_ms": 0.0,
+            "timings": [],
         }
         return
 
     # Chat-based HITL confirmation ("yes" / "approve" / "no") for a pending
-    # AGENT_ACTION proposal, handled before routing.
+    # AGENT_ACTION proposal scoped to this session, handled before routing.
     has_approval_events = False
-    for evt in _handle_chat_approval_stream(clean_query, history=history):
+    for evt in _handle_chat_approval_stream(clean_query, history=history, session_id=session_id):
         has_approval_events = True
         yield evt
     if has_approval_events:
@@ -648,6 +727,7 @@ def answer_compliance_query_stream(
             "type": "status",
             "stage": "routing",
             "message": f"Tool selected: {tool_decision.get('tool', intent)}",
+            "intent": intent,
         }
 
         answer_text = ""
@@ -659,7 +739,9 @@ def answer_compliance_query_stream(
             sources = [{"type": "database", "table": "certificates", "query_type": "relational_sql"}]
             from core.rag.sql_engine import stream_metadata_answer
             answer_text = ""
-            for chunk in stream_metadata_answer(clean_query, db_session, history_text=history_text):
+            for chunk in stream_metadata_answer(
+                clean_query, db_session, history_text=history_text, disable_thinking=disable_thinking
+            ):
                 answer_text += chunk
                 yield {"type": "token", "text": chunk}
             if not answer_text:
@@ -670,17 +752,17 @@ def answer_compliance_query_stream(
             yield {"type": "status", "stage": "retrieval", "message": "Combining database facts and document context..."}
             resolved_query = _reformulate_query(clean_query, history)
             try:
-                sql_answer = execute_metadata_query(clean_query, db_session, history_text=history_text)
+                sql_facts = execute_sql_structured_context(clean_query, db_session, history_text=history_text)
                 hybrid_payload = retrieve_hybrid_context(resolved_query, db_session, top_k=5)
                 context_text = hybrid_payload.get("context_text", "").strip()
                 sources = hybrid_payload.get("sources", [])
 
-                if context_text and sql_answer and sql_answer != SQL_FALLBACK:
+                if context_text and sql_facts:
                     dual_prompt = (
                         f"{history_text}\n\n" if history_text else ""
                     ) + (
                         f"--- STRUCTURED METADATA FACTS (POSTGRESQL) ---\n"
-                        f"{sql_answer}\n\n"
+                        f"{sql_facts}\n\n"
                         f"--- UNSTRUCTURED DOCUMENT CONTEXT ---\n"
                         f"{context_text}\n\n"
                         f"USER QUESTION: {clean_query}\n\n"
@@ -690,7 +772,12 @@ def answer_compliance_query_stream(
                     yield {"type": "status", "stage": "generation", "message": "Generating answer..."}
                     collector: Dict[str, Any] = {}
                     yield from _stream_and_collect(
-                        config_qa_system_prompt(), dual_prompt, clean_query, collector
+                        config_qa_system_prompt(),
+                        dual_prompt,
+                        clean_query,
+                        collector,
+                        disable_thinking=disable_thinking,
+                        hop_name="hybrid_synthesis",
                     )
                     answer_text = collector.get("answer", "")
                 elif context_text:
@@ -698,14 +785,24 @@ def answer_compliance_query_stream(
                     user_prompt = build_unstructured_qa_prompt(clean_query, context_text, history_text)
                     collector: Dict[str, Any] = {}
                     yield from _stream_and_collect(
-                        config_qa_system_prompt(), user_prompt, clean_query, collector
+                        config_qa_system_prompt(),
+                        user_prompt,
+                        clean_query,
+                        collector,
+                        disable_thinking=disable_thinking,
                     )
                     answer_text = collector.get("answer", "")
                 else:
-                    answer_text = sql_answer
+                    from core.rag.sql_engine import stream_metadata_answer
+                    answer_text = ""
+                    for chunk in stream_metadata_answer(
+                        clean_query, db_session, history_text=history_text, disable_thinking=disable_thinking
+                    ):
+                        answer_text += chunk
+                        yield {"type": "token", "text": chunk}
                     if not answer_text or answer_text == SQL_FALLBACK:
                         answer_text = FALLBACK_NOT_FOUND_MESSAGE
-                    yield {"type": "token", "text": answer_text}
+                        yield {"type": "token", "text": answer_text}
             except Exception as exc:
                 logger.warning(f" Dual-path hybrid streaming failed: {exc}. Falling back to unstructured query.")
                 hybrid_fallback = retrieve_hybrid_context(resolved_query, db_session, top_k=5)
@@ -714,7 +811,11 @@ def answer_compliance_query_stream(
                     user_prompt = build_unstructured_qa_prompt(clean_query, fallback_context, history_text)
                     collector: Dict[str, Any] = {}
                     yield from _stream_and_collect(
-                        config_qa_system_prompt(), user_prompt, clean_query, collector
+                        config_qa_system_prompt(),
+                        user_prompt,
+                        clean_query,
+                        collector,
+                        disable_thinking=disable_thinking,
                     )
                     answer_text = collector.get("answer", "")
                 else:
@@ -734,6 +835,8 @@ def answer_compliance_query_stream(
                 clean_query,
                 collector,
                 disable_thinking=True,
+                max_tokens=384,
+                hop_name="casual_reply",
             )
             answer_text = collector.get("answer", "")
             if not answer_text:
@@ -771,7 +874,6 @@ def answer_compliance_query_stream(
                 is_direct = plan_result.is_direct_command
 
                 if is_direct:
-                    # Explicit direct user command -> execute all write_steps sequentially without asking for approval!
                     import queue
                     import threading
 
@@ -813,6 +915,7 @@ def answer_compliance_query_stream(
                                 "source_url": artifacts.source_url,
                                 "file_paths": artifacts.file_paths,
                                 "verified_urls": artifacts.verified_urls,
+                                "session_id": session_id,
                             })
                             dummy_proposal = {"payload": proposal_payload}
 
@@ -867,20 +970,23 @@ def answer_compliance_query_stream(
 
                     action_summary = ", ".join(ws.action for ws in write_steps) if write_steps else "agent_action"
                     yield {"type": "status", "stage": "generation", "message": "Synthesizing response..."}
-                    answer_text = _synthesize_agent_action_reply(
+                    collector: Dict[str, Any] = {}
+                    yield from _stream_synthesize_agent_action_reply(
                         user_query=clean_query,
                         action_name=action_summary,
                         execution_outcome=raw_res,
+                        collector=collector,
                         read_narrations=_parts,
                         history_text=history_text,
                     )
+                    answer_text = collector.get("answer", "")
 
                 else:
                     # Implicit action decided by agent -> stage all write_steps for HITL approval!
                     staged_descs = []
                     for ws in write_steps:
                         try:
-                            stage_write_step(ws, artifacts)
+                            stage_write_step(ws, artifacts, session_id=session_id)
                         except Exception as exc:
                             logger.warning(f" Could not stage write step: {exc}")
                         target_f = ws.payload.get("target_file")
@@ -895,30 +1001,26 @@ def answer_compliance_query_stream(
                         "I need your approval. Is that OK? Reply 'yes' to proceed or 'no' to cancel."
                     )
                     answer_text = "\n\n".join(_parts)
+                    yield {"type": "token", "text": answer_text}
 
             elif not write_steps and _parts:
                 # Read-only actions (inspections, web fetching, etc.)
                 yield {"type": "status", "stage": "generation", "message": "Synthesizing response..."}
-                answer_text = _synthesize_agent_action_reply(
+                collector: Dict[str, Any] = {}
+                yield from _stream_synthesize_agent_action_reply(
                     user_query=clean_query,
                     action_name="inspect_sources",
                     execution_outcome="Inspection completed.",
+                    collector=collector,
                     read_narrations=_parts,
                     history_text=history_text,
                 )
+                answer_text = collector.get("answer", "")
             else:
                 answer_text = "I do not currently have a registered tool to execute that specific action. My available actions include inspecting URL sources, downloading & ingesting certificate files, updating or deleting database records, executing dynamic database operations, and querying compliance data."
-
-            # Stream the exact detailed answer text token-by-token (word-by-word) progressively
-            yield {"type": "status", "stage": "generation", "message": "Streaming agent results..."}
-            words = answer_text.split(" ")
-            for i, w in enumerate(words):
-                w_text = w + (" " if i < len(words) - 1 else "")
-                yield {"type": "token", "text": w_text}
-                time.sleep(0.012)
+                yield {"type": "token", "text": answer_text}
 
             sources = [{"type": "agent_action", "url": _extract_url(clean_query)}]
-
 
         elif intent == QueryIntent.UNSTRUCTURED_RAG.value:
             yield {"type": "status", "stage": "retrieval", "message": "Searching document context..."}
@@ -932,18 +1034,27 @@ def answer_compliance_query_stream(
                 user_prompt = build_unstructured_qa_prompt(clean_query, context_text, history_text)
                 collector: Dict[str, Any] = {}
                 yield from _stream_and_collect(
-                    config_qa_system_prompt(), user_prompt, clean_query, collector
+                    config_qa_system_prompt(),
+                    user_prompt,
+                    clean_query,
+                    collector,
+                    disable_thinking=disable_thinking,
                 )
                 answer_text = collector.get("answer", "")
             else:
                 logger.info(" RAG retrieval yielded no usable context; falling back to metadata (SQL).")
-                answer_text = execute_metadata_query(clean_query, db_session, history_text=history_text)
+                from core.rag.sql_engine import stream_metadata_answer
+                answer_text = ""
+                for chunk in stream_metadata_answer(
+                    clean_query, db_session, history_text=history_text, disable_thinking=disable_thinking
+                ):
+                    answer_text += chunk
+                    yield {"type": "token", "text": chunk}
                 if not answer_text or answer_text == SQL_FALLBACK:
                     answer_text = FALLBACK_NOT_FOUND_MESSAGE
-                yield {"type": "token", "text": answer_text}
+                    yield {"type": "token", "text": answer_text}
 
         else:
-            # Safety net: unknown intent tokens should never reach here; treat as UNSTRUCTURED_RAG.
             logger.warning(f" Unhandled intent '{intent}'; falling back to UNSTRUCTURED_RAG path.")
             yield {"type": "status", "stage": "retrieval", "message": "Searching document context..."}
             resolved_query = _reformulate_query(clean_query, history)
@@ -956,15 +1067,25 @@ def answer_compliance_query_stream(
                 user_prompt = build_unstructured_qa_prompt(clean_query, context_text, history_text)
                 collector: Dict[str, Any] = {}
                 yield from _stream_and_collect(
-                    config_qa_system_prompt(), user_prompt, clean_query, collector
+                    config_qa_system_prompt(),
+                    user_prompt,
+                    clean_query,
+                    collector,
+                    disable_thinking=disable_thinking,
                 )
                 answer_text = collector.get("answer", "")
             else:
                 logger.info(" RAG retrieval yielded no usable context; falling back to metadata (SQL).")
-                answer_text = execute_metadata_query(clean_query, db_session, history_text=history_text)
+                from core.rag.sql_engine import stream_metadata_answer
+                answer_text = ""
+                for chunk in stream_metadata_answer(
+                    clean_query, db_session, history_text=history_text, disable_thinking=disable_thinking
+                ):
+                    answer_text += chunk
+                    yield {"type": "token", "text": chunk}
                 if not answer_text or answer_text == SQL_FALLBACK:
                     answer_text = FALLBACK_NOT_FOUND_MESSAGE
-                yield {"type": "token", "text": answer_text}
+                    yield {"type": "token", "text": answer_text}
 
         if not answer_text:
             answer_text = FALLBACK_NOT_FOUND_MESSAGE
@@ -976,6 +1097,7 @@ def answer_compliance_query_stream(
             "reasoning": reasoning,
             "sources": sources,
             "latency_ms": round((time.perf_counter() - t_start) * 1000.0, 2),
+            "timings": get_turn_telemetry(),
         }
 
     except Exception as exc:
@@ -987,6 +1109,7 @@ def answer_compliance_query_stream(
             "reasoning": f"Streaming failure triggered fallback: {str(exc)}",
             "sources": [],
             "latency_ms": round((time.perf_counter() - t_start) * 1000.0, 2),
+            "timings": get_turn_telemetry(),
         }
 
     finally:

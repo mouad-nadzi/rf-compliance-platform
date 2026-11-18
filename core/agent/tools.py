@@ -806,23 +806,17 @@ class ExecuteRawSQLTool(BaseTool):
 
     @staticmethod
     def generate_sql(objective: str) -> str:
-        """Dynamically generate SQL just-in-time using the live database schema (with column types) and an LLM."""
-        from storage.dynamic_schema import list_all_user_tables, get_table_columns
+        """Dynamically generate SQL just-in-time using the cached live database schema and an LLM."""
+        from core.rag.sql_engine import build_schema_description
         from core.prompts import config_sql_generator_system_prompt
-        
-        schema_lines = []
+
         try:
-            tables = list_all_user_tables()
-            for t in tables:
-                tname = t["table_name"]
-                cols = [f"{c['column_name']} ({c['data_type']})" for c in get_table_columns(tname)]
-                schema_lines.append(f"- {tname}: {', '.join(cols)}")
-            schema_block = "\n".join(schema_lines)
+            schema_block = build_schema_description()
         except Exception as e:
             schema_block = f"(Schema unavailable: {e})"
-            
+
         system_prompt = config_sql_generator_system_prompt(objective=objective, schema=schema_block)
-        
+
         try:
             import json
             from core.llm import generate_json
@@ -830,7 +824,9 @@ class ExecuteRawSQLTool(BaseTool):
                 system_prompt=system_prompt,
                 user_prompt=f"OBJECTIVE: {objective}\n\nReturn ONLY the raw JSON output matching the schema.",
                 disable_thinking=True,
-                response_prefix='{"sql_query":',
+                max_tokens=512,
+                response_prefix='{"sql_query": "',
+                hop_name="raw_sql_gen",
             )
             parsed = json.loads(raw_response)
             sql = str(parsed.get("sql_query", "")).strip()

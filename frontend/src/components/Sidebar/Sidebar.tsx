@@ -28,6 +28,7 @@ interface SidebarProps {
   setCustomTables: React.Dispatch<React.SetStateAction<string[]>>;
   activeSessionId?: string | null;
   setActiveSessionId?: (id: string | null) => void;
+  sessionStreams?: Record<string, any>;
 }
 
 const Sidebar = ({ 
@@ -38,7 +39,8 @@ const Sidebar = ({
   customTables, 
   setCustomTables,
   activeSessionId,
-  setActiveSessionId
+  setActiveSessionId,
+  sessionStreams
 }: SidebarProps) => {
   const location = useLocation();
   const isDatabaseView = location.pathname.includes('/databases');
@@ -612,6 +614,7 @@ const Sidebar = ({
             <div className="sidebar-tables-list" style={{ flex: 1, overflowY: 'auto' }}>
               {sessions.map(s => {
                 const isActive = activeSessionId === s.id;
+                const isSessionStreaming = Boolean(sessionStreams?.[s.id]?.isStreaming || s.is_streaming);
                 return (
                   <div 
                     key={s.id}
@@ -620,7 +623,11 @@ const Sidebar = ({
                     onClick={() => setActiveSessionId && setActiveSessionId(s.id)}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', overflow: 'hidden', flex: 1 }}>
-                      <MessageSquare size={16} className="sidebar-btn-icon" />
+                      {isSessionStreaming ? (
+                        <Loader2 size={16} className="sidebar-btn-icon spin-icon" color="var(--brand-blue)" />
+                      ) : (
+                        <MessageSquare size={16} className="sidebar-btn-icon" />
+                      )}
                       {isOpen && <span className="sidebar-btn-text" title={s.title || 'New Chat'}>{s.title || 'New Chat'}</span>}
                     </div>
                     {isOpen && (

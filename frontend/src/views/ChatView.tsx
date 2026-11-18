@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { FileText, ShieldAlert, Building2, BrainCircuit, Sparkles, ArrowUp } from 'lucide-react';
 import { api, type ChatMessage as ChatMessageType } from '../api';
 import { useLayoutContext } from '../components/Layout/AppLayout';
@@ -6,37 +6,73 @@ import { ChatMessage } from '../components/Chat/ChatMessage';
 import './ChatView.css';
 
 const ChatView = () => {
-  const { activeSessionId, setActiveSessionId } = useLayoutContext();
+  const {
+    activeSessionId,
+    sessionStreams,
+    deepThinking,
+    setDeepThinking,
+    sendChatQuery,
+    attachToActiveJob,
+  } = useLayoutContext();
+
   const [messages, setMessages] = useState<ChatMessageType[]>([]);
   const [input, setInput] = useState('');
-  const [isStreaming, setIsStreaming] = useState(false);
-  
-  // Streaming state
-  const [streamingAnswer, setStreamingAnswer] = useState('');
-  const [streamingThinking, setStreamingThinking] = useState('');
-  const [streamingStatus, setStreamingStatus] = useState('');
-  const [streamingIntent, setStreamingIntent] = useState('');
+  const [sending, setSending] = useState(false);
+
+  const activeSessionIdRef = useRef<string | null>(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
+
+  const currentStream = activeSessionId ? sessionStreams[activeSessionId] : undefined;
+  const isStreaming = Boolean(currentStream?.isStreaming);
+  const streamingAnswer = currentStream?.answer || '';
+  const streamingThinking = currentStream?.thinking || '';
+  const streamingStatus = currentStream?.status || '';
+  const streamingIntent = currentStream?.intent || '';
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Sync messages when activeSessionId changes (guarded against overwriting active stream)
-  useEffect(() => {
-    if (isStreaming) return;
-    if (activeSessionId) {
-      api.getSessionMessages(activeSessionId).then(data => {
-        setMessages(Array.isArray(data) ? data : []);
-      }).catch(() => setMessages([]));
-    } else {
+  const loadSessionMessages = useCallback(async (sessionId: string | null) => {
+    if (!sessionId) {
       setMessages([]);
+      return;
     }
-  }, [activeSessionId, isStreaming]);
+    try {
+      const details = await api.getSessionDetails(sessionId);
+      if (activeSessionIdRef.current !== sessionId) return;
+      setMessages(Array.isArray(details.messages) ? details.messages : []);
+      if (details.active_job) {
+        attachToActiveJob(details.active_job);
+      }
+    } catch {
+      if (activeSessionIdRef.current === sessionId) {
+        setMessages([]);
+      }
+    }
+  }, [attachToActiveJob]);
 
-  // Listen for new-chat-session event from Sidebar
+  // Always load messages when activeSessionId changes or ChatView mounts
+  useEffect(() => {
+    loadSessionMessages(activeSessionId);
+  }, [activeSessionId, loadSessionMessages]);
+
+  // Listen for session updates (user turn persisted or stream completed) and new-chat-session
   useEffect(() => {
     const handleNew = () => setMessages([]);
+    const handleSessionUpdated = (e: Event) => {
+      const customEvt = e as CustomEvent<{ sessionId?: string }>;
+      const updatedId = customEvt.detail?.sessionId;
+      if (updatedId && updatedId === activeSessionIdRef.current) {
+        loadSessionMessages(updatedId);
+      }
+    };
+
     window.addEventListener('new-chat-session', handleNew);
-    return () => window.removeEventListener('new-chat-session', handleNew);
-  }, []);
+    window.addEventListener('chat-session-updated', handleSessionUpdated);
+    return () => {
+      window.removeEventListener('new-chat-session', handleNew);
+      window.removeEventListener('chat-session-updated', handleSessionUpdated);
+    };
+  }, [loadSessionMessages]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -44,106 +80,27 @@ const ChatView = () => {
 
   const executeSend = async (overrideQuery?: string) => {
     const query = (overrideQuery || input).trim();
-    if (!query || isStreaming) return;
+    if (!query || isStreaming || sending) return;
 
     if (!overrideQuery) setInput('');
+    setSending(true);
+
+    // Optimistic user message for instant visual feedback before the round-trip completes
+    setMessages(prev => [
+      ...prev,
+      {
+        session_id: activeSessionId || 'temp',
+        role: 'user',
+        content: query,
+      },
+    ]);
 
     try {
-      const busyCheck = await api.checkAgentBusy();
-      if (busyCheck && busyCheck.is_busy) {
-        setMessages(prev => [
-          ...prev,
-          { session_id: activeSessionId || 'temp', role: 'user', content: query },
-          { session_id: activeSessionId || 'temp', role: 'assistant', content: 'The agent is currently processing an ongoing background task. Please wait until the task completes before sending a new query.' }
-        ]);
-        return;
-      }
-    } catch (e) {
-      console.warn('Error checking agent busy status', e);
-    }
-    
-    // Optimistic user message
-    const optimisticUserMsg: ChatMessageType = {
-      session_id: activeSessionId || 'temp',
-      role: 'user',
-      content: query,
-    };
-    setMessages(prev => [...prev, optimisticUserMsg]);
-    setIsStreaming(true);
-    setStreamingAnswer('');
-    setStreamingThinking('');
-    setStreamingStatus('Analyzing query...');
-    setStreamingIntent('');
-
-    try {
-      const res = await api.startChatStream(query, activeSessionId || undefined);
-      
-      if (!activeSessionId && res.session_id) {
-        setActiveSessionId(res.session_id);
-        window.dispatchEvent(new Event('refresh-chat-sessions'));
-      }
-
-      if (res.frozen || !res.job_id) {
-        setMessages(prev => [...prev, {
-          session_id: res.session_id,
-          role: 'assistant',
-          content: res.answer || 'Context window full or missing job_id.',
-          intent: res.intent
-        }]);
-        setIsStreaming(false);
-        return;
-      }
-
-      // Start SSE onmessage stream handler
-      const eventSource = new EventSource(`/api/v1/chat/stream/${res.job_id}`);
-
-      eventSource.onmessage = async (e) => {
-        try {
-          const data = JSON.parse(e.data);
-          
-          if (data.type === 'status') {
-            const statusMsg = data.message || data.status || 'Analyzing compliance records...';
-            setStreamingStatus(statusMsg);
-            if (data.intent) setStreamingIntent(data.intent);
-          } else if (data.type === 'thinking') {
-            const thinkChunk = data.text || data.chunk || '';
-            setStreamingThinking(prev => prev + thinkChunk);
-          } else if (data.type === 'token') {
-            const tokenChunk = data.text || data.chunk || '';
-            setStreamingAnswer(prev => prev + tokenChunk);
-            setStreamingStatus('');
-          } else if (data.type === 'done') {
-            eventSource.close();
-            const finalAnswer = data.answer || streamingAnswer;
-            const finalIntent = data.intent || streamingIntent;
-            setMessages(prev => [
-              ...prev,
-              { role: 'assistant', content: finalAnswer, intent: finalIntent, session_id: res.session_id }
-            ]);
-            setIsStreaming(false);
-            setStreamingAnswer('');
-            setStreamingThinking('');
-            setStreamingStatus('');
-            setStreamingIntent('');
-            window.dispatchEvent(new Event('refresh-chat-sessions'));
-          } else if (data.type === 'error') {
-            eventSource.close();
-            setIsStreaming(false);
-            setStreamingStatus(`Error: ${data.message || 'Stream failed'}`);
-          }
-        } catch (err) {
-          console.error('Error parsing SSE event payload', err);
-        }
-      };
-
-      eventSource.onerror = () => {
-        eventSource.close();
-        setIsStreaming(false);
-      };
-
+      await sendChatQuery(query, activeSessionId);
     } catch (err) {
-      console.error(err);
-      setIsStreaming(false);
+      console.error('Failed to start chat stream:', err);
+    } finally {
+      setSending(false);
     }
   };
 
@@ -158,7 +115,7 @@ const ChatView = () => {
     <div className="chat-container">
       <main className="chat-main">
         <div className="chat-messages-area">
-          {!activeSessionId && (!Array.isArray(messages) || messages.length === 0) ? (
+          {!activeSessionId && (!Array.isArray(messages) || messages.length === 0) && !isStreaming ? (
             <div className="gemini-landing">
               <div className="gemini-hero">
                 <h1 className="gemini-title">
@@ -215,6 +172,11 @@ const ChatView = () => {
 
               {isStreaming && !streamingAnswer && (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.45rem', color: 'var(--brand-blue)', marginTop: '0.5rem', marginBottom: '1rem' }}>
+                  {streamingThinking && (
+                    <div className="thinking-block" style={{ width: '100%' }}>
+                      {streamingThinking}
+                    </div>
+                  )}
                   <span style={{ fontSize: '0.88rem', fontWeight: 500 }}>
                     {streamingStatus || 'Analyzing query & searching compliance records...'}
                   </span>
@@ -234,7 +196,7 @@ const ChatView = () => {
                     </div>
                   )}
                   <ChatMessage 
-                    message={{ role: 'assistant', content: streamingAnswer, intent: streamingIntent, session_id: 'temp' }} 
+                    message={{ role: 'assistant', content: streamingAnswer, intent: streamingIntent, session_id: activeSessionId || 'temp' }} 
                   />
                 </div>
               )}
@@ -248,7 +210,7 @@ const ChatView = () => {
           <div className="chat-input-wrapper">
             <textarea 
               className="chat-input"
-              placeholder="Ask anything about certificates, suppliers, or regulations..."
+              placeholder={isStreaming ? "Agent is responding in this session (switch sessions to ask in parallel)..." : "Ask anything about certificates, suppliers, or regulations..."}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
@@ -257,13 +219,36 @@ const ChatView = () => {
                   handleSend();
                 }
               }}
-              disabled={isStreaming}
+              disabled={isStreaming || sending}
               rows={1}
             />
+            <button
+              type="button"
+              onClick={() => setDeepThinking(!deepThinking)}
+              title={deepThinking ? "Deep Reasoning Enabled (click for fast mode)" : "Fast Mode Active (click to enable deep reasoning)"}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.3rem',
+                padding: '0.32rem 0.6rem',
+                borderRadius: '999px',
+                fontSize: '0.72rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                border: `1px solid ${deepThinking ? 'var(--brand-blue)' : 'var(--border-color)'}`,
+                backgroundColor: deepThinking ? 'rgba(36, 56, 129, 0.12)' : 'transparent',
+                color: deepThinking ? 'var(--brand-blue)' : 'var(--text-secondary)',
+                whiteSpace: 'nowrap',
+                transition: 'all 150ms ease',
+              }}
+            >
+              <BrainCircuit size={14} />
+              <span>Deep Think</span>
+            </button>
             <button 
-              className={`chat-circle-send-btn ${input.trim() && !isStreaming ? 'active' : ''}`}
+              className={`chat-circle-send-btn ${input.trim() && !isStreaming && !sending ? 'active' : ''}`}
               onClick={handleSend}
-              disabled={isStreaming || !input.trim()}
+              disabled={isStreaming || sending || !input.trim()}
               title="Send message"
             >
               <ArrowUp size={18} />

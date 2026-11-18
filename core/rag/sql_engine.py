@@ -41,7 +41,14 @@ FALLBACK_MESSAGE = (
 
 #: Hard caps applied to generated queries and forwarded results.
 MAX_ROWS_IN_SQL = 100
-MAX_ROWS_FOR_LLM = 50
+MAX_ROWS_FOR_LLM = 8
+
+_SCHEMA_DESC_CACHE: List[str] = []
+
+
+def invalidate_schema_cache() -> None:
+    """Clears the cached PostgreSQL schema description when tables or columns change."""
+    _SCHEMA_DESC_CACHE.clear()
 
 #: Data-definition / data-mutation tokens forbidden in generated SQL.
 _FORBIDDEN_SQL_KEYWORDS = re.compile(
@@ -59,13 +66,12 @@ _MULTI_STATEMENT_RE = re.compile(r";\s*\S")
 
 def build_schema_description() -> str:
     """
-    Derives a complete, multi-table PostgreSQL schema description directly from
-    the live database and schema definitions.
-    
-    Includes all core tables (certificates, components, responsibles, countries,
-    authority_lookups, supplier_lookups, sources, agent_memories) and user custom tables,
-    annotating column types, nullability, and primary keys.
+    Derives a concise multi-table PostgreSQL schema description from the live database,
+    cached in memory and invalidated on DDL changes.
     """
+    if _SCHEMA_DESC_CACHE:
+        return _SCHEMA_DESC_CACHE[0]
+
     table_docs = {
         "certificates": "Regulatory RF homologation certificates and approval records.",
         "components": "Vehicle components master list with frequencies, model names, supplier, DocInfo links, and assigned responsible engineer email/ID.",
@@ -84,75 +90,29 @@ def build_schema_description() -> str:
         for t in user_tables:
             tbl_name = t["table_name"]
             doc = table_docs.get(tbl_name, "User data table.")
-            lines.append(f"Table: `{tbl_name}` — {doc}")
-            lines.append("Columns:")
             cols = get_table_columns(tbl_name)
+            col_parts = []
             for c in cols:
                 col_name = c["column_name"]
                 data_type = c["data_type"]
-                nullability = "NULLABLE" if c["is_nullable"] == "YES" else "NOT NULL"
-                if col_name in ("id", "certificate_id") and not (c["is_nullable"] == "YES"):
-                    nullability = "PRIMARY KEY"
-                lines.append(f"  - `{col_name}` {data_type} {nullability}")
-            lines.append("")
+                pk_tag = " PK" if col_name in ("id", "certificate_id") and c["is_nullable"] != "YES" else ""
+                col_parts.append(f"`{col_name}` ({data_type}{pk_tag})")
+            lines.append(f"- `{tbl_name}` ({doc}): {', '.join(col_parts)}")
     except Exception as exc:
         logger.warning(f"Dynamic schema reflection fallback: {exc}")
         lines = [
-            "Table: `certificates` — Regulatory RF homologation certificates and approval records.",
-            "Columns:",
-            "  - `certificate_id` character varying PRIMARY KEY",
-            "  - `component` character varying NULLABLE -- Normalized component/model code",
-            "  - `supplier` character varying NULLABLE -- Normalized supplier name",
-            "  - `country` character varying NULLABLE -- Jurisdiction country",
-            "  - `certif_number` character varying NULLABLE -- Certificate number",
-            "  - `authority` character varying NULLABLE -- Regulatory body acronym (e.g. ENACOM, ANATEL)",
-            "  - `issue_date` date NULLABLE -- Issuance date (YYYY-MM-DD)",
-            "  - `exp_date` date NULLABLE -- Expiration date (YYYY-MM-DD)",
-            "  - `cert_link` character varying NULLABLE -- Document link",
-            "  - `file_name` character varying NULLABLE",
-            "",
-            "Table: `components` — Vehicle components master list with frequencies and assigned responsible engineer.",
-            "Columns:",
-            "  - `id` integer PRIMARY KEY",
-            "  - `componentname` character varying NULLABLE -- Component code/name (e.g. RTBM SH, VSM, AIDA)",
-            "  - `modelname` character varying NULLABLE -- Model identifier",
-            "  - `supplier` character varying NULLABLE -- Component supplier",
-            "  - `freq` character varying NULLABLE -- Operating frequency (e.g. 125 kHz, 2.4 GHz)",
-            "  - `id_responsible` character varying NULLABLE -- Responsible engineer email or id (e.g. fatimaezzhara.farkaoui@external.stellantis.com)",
-            "  - `docinfo_link` character varying NULLABLE -- Link to DocInfo fiche",
-            "",
-            "Table: `responsibles` — Responsible engineers directory.",
-            "Columns:",
-            "  - `id` integer PRIMARY KEY",
-            "  - `firstname` character varying NULLABLE",
-            "  - `lastname` character varying NULLABLE",
-            "  - `phone` character varying NULLABLE",
-            "  - `email` character varying NULLABLE -- Contact email address",
-            "  - `mission_comment` character varying NULLABLE",
-            "",
-            "Table: `authority_lookups` — Regulatory authorities.",
-            "Columns:",
-            "  - `id` integer PRIMARY KEY",
-            "  - `canonical_authority` character varying NOT NULL",
-            "  - `abbreviation` character varying NULLABLE",
-            "  - `country` character varying NOT NULL",
-            "  - `standard_validity_years` character varying NULLABLE",
-            "",
-            "Table: `supplier_lookups` — Supplier aliases.",
-            "Columns:",
-            "  - `id` integer PRIMARY KEY",
-            "  - `canonical_supplier` character varying NOT NULL",
-            "  - `aliases` jsonb NOT NULL",
-            "",
-            "Table: `countries` — Market priorities.",
-            "Columns:",
-            "  - `id` integer PRIMARY KEY",
-            "  - `country` character varying NULLABLE",
-            "  - `country_code` character varying NULLABLE",
-            "  - `stla_current_priority` character varying NULLABLE",
+            "- `certificates` (Regulatory RF certificates): `certificate_id` (varchar PK), `component` (varchar), `supplier` (varchar), `country` (varchar), `certif_number` (varchar), `authority` (varchar), `issue_date` (date), `exp_date` (date), `cert_link` (varchar), `file_name` (varchar)",
+            "- `components` (Vehicle components): `id` (integer PK), `componentname` (varchar), `modelname` (varchar), `supplier` (varchar), `freq` (varchar), `id_responsible` (varchar), `docinfo_link` (varchar)",
+            "- `responsibles` (Responsible engineers): `id` (integer PK), `firstname` (varchar), `lastname` (varchar), `phone` (varchar), `email` (varchar), `mission_comment` (varchar)",
+            "- `authority_lookups` (Regulatory authorities): `id` (integer PK), `canonical_authority` (varchar), `abbreviation` (varchar), `country` (varchar), `standard_validity_years` (varchar)",
+            "- `supplier_lookups` (Supplier aliases): `id` (integer PK), `canonical_supplier` (varchar), `aliases` (jsonb)",
+            "- `countries` (Market priorities): `id` (integer PK), `country` (varchar), `country_code` (varchar), `stla_current_priority` (varchar)",
         ]
 
-    return "\n".join(lines).strip()
+    result = "\n".join(lines).strip()
+    if lines:
+        _SCHEMA_DESC_CACHE[:] = [result]
+    return result
 
 
 def build_sql_system_prompt() -> str:
@@ -279,6 +239,9 @@ def generate_sql_query(user_query: str, history_text: str = "", error_feedback: 
             f"Return ONLY the raw JSON output matching the schema."
         ),
         disable_thinking=True,
+        max_tokens=384,
+        response_prefix='{"sql": "',
+        hop_name="sql_gen",
     )
 
     parsed = _parse_json_object(raw_json_response)
@@ -307,18 +270,39 @@ def _enforce_read_only(db_session) -> None:
 
 def _cell_to_text(value: Any) -> str:
     """Converts a single DB cell value into a display-friendly string."""
-    if value is None:
-        return "NULL"
+    if value is None or str(value).strip() == "":
+        return "Unassigned"
     if hasattr(value, "isoformat"):
-        return value.isoformat()
+        val_str = value.isoformat()
+        return "Indefinite" if val_str.startswith("2999-") else val_str
     if isinstance(value, (list, tuple)):
         return repr(value)
-    return str(value)
+    val_str = str(value)
+    return "Indefinite" if val_str == "2999-01-01" else val_str
+
+
+def _build_markdown_table(rows: List[Dict[str, Any]], columns: List[str], max_display: int = 15) -> str:
+    """
+    Deterministically renders PostgreSQL result rows into a clean GFM Markdown table.
+    """
+    if not rows or not columns:
+        return ""
+    lines = []
+    header = "| " + " | ".join(col.replace("_", " ").title() for col in columns) + " |"
+    separator = "| " + " | ".join(["---"] * len(columns)) + " |"
+    lines.append(header)
+    lines.append(separator)
+    for row in rows[:max_display]:
+        row_str = "| " + " | ".join(_cell_to_text(row.get(col)).replace("|", "\\|").replace("\n", " ") for col in columns) + " |"
+        lines.append(row_str)
+    if len(rows) > max_display:
+        lines.append(f"\n*(Showing top {max_display} of {len(rows)} total matching records)*")
+    return "\n".join(lines)
 
 
 def _format_results(rows: List[Dict[str, Any]], columns: List[str]) -> str:
     """
-    Formats raw query results into a compact text table for LLM synthesis.
+    Formats raw query results into a compact text summary for the LLM executive summary hop.
     """
     display_rows = rows[:MAX_ROWS_FOR_LLM]
 
@@ -329,17 +313,26 @@ def _format_results(rows: List[Dict[str, Any]], columns: List[str]) -> str:
             pairs = ", ".join(f"{key}={_cell_to_text(value)}" for key, value in row.items())
             lines.append(f"Row {idx}: {pairs}")
         if len(rows) > MAX_ROWS_FOR_LLM:
-            lines.append(f"(Only the first {MAX_ROWS_FOR_LLM} rows are shown.)")
+            lines.append(f"(Showing top {MAX_ROWS_FOR_LLM} of {len(rows)} rows for summary context; full table is rendered automatically.)")
 
     return "\n".join(lines)
 
 
-def _synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, Any]], columns: List[str], history_text: str = "") -> str:
+def _synthesize_answer(
+    user_query: str,
+    sql: str,
+    rows: List[Dict[str, Any]],
+    columns: List[str],
+    history_text: str = "",
+    disable_thinking: bool = True,
+) -> str:
     """
-    Feeds the raw query results back to the local LLM to synthesize a natural
-    language answer. Falls back to a deterministic Python-formatted summary if
-    the LLM call or JSON parsing fails.
+    Synthesizes a concise 1-2 sentence executive summary via the LLM and appends
+    the deterministic Markdown table for multi-row / multi-column results.
     """
+    if not rows:
+        return "No matching records were found in the database for your query."
+
     formatted_results = _format_results(rows, columns)
     history_block = f"{history_text}\n\n" if history_text else ""
     user_prompt = (
@@ -350,18 +343,26 @@ def _synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, Any]], co
         "Return ONLY the raw JSON output matching the schema."
     )
 
+    needs_table = len(rows) >= 2 or (len(rows) == 1 and len(columns) >= 2)
+    table_md = _build_markdown_table(rows, columns) if needs_table else ""
+
     try:
         from core.llm import generate_json
 
         raw_json_response = generate_json(
             system_prompt=config_sql_result_synthesis_prompt(),
             user_prompt=user_prompt,
-            disable_thinking=True,
+            disable_thinking=disable_thinking,
+            max_tokens=180,
+            response_prefix='{"answer": "',
+            hop_name="sql_summary",
         )
 
         parsed = _parse_json_object(raw_json_response)
         answer = str(parsed.get("answer", "")).strip()
         if answer:
+            if table_md and "| ---" not in answer:
+                return f"{answer}\n\n{table_md}"
             return answer
         logger.warning("  Empty answer returned by SQL result synthesis LLM.")
     except Exception as e:
@@ -381,27 +382,26 @@ def _format_python_answer(user_query: str, rows: List[Dict[str, Any]], columns: 
     if len(columns) == 1 and len(rows) == 1:
         return f"The result for your query is **{_cell_to_text(rows[0].get(columns[0]))}**."
 
-    lines = [f"Found **{len(rows)}** record(s) matching your request:\n"]
-    header = "| " + " | ".join(col.replace("_", " ").title() for col in columns) + " |"
-    separator = "| " + " | ".join(["---"] * len(columns)) + " |"
-    lines.append(header)
-    lines.append(separator)
-    for row in rows[:15]:
-        row_str = "| " + " | ".join(_cell_to_text(row.get(col)) for col in columns) + " |"
-        lines.append(row_str)
-    if len(rows) > 15:
-        lines.append(f"\n*(Showing top 15 of {len(rows)} total records)*")
-    return "\n".join(lines)
+    table_md = _build_markdown_table(rows, columns)
+    return f"Found **{len(rows)}** record(s) matching your request:\n\n{table_md}"
 
 
-def _stream_synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, Any]], columns: List[str], history_text: str = ""):
+def _stream_synthesize_answer(
+    user_query: str,
+    sql: str,
+    rows: List[Dict[str, Any]],
+    columns: List[str],
+    history_text: str = "",
+    disable_thinking: bool = True,
+):
     """
-    Generator: streams the natural-language answer synthesis token-by-token.
-
-    Builds the same prompt as _synthesize_answer but decodes incrementally and
-    surfaces only the growing JSON 'answer' field. Falls back to the deterministic
-    Python-formatted answer (yielded once) if streaming or parsing fails.
+    Generator: streams the concise 1-2 sentence executive summary token-by-token,
+    and immediately emits the deterministic Markdown table for tabular results.
     """
+    if not rows:
+        yield "No matching records were found in the database for your query."
+        return
+
     formatted_results = _format_results(rows, columns)
     history_block = f"{history_text}\n\n" if history_text else ""
     user_prompt = (
@@ -412,6 +412,9 @@ def _stream_synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, An
         "Return ONLY the raw JSON output matching the schema."
     )
 
+    needs_table = len(rows) >= 2 or (len(rows) == 1 and len(columns) >= 2)
+    table_md = _build_markdown_table(rows, columns) if needs_table else ""
+
     buffer = ""
     last_answer = ""
     try:
@@ -421,7 +424,10 @@ def _stream_synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, An
         for token in generate_stream(
             system_prompt=config_sql_result_synthesis_prompt(),
             user_prompt=user_prompt,
-            disable_thinking=True,
+            disable_thinking=disable_thinking,
+            max_tokens=180,
+            response_prefix='{"answer": "',
+            hop_name="sql_summary",
         ):
             buffer += token
             current = extract_answer_value(buffer)
@@ -431,6 +437,8 @@ def _stream_synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, An
                 if delta:
                     yield delta
         if last_answer:
+            if table_md and "| ---" not in last_answer:
+                yield f"\n\n{table_md}"
             return
         logger.warning("  Empty answer returned by streamed SQL result synthesis.")
     except Exception as e:
@@ -439,13 +447,103 @@ def _stream_synthesize_answer(user_query: str, sql: str, rows: List[Dict[str, An
     yield _format_python_answer(user_query, rows, columns)
 
 
-def stream_metadata_answer(user_query: str, db_session=None, history_text: str = ""):
+def execute_sql_rows(
+    user_query: str,
+    db_session=None,
+    history_text: str = "",
+):
+    """
+    Translates `user_query` to SQL and executes it safely (up to 3 retries).
+    Returns `(sql, rows, columns, error_feedback)`.
+    """
+    clean_query = str(user_query or "").strip()
+    if not clean_query:
+        return "", [], [], "Empty query"
+
+    MAX_SQL_RETRIES = 3
+    error_feedback = ""
+    sql = ""
+    rows: List[Dict[str, Any]] = []
+    columns: List[str] = []
+
+    close_session_on_exit = False
+    if db_session is None:
+        from storage.database import SessionLocal
+        db_session = SessionLocal()
+        close_session_on_exit = True
+
+    try:
+        for attempt in range(MAX_SQL_RETRIES):
+            try:
+                sql = generate_sql_query(clean_query, history_text=history_text, error_feedback=error_feedback)
+            except Exception as e:
+                logger.warning(f"  Text-to-SQL generation failed: {e}")
+                error_feedback = f"Text-to-SQL generation failed: {e}"
+                continue
+
+            if not sql or not _validate_sql(sql):
+                logger.warning(f"  Generated SQL failed validation. SQL: {sql!r}")
+                error_feedback = "Generated SQL failed validation (e.g. invalid syntax, mutating keywords, or multiple statements)."
+                continue
+
+            sql = _ensure_row_cap(sql)
+            logger.info(f" Executing generated SQL for METADATA_QUERY (attempt {attempt + 1}/{MAX_SQL_RETRIES}): {sql}")
+
+            try:
+                _enforce_read_only(db_session)
+                result = db_session.execute(text(sql))
+                columns = list(result.keys())
+                rows = [dict(row) for row in result.mappings().all()]
+                error_feedback = ""
+                break
+            except SQLAlchemyError as e:
+                logger.warning(f"  SQLAlchemy error during metadata query execution: {e}")
+                error_feedback = f"PostgreSQL execution failed with error: {e}"
+                try:
+                    db_session.rollback()
+                except Exception as rollback_err:
+                    logger.warning(f"  Rollback failed: {rollback_err}")
+                continue
+            except Exception as e:
+                logger.warning(f"  Unexpected error during metadata query execution: {e}")
+                error_feedback = f"Unexpected error: {e}"
+                try:
+                    db_session.rollback()
+                except Exception as rollback_err:
+                    logger.warning(f"  Rollback failed: {rollback_err}")
+                continue
+    finally:
+        if close_session_on_exit:
+            db_session.close()
+
+    return sql, rows, columns, error_feedback
+
+
+def execute_sql_structured_context(user_query: str, db_session=None, history_text: str = "") -> str:
+    """
+    Executes Text-to-SQL and returns compact structured facts WITHOUT an intermediate
+    LLM synthesis hop (used by HYBRID_QUERY so synthesis only happens once).
+    """
+    sql, rows, columns, error_feedback = execute_sql_rows(
+        user_query, db_session=db_session, history_text=history_text
+    )
+    if error_feedback or not sql:
+        return ""
+    if not rows:
+        return "No matching database rows found."
+    table_md = _build_markdown_table(rows, columns, max_display=15)
+    return f"Executed SQL: {sql}\nTotal matching rows: {len(rows)}\n\n{table_md}"
+
+
+def stream_metadata_answer(
+    user_query: str,
+    db_session=None,
+    history_text: str = "",
+    disable_thinking: bool = True,
+):
     """
     Generator: runs the full METADATA_QUERY pipeline and yields the final
     natural-language answer as progressive token chunks.
-
-    SQL translation + execution are synchronous (fast); the final answer
-    synthesis is streamed so the UI shows live output generation.
     """
     clean_query = str(user_query or "").strip()
     if not clean_query:
@@ -453,169 +551,43 @@ def stream_metadata_answer(user_query: str, db_session=None, history_text: str =
         yield FALLBACK_MESSAGE
         return
 
-    MAX_SQL_RETRIES = 3
-    error_feedback = ""
-    sql = ""
-    rows = []
-    columns = []
+    sql, rows, columns, error_feedback = execute_sql_rows(
+        clean_query, db_session=db_session, history_text=history_text
+    )
+    if error_feedback:
+        logger.warning(f"  Exhausted SQL retries. Last error: {error_feedback}")
+        yield FALLBACK_MESSAGE
+        return
 
-    # 2. Open a local session if the caller did not supply one
-    close_session_on_exit = False
-    if db_session is None:
-        from storage.database import SessionLocal
-        db_session = SessionLocal()
-        close_session_on_exit = True
-
-    try:
-        for attempt in range(MAX_SQL_RETRIES):
-            # 1. LLM SQL translation
-            try:
-                sql = generate_sql_query(clean_query, history_text=history_text, error_feedback=error_feedback)
-            except Exception as e:
-                logger.warning(f"  Text-to-SQL generation failed: {e}")
-                error_feedback = f"Text-to-SQL generation failed: {e}"
-                continue
-
-            if not sql or not _validate_sql(sql):
-                logger.warning(f"  Generated SQL failed validation. SQL: {sql!r}")
-                error_feedback = "Generated SQL failed validation (e.g. invalid syntax, mutating keywords, or multiple statements)."
-                continue
-
-            sql = _ensure_row_cap(sql)
-            logger.info(f" Executing generated SQL for METADATA_QUERY (attempt {attempt + 1}/{MAX_SQL_RETRIES}): {sql}")
-
-            # 3. Safe execution with graceful fallback
-            try:
-                _enforce_read_only(db_session)
-                result = db_session.execute(text(sql))
-                columns = list(result.keys())
-                rows = [dict(row) for row in result.mappings().all()]
-                error_feedback = ""
-                break # Success, exit retry loop
-            except SQLAlchemyError as e:
-                logger.warning(f"  SQLAlchemy error during metadata query execution: {e}")
-                error_feedback = f"PostgreSQL execution failed with error: {e}"
-                try:
-                    db_session.rollback()
-                except Exception as rollback_err:
-                    logger.warning(f"  Rollback failed: {rollback_err}")
-                continue # Retry
-            except Exception as e:
-                logger.warning(f"  Unexpected error during metadata query execution: {e}")
-                error_feedback = f"Unexpected error: {e}"
-                try:
-                    db_session.rollback()
-                except Exception as rollback_err:
-                    logger.warning(f"  Rollback failed: {rollback_err}")
-                continue # Retry
-
-        if error_feedback:
-            # If we exhausted retries and still have an error, yield fallback
-            logger.warning(f"  Exhausted {MAX_SQL_RETRIES} SQL retries. Last error: {error_feedback}")
-            yield FALLBACK_MESSAGE
-            return
-
-    finally:
-        if close_session_on_exit:
-            db_session.close()
-
-    # 4. Stream the natural-language answer synthesis
     yield from _stream_synthesize_answer(
-        clean_query, sql, rows, columns, history_text=history_text
+        clean_query, sql, rows, columns, history_text=history_text, disable_thinking=disable_thinking
     )
 
 
-def execute_metadata_query(user_query: str, db_session, history_text: str = "") -> str:
+def execute_metadata_query(
+    user_query: str,
+    db_session,
+    history_text: str = "",
+    disable_thinking: bool = True,
+) -> str:
     """
-    Full METADATA_QUERY execution pipeline:
-
-      1. Empty-input guard.
-      2. LLM translates the question into SQL (schema-injected system prompt).
-      3. SELECT-only validation + row cap + read-only transaction enforcement.
-      4. Safe execution against the provided SQLAlchemy session.
-      5. Natural-language answer synthesis with deterministic fallback.
-
-    Args:
-        user_query (str): The natural language question asked by the user.
-        db_session: A SQLAlchemy session (or the storage.database scoped session).
-            If None, a fresh session is opened and closed automatically.
-        history_text (str): Optional prior conversation history block.
-
-    Returns:
-        str: A natural language answer, or a graceful fallback message on failure.
+    Full METADATA_QUERY execution pipeline.
     """
     clean_query = str(user_query or "").strip()
     if not clean_query:
         logger.warning("Empty or blank user query provided to execute_metadata_query.")
         return FALLBACK_MESSAGE
 
-    MAX_SQL_RETRIES = 3
-    error_feedback = ""
-    sql = ""
-    rows = []
-    columns = []
+    sql, rows, columns, error_feedback = execute_sql_rows(
+        clean_query, db_session=db_session, history_text=history_text
+    )
+    if error_feedback:
+        logger.warning(f"  Exhausted SQL retries. Last error: {error_feedback}")
+        return FALLBACK_MESSAGE
 
-    # 2. Open a local session if the caller did not supply one
-    close_session_on_exit = False
-    if db_session is None:
-        from storage.database import SessionLocal
-        db_session = SessionLocal()
-        close_session_on_exit = True
-
-    try:
-        for attempt in range(MAX_SQL_RETRIES):
-            # 1. LLM SQL translation
-            try:
-                sql = generate_sql_query(clean_query, history_text=history_text, error_feedback=error_feedback)
-            except Exception as e:
-                logger.warning(f"  Text-to-SQL generation failed: {e}")
-                error_feedback = f"Text-to-SQL generation failed: {e}"
-                continue
-
-            if not sql or not _validate_sql(sql):
-                logger.warning(f"  Generated SQL failed validation. SQL: {sql!r}")
-                error_feedback = "Generated SQL failed validation (e.g. invalid syntax, mutating keywords, or multiple statements)."
-                continue
-
-            sql = _ensure_row_cap(sql)
-            logger.info(f" Executing generated SQL for METADATA_QUERY (attempt {attempt + 1}/{MAX_SQL_RETRIES}): {sql}")
-
-            # 3. Safe execution with graceful fallback
-            try:
-                _enforce_read_only(db_session)
-                result = db_session.execute(text(sql))
-                columns = list(result.keys())
-                rows = [dict(row) for row in result.mappings().all()]
-                error_feedback = ""
-                break # Success, exit retry loop
-            except SQLAlchemyError as e:
-                logger.warning(f"  SQLAlchemy error during metadata query execution: {e}")
-                error_feedback = f"PostgreSQL execution failed with error: {e}"
-                try:
-                    db_session.rollback()
-                except Exception as rollback_err:
-                    logger.warning(f"  Rollback failed: {rollback_err}")
-                continue # Retry
-            except Exception as e:
-                logger.warning(f"  Unexpected error during metadata query execution: {e}")
-                error_feedback = f"Unexpected error: {e}"
-                try:
-                    db_session.rollback()
-                except Exception as rollback_err:
-                    logger.warning(f"  Rollback failed: {rollback_err}")
-                continue # Retry
-
-        if error_feedback:
-            # If we exhausted retries and still have an error, yield fallback
-            logger.warning(f"  Exhausted {MAX_SQL_RETRIES} SQL retries. Last error: {error_feedback}")
-            return FALLBACK_MESSAGE
-
-    finally:
-        if close_session_on_exit:
-            db_session.close()
-
-    # 4. Synthesize a natural-language answer from the raw results
-    return _synthesize_answer(clean_query, sql, rows, columns, history_text=history_text)
+    return _synthesize_answer(
+        clean_query, sql, rows, columns, history_text=history_text, disable_thinking=disable_thinking
+    )
 
 
 if __name__ == "__main__":
