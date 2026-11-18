@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
-import { Bell, CheckCheck, Trash2, Settings } from 'lucide-react';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { Bell, CheckCheck, Trash2, Settings, LogOut } from 'lucide-react';
 import { api } from '../../api';
+import { useAuth } from '../../context/AuthContext';
 import './Navbar.css';
 
 interface RecycleItem {
@@ -14,6 +15,8 @@ interface RecycleItem {
 
 const Navbar = () => {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { user, isAdmin, isReadOnly, logout } = useAuth();
   const [unreadCount, setUnreadCount] = useState(0);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -168,6 +171,15 @@ const Navbar = () => {
         >
           <span>AUTOMATIONS</span>
         </NavLink>
+
+        {isAdmin && (
+          <NavLink 
+            to="/users" 
+            className={({ isActive }) => `nav-pill ${isActive ? 'active' : ''}`}
+          >
+            <span>USERS</span>
+          </NavLink>
+        )}
       </nav>
       
       {/* Right: Settings, Notifications & User Admin Badge */}
@@ -395,9 +407,39 @@ const Navbar = () => {
           </div>
         )}
 
-        {/* System Admin Badge */}
-        <div className="user-profile-badge">
-          <span>System Administrator</span>
+        {/* User Role Badge + Sign Out */}
+        <div className="user-profile-badge" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <span>{user?.full_name || 'User'}</span>
+          <span style={{
+            fontSize: '0.68rem',
+            fontWeight: 700,
+            padding: '0.12rem 0.42rem',
+            borderRadius: '10px',
+            backgroundColor: isAdmin ? 'var(--brand-blue)' : isReadOnly ? '#64748b' : '#10b981',
+            color: '#ffffff',
+            textTransform: 'uppercase'
+          }}>
+            {user?.role === 'admin' ? 'Admin' : user?.role === 'editor' ? 'Editor' : 'Read-Only'}
+          </span>
+          <button
+            type="button"
+            onClick={async () => {
+              await logout();
+              navigate('/login', { replace: true });
+            }}
+            title="Sign Out"
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              padding: '0.15rem'
+            }}
+          >
+            <LogOut size={15} />
+          </button>
         </div>
       </div>
     </header>

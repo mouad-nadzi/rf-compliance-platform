@@ -74,12 +74,40 @@ def init_db() -> bool:
             conn.execute(text("DROP INDEX IF EXISTS authority_lookups_canonical_authority_key;"))
             conn.execute(text("ALTER TABLE IF EXISTS sources ADD COLUMN IF NOT EXISTS cookie_header TEXT;"))
             conn.execute(text("ALTER TABLE IF EXISTS certificates ADD COLUMN IF NOT EXISTS cert_link VARCHAR(500);"))
+            conn.execute(text("ALTER TABLE IF EXISTS certificates ALTER COLUMN certificate_id SET DEFAULT md5(random()::text || clock_timestamp()::text);"))
+            conn.execute(text("ALTER TABLE IF EXISTS certificates ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP;"))
+            conn.execute(text("ALTER TABLE IF EXISTS chat_sessions ADD COLUMN IF NOT EXISTS user_id VARCHAR(64);"))
             conn.commit()
 
         # Create tables
         logger.info("Creating database tables if not exist...")
-        from schemas.extraction import CertificateMetadata, Source, AgentMemory, RecycleBinItem
+        from schemas.extraction import CertificateMetadata, Source, AgentMemory, RecycleBinItem, UserAccount
         Base.metadata.create_all(bind=engine)
+
+        # Bootstrap unique Administrator account if none exists and backfill legacy chat sessions
+        try:
+            from server.auth import hash_password
+            with get_db_session() as session:
+                admin_row = session.query(UserAccount).filter(UserAccount.role == "admin").first()
+                if admin_row is None:
+                    admin_email = str(config.ADMIN_EMAIL or "mouadnadzi3@gmail.com").strip().lower()
+                    admin_name = str(config.ADMIN_NAME or "Mouad Nadzi").strip()
+                    admin_row = UserAccount(
+                        email=admin_email,
+                        full_name=admin_name,
+                        role="admin",
+                        password_hash=hash_password(config.ADMIN_INITIAL_PASSWORD),
+                        status="active",
+                    )
+                    session.add(admin_row)
+                    session.flush()
+                    logger.info(f"Bootstrapped unique Administrator account: {admin_email}")
+                session.execute(
+                    text("UPDATE chat_sessions SET user_id = :uid WHERE user_id IS NULL"),
+                    {"uid": admin_row.id},
+                )
+        except Exception as auth_err:
+            logger.warning(f"Administrator bootstrap skipped/failed: {auth_err}")
 
         # Seed lookup tables from knowledge assets if needed
         try:

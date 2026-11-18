@@ -1,3 +1,17 @@
+export interface UserProfile {
+  id: string;
+  email: string;
+  full_name: string;
+  role: 'admin' | 'editor' | 'viewer';
+  status: string;
+}
+
+export interface ManagedUser extends UserProfile {
+  invite_token?: string | null;
+  created_at?: string | null;
+  last_login_at?: string | null;
+}
+
 export interface ChatSession {
   id: string;
   title: string;
@@ -110,12 +124,22 @@ export const api = {
   },
 
   approveProposal: async (id: string, decision: 'approved' | 'rejected'): Promise<any> => {
-    const res = await fetch(`${API_BASE}/agent/proposals/${id}/approve`, {
+    const actionPath = decision === 'rejected' ? 'reject' : 'approve';
+    const res = await fetch(`${API_BASE}/agent/proposals/${encodeURIComponent(id)}/${actionPath}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ decision })
     });
-    if (!res.ok) throw new Error(`Failed to ${decision} proposal`);
+    if (!res.ok) {
+      let detail = `Failed to ${decision} proposal`;
+      try {
+        const errJson = await res.json();
+        if (errJson?.detail) detail = errJson.detail;
+      } catch {
+        // ignore JSON parse error
+      }
+      throw new Error(detail);
+    }
     return res.json();
   },
 
@@ -142,6 +166,32 @@ export const api = {
       body: JSON.stringify({})
     });
     if (!res.ok) throw new Error('Failed to run autonomous scraper');
+    return res.json();
+  },
+
+  getAlertingConfig: async (): Promise<any> => {
+    const res = await fetch(`${API_BASE}/agent/alerts/config`);
+    if (!res.ok) throw new Error('Failed to fetch alerting config');
+    return res.json();
+  },
+
+  updateAlertingConfig: async (config: any): Promise<any> => {
+    const res = await fetch(`${API_BASE}/agent/alerts/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+    if (!res.ok) throw new Error('Failed to update alerting config');
+    return res.json();
+  },
+
+  runExpiryAlertScan: async (forceRescan: boolean = false): Promise<any> => {
+    const res = await fetch(`${API_BASE}/agent/alerts/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force_rescan: forceRescan })
+    });
+    if (!res.ok) throw new Error('Failed to run expiry alert scan');
     return res.json();
   },
 
@@ -503,6 +553,108 @@ export const api = {
   clearNotifications: async (): Promise<any> => {
     const res = await fetch(`${API_BASE}/notifications/clear`, { method: 'DELETE' });
     if (!res.ok) throw new Error('Failed to clear notifications');
+    return res.json();
+  },
+
+  // Authentication & User Management
+  login: async (email: string, password: string): Promise<{ token: string; user: UserProfile }> => {
+    const res = await fetch(`${API_BASE}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.detail || 'Invalid email or password');
+    }
+    return res.json();
+  },
+
+  logout: async (): Promise<void> => {
+    await fetch(`${API_BASE}/auth/logout`, { method: 'POST' });
+  },
+
+  getMe: async (): Promise<{ user: UserProfile } | null> => {
+    const res = await fetch(`${API_BASE}/auth/me`);
+    if (!res.ok) return null;
+    return res.json();
+  },
+
+  updateMe: async (payload: { full_name?: string; email?: string; current_password?: string; new_password?: string }): Promise<{ user: UserProfile }> => {
+    const res = await fetch(`${API_BASE}/auth/me`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.detail || 'Failed to update account');
+    }
+    return res.json();
+  },
+
+  validateInvite: async (token: string): Promise<{ email: string; full_name: string; role: 'editor' | 'viewer' }> => {
+    const res = await fetch(`${API_BASE}/auth/invite/${encodeURIComponent(token)}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.detail || 'Invalid or expired invitation link');
+    }
+    return res.json();
+  },
+
+  acceptInvite: async (token: string, password: string, full_name?: string): Promise<{ token: string; user: UserProfile }> => {
+    const res = await fetch(`${API_BASE}/auth/accept-invite`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, password, full_name })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.detail || 'Failed to activate account');
+    }
+    return res.json();
+  },
+
+  getUsers: async (): Promise<{ users: ManagedUser[] }> => {
+    const res = await fetch(`${API_BASE}/users`);
+    if (!res.ok) throw new Error('Failed to fetch users');
+    return res.json();
+  },
+
+  inviteUser: async (email: string, full_name: string, role: 'editor' | 'viewer'): Promise<{ user: ManagedUser; invite_url: string; email_sent: boolean; email_error?: string | null }> => {
+    const res = await fetch(`${API_BASE}/users/invite`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, full_name, role })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.detail || 'Failed to invite user');
+    }
+    return res.json();
+  },
+
+  updateUserRole: async (userId: string, role: 'editor' | 'viewer'): Promise<any> => {
+    const res = await fetch(`${API_BASE}/users/${encodeURIComponent(userId)}/role`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.detail || 'Failed to update user role');
+    }
+    return res.json();
+  },
+
+  deleteUser: async (userId: string): Promise<any> => {
+    const res = await fetch(`${API_BASE}/users/${encodeURIComponent(userId)}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.detail || 'Failed to remove user');
+    }
     return res.json();
   }
 };

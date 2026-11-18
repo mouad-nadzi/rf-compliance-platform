@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { FileText, Shield, Users, Layers, HardDrive, Database, Plus, ChevronLeft, ChevronRight, UploadCloud, CheckCircle2, AlertCircle, Loader2, Upload, MessageSquare, PlusCircle, Trash2, ShieldAlert, Check, X } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { api, type ChatSession } from '../../api';
+import { useAuth } from '../../context/AuthContext';
 import './Sidebar.css';
 
 const BASE_TABLES = [
@@ -43,6 +44,7 @@ const Sidebar = ({
   sessionStreams
 }: SidebarProps) => {
   const location = useLocation();
+  const { isReadOnly } = useAuth();
   const isDatabaseView = location.pathname.includes('/databases');
   const isChatView = location.pathname.includes('/chat');
 
@@ -51,6 +53,8 @@ const Sidebar = ({
 
   // Agent Proposals State for Automations View
   const [proposals, setProposals] = useState<any[]>([]);
+  const [processingProposalId, setProcessingProposalId] = useState<string | null>(null);
+  const [proposalError, setProposalError] = useState<{ id: string; message: string } | null>(null);
 
   const fetchChatSessions = async () => {
     try {
@@ -532,7 +536,7 @@ const Sidebar = ({
             </div>
 
             {/* Action Button: + New Table */}
-            {isOpen && (
+            {isOpen && !isReadOnly && (
               <div style={{ marginTop: '0.25rem', flexShrink: 0 }}>
                 <button 
                   className="btn btn-secondary" 
@@ -658,59 +662,135 @@ const Sidebar = ({
         ) : (
           /* AUTOMATIONS VIEW: PENDING AGENT ACTIONS */
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem', flex: 1, overflowY: 'auto' }}>
-            {proposals.filter((p: any) => p.status === 'PENDING').map((p: any) => (
-              <div 
-                key={p.id} 
-                style={{ 
-                  backgroundColor: 'rgba(255, 255, 255, 0.04)', 
-                  border: '1px solid rgba(255, 255, 255, 0.1)', 
-                  borderRadius: '8px', 
-                  padding: '0.65rem', 
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  gap: '0.4rem' 
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span className="badge badge-yellow" style={{ fontSize: '0.65rem', padding: '0.1rem 0.35rem' }}>{p.type}</span>
-                  <span style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)' }}>
-                    {new Date(p.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </div>
+            {proposals.filter((p: any) => p.status === 'PENDING').map((p: any) => {
+              const propId = p.proposal_id || p.id;
+              const isEmail = p.type === 'SEND_EMAIL';
+              const recipient = p.payload?.recipient;
+              const subject = p.payload?.subject;
+              const bodyContent = p.payload?.body_content;
+              const summaryText = p.reasoning || p.sql_preview || p.payload?.description || p.type;
+              const isProcessing = processingProposalId === propId;
 
-                {isOpen && (
-                  <>
-                    <p style={{ fontSize: '0.72rem', color: 'var(--text-on-brand)', margin: 0, lineHeight: 1.3, whiteSpace: 'normal', wordBreak: 'break-word' }}>
-                      {p.reasoning}
-                    </p>
-                    <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.25rem' }}>
-                      <button 
-                        className="btn btn-primary" 
-                        style={{ flex: 1, fontSize: '0.7rem', padding: '0.25rem 0.4rem', backgroundColor: '#10b981', justifyContent: 'center' }}
-                        onClick={async () => {
-                          await api.approveProposal(p.id, 'approved');
-                          fetchProposals();
-                          window.dispatchEvent(new Event('refresh-proposals'));
-                        }}
-                      >
-                        <Check size={12} /> Approve
-                      </button>
-                      <button 
-                        className="btn btn-secondary" 
-                        style={{ fontSize: '0.7rem', padding: '0.25rem 0.4rem', color: '#ef4444', borderColor: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', justifyContent: 'center' }}
-                        onClick={async () => {
-                          await api.approveProposal(p.id, 'rejected');
-                          fetchProposals();
-                          window.dispatchEvent(new Event('refresh-proposals'));
-                        }}
-                      >
-                        <X size={12} /> Reject
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            ))}
+              return (
+                <div 
+                  key={propId} 
+                  style={{ 
+                    backgroundColor: 'rgba(255, 255, 255, 0.04)', 
+                    border: '1px solid rgba(255, 255, 255, 0.14)', 
+                    borderRadius: '8px', 
+                    padding: '0.7rem', 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    gap: '0.45rem',
+                    whiteSpace: 'normal',
+                    minWidth: 0
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span className="badge badge-yellow" style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}>
+                      {isEmail ? 'EMAIL ALERT' : p.type}
+                    </span>
+                    <span style={{ fontSize: '0.65rem', color: 'var(--text-tertiary)' }}>
+                      {p.created_at ? new Date(p.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                    </span>
+                  </div>
+
+                  {isOpen && (
+                    <>
+                      {isEmail ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontSize: '0.72rem', color: 'var(--text-on-brand)', whiteSpace: 'normal', minWidth: 0 }}>
+                          {recipient && (
+                            <div style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word', lineHeight: 1.35 }}>
+                              <strong style={{ color: 'var(--text-tertiary)' }}>To:</strong> {recipient}
+                            </div>
+                          )}
+                          {subject && (
+                            <div style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word', fontWeight: 600, lineHeight: 1.35 }}>
+                              <strong style={{ color: 'var(--text-tertiary)', fontWeight: 500 }}>Subject:</strong> {subject}
+                            </div>
+                          )}
+                          {bodyContent && (
+                            <div
+                              style={{
+                                marginTop: '0.15rem',
+                                padding: '0.45rem 0.5rem',
+                                backgroundColor: 'rgba(0, 0, 0, 0.28)',
+                                borderRadius: '6px',
+                                border: '1px solid rgba(255, 255, 255, 0.08)',
+                                fontSize: '0.68rem',
+                                lineHeight: 1.35,
+                                color: 'rgba(255, 255, 255, 0.88)',
+                                whiteSpace: 'pre-wrap',
+                                overflowWrap: 'anywhere',
+                                wordBreak: 'break-word',
+                                maxHeight: '140px',
+                                overflowY: 'auto'
+                              }}
+                            >
+                              {bodyContent}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p style={{ fontSize: '0.72rem', color: 'var(--text-on-brand)', margin: 0, lineHeight: 1.35, whiteSpace: 'normal', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+                          {summaryText}
+                        </p>
+                      )}
+
+                      <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.25rem' }}>
+                        <button 
+                          className="btn btn-primary" 
+                          disabled={isProcessing || isReadOnly}
+                          style={{ flex: 1, fontSize: '0.7rem', padding: '0.3rem 0.45rem', backgroundColor: '#10b981', justifyContent: 'center', opacity: (isProcessing || isReadOnly) ? 0.5 : 1 }}
+                          onClick={async () => {
+                            if (!propId) return;
+                            setProcessingProposalId(propId);
+                            setProposalError(null);
+                            try {
+                              await api.approveProposal(propId, 'approved');
+                              await fetchProposals();
+                              window.dispatchEvent(new Event('refresh-proposals'));
+                            } catch (err: any) {
+                              setProposalError({ id: propId, message: err?.message || 'Approval failed' });
+                            } finally {
+                              setProcessingProposalId(null);
+                            }
+                          }}
+                        >
+                          <Check size={12} /> {isProcessing ? 'Working...' : 'Approve'}
+                        </button>
+                        <button 
+                          className="btn btn-secondary" 
+                          disabled={isProcessing || isReadOnly}
+                          style={{ fontSize: '0.7rem', padding: '0.3rem 0.45rem', color: '#ef4444', borderColor: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', justifyContent: 'center', opacity: (isProcessing || isReadOnly) ? 0.5 : 1 }}
+                          onClick={async () => {
+                            if (!propId) return;
+                            setProcessingProposalId(propId);
+                            setProposalError(null);
+                            try {
+                              await api.approveProposal(propId, 'rejected');
+                              await fetchProposals();
+                              window.dispatchEvent(new Event('refresh-proposals'));
+                            } catch (err: any) {
+                              setProposalError({ id: propId, message: err?.message || 'Rejection failed' });
+                            } finally {
+                              setProcessingProposalId(null);
+                            }
+                          }}
+                        >
+                          <X size={12} /> Reject
+                        </button>
+                      </div>
+                      {proposalError && proposalError.id === propId && (
+                        <div style={{ fontSize: '0.68rem', color: '#fca5a5', backgroundColor: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.35)', borderRadius: '6px', padding: '0.35rem 0.45rem', whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.3 }}>
+                          {proposalError.message}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
 
             {proposals.filter((p: any) => p.status === 'PENDING').length === 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', paddingTop: '1.5rem', gap: '0.5rem', textAlign: 'center' }}>
@@ -726,7 +806,7 @@ const Sidebar = ({
         )}
 
             {/* Ingest Certificate Documents Box at Bottom of Sidebar (Restricted to Home / Databases Page) */}
-            {isDatabaseView && (
+            {isDatabaseView && !isReadOnly && (
               isOpen ? (
                 <div className="sidebar-uploader-container" style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-tertiary)', fontWeight: 700, fontSize: '0.7rem', letterSpacing: '0.05em' }}>

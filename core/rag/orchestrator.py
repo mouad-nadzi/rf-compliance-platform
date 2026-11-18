@@ -672,6 +672,7 @@ def answer_compliance_query_stream(
     session_id: Optional[str] = None,
     deep_thinking: bool = False,
     reset_telemetry: bool = True,
+    user_context: Optional[Dict[str, Any]] = None,
 ):
     """
     Streaming variant of answer_compliance_query() for the interactive chat UI.
@@ -685,6 +686,14 @@ def answer_compliance_query_stream(
     clean_query = str(user_query or "").strip()
     history_text = _format_history(history)
     disable_thinking = not deep_thinking
+    user_role = str((user_context or {}).get("role") or "").lower()
+    user_ctx_block = ""
+    if user_context:
+        try:
+            from server.auth import format_user_context_for_prompt
+            user_ctx_block = format_user_context_for_prompt(user_context)
+        except Exception:
+            pass
 
     yield {"type": "status", "stage": "routing", "message": "Understanding your request..."}
 
@@ -702,12 +711,13 @@ def answer_compliance_query_stream(
 
     # Chat-based HITL confirmation ("yes" / "approve" / "no") for a pending
     # AGENT_ACTION proposal scoped to this session, handled before routing.
-    has_approval_events = False
-    for evt in _handle_chat_approval_stream(clean_query, history=history, session_id=session_id):
-        has_approval_events = True
-        yield evt
-    if has_approval_events:
-        return
+    if user_role != "viewer":
+        has_approval_events = False
+        for evt in _handle_chat_approval_stream(clean_query, history=history, session_id=session_id):
+            has_approval_events = True
+            yield evt
+        if has_approval_events:
+            return
 
     resolved_query = clean_query
 
@@ -826,8 +836,10 @@ def answer_compliance_query_stream(
             yield {"type": "status", "stage": "casual", "message": "Generating reply..."}
             from core.prompts import config_casual_conversation_system_prompt
             casual_prompt = (
-                f"{history_text}\n\n" if history_text else ""
-            ) + f"USER MESSAGE: {clean_query}\n\nReturn ONLY the raw JSON output matching the schema."
+                (f"{user_ctx_block}\n" if user_ctx_block else "")
+                + (f"{history_text}\n\n" if history_text else "")
+                + f"USER MESSAGE: {clean_query}\n\nReturn ONLY the raw JSON output matching the schema."
+            )
             collector: Dict[str, Any] = {}
             yield from _stream_and_collect(
                 config_casual_conversation_system_prompt(),
@@ -844,181 +856,191 @@ def answer_compliance_query_stream(
                 yield {"type": "token", "text": answer_text}
 
         elif intent == QueryIntent.AGENT_ACTION.value:
-            yield {"type": "status", "stage": "agent_action", "message": "Planning agent action..."}
-            from core.agent.agent_loop import (
-                plan_agent_action, iter_read_steps, stage_write_step,
-                resolve_write_step, extract_artifacts_from_history
-            )
-            explicit_urls = _extract_urls(clean_query)
-            artifacts = extract_artifacts_from_history(history=history, explicit_urls=explicit_urls)
+            if user_role == "viewer":
+                u_name = (user_context or {}).get("full_name") or (user_context or {}).get("email") or "User"
+                answer_text = (
+                    f"You are signed in as **{u_name}** with **Read-Only (`viewer`)** permissions. "
+                    "You can query compliance data, search certificates, and inspect tables, "
+                    "but creating, updating, deleting records, modifying schemas, or running automations "
+                    "requires **Editor** or **Administrator** access."
+                )
+                yield {"type": "token", "text": answer_text}
+            else:
+                yield {"type": "status", "stage": "agent_action", "message": "Planning agent action..."}
+                from core.agent.agent_loop import (
+                    plan_agent_action, iter_read_steps, stage_write_step,
+                    resolve_write_step, extract_artifacts_from_history
+                )
+                explicit_urls = _extract_urls(clean_query)
+                artifacts = extract_artifacts_from_history(history=history, explicit_urls=explicit_urls)
 
-            urls = list(explicit_urls)
-            if not urls and artifacts.source_url:
-                urls = [u.strip() for u in artifacts.source_url.split(",") if u.strip()]
-            if not urls and artifacts.verified_urls:
-                urls = list(artifacts.verified_urls)
+                urls = list(explicit_urls)
+                if not urls and artifacts.source_url:
+                    urls = [u.strip() for u in artifacts.source_url.split(",") if u.strip()]
+                if not urls and artifacts.verified_urls:
+                    urls = list(artifacts.verified_urls)
 
-            plan_result = plan_agent_action(clean_query, urls=urls, history=history)
-            primary_url = urls[0] if urls else ""
+                plan_result = plan_agent_action(clean_query, urls=urls, history=history, user_context=user_context)
+                primary_url = urls[0] if urls else ""
 
-            _parts = []
-            for step in plan_result.steps:
-                if step.kind == "read":
-                    desc = step.description or step.action
-                    yield {"type": "status", "stage": "agent_action", "message": f"Executing: {desc}..."}
-                    for narration in iter_read_steps([step], primary_url, artifacts):
-                        _parts.append(narration)
+                _parts = []
+                for step in plan_result.steps:
+                    if step.kind == "read":
+                        desc = step.description or step.action
+                        yield {"type": "status", "stage": "agent_action", "message": f"Executing: {desc}..."}
+                        for narration in iter_read_steps([step], primary_url, artifacts):
+                            _parts.append(narration)
 
-            write_steps = [s for s in plan_result.steps if s.kind == "write"]
-            if write_steps:
-                is_direct = plan_result.is_direct_command
+                write_steps = [s for s in plan_result.steps if s.kind == "write"]
+                if write_steps:
+                    is_direct = plan_result.is_direct_command
 
-                if is_direct:
-                    import queue
-                    import threading
+                    if is_direct:
+                        import queue
+                        import threading
 
-                    MAX_AGENT_RETRIES = 3
-                    error_feedback = ""
-                    raw_res: Any = None
-                    executed_outcomes: List[Any] = []
-                    answer_text = ""
+                        MAX_AGENT_RETRIES = 3
+                        error_feedback = ""
+                        raw_res: Any = None
+                        executed_outcomes: List[Any] = []
+                        answer_text = ""
 
-                    for attempt in range(MAX_AGENT_RETRIES):
-                        if attempt > 0:
-                            yield {"type": "status", "stage": "agent_action", "message": f"Execution failed. Re-planning (attempt {attempt + 1}/{MAX_AGENT_RETRIES})..."}
-                            plan_result = plan_agent_action(clean_query, urls=urls, history=history, error_feedback=error_feedback)
-                            write_steps = [s for s in plan_result.steps if s.kind == "write"]
-                            if not write_steps:
-                                raw_res = "Failed to plan a valid recovery action."
+                        for attempt in range(MAX_AGENT_RETRIES):
+                            if attempt > 0:
+                                yield {"type": "status", "stage": "agent_action", "message": f"Execution failed. Re-planning (attempt {attempt + 1}/{MAX_AGENT_RETRIES})..."}
+                                plan_result = plan_agent_action(clean_query, urls=urls, history=history, error_feedback=error_feedback)
+                                write_steps = [s for s in plan_result.steps if s.kind == "write"]
+                                if not write_steps:
+                                    raw_res = "Failed to plan a valid recovery action."
+                                    break
+
+                            executed_outcomes = []
+                            attempt_failed = False
+
+                            for step_idx, write_step in enumerate(write_steps, 1):
+                                step_desc = write_step.description or write_step.action
+                                yield {
+                                    "type": "status",
+                                    "stage": "agent_action",
+                                    "message": f"Executing step {step_idx}/{len(write_steps)}: {step_desc} (attempt {attempt + 1})...",
+                                }
+
+                                q: queue.Queue = queue.Queue()
+
+                                def _cb(stage_name: str, msg_text: str, _q=q):
+                                    _q.put({"type": "status", "stage": stage_name, "message": msg_text})
+
+                                proposal_payload = dict(write_step.payload)
+                                proposal_payload.update({
+                                    "action": write_step.action,
+                                    "description": write_step.description,
+                                    "source_url": artifacts.source_url,
+                                    "file_paths": artifacts.file_paths,
+                                    "verified_urls": artifacts.verified_urls,
+                                    "session_id": session_id,
+                                })
+                                dummy_proposal = {"payload": proposal_payload}
+
+                                exec_outcome = [None]
+                                step_failed = [False]
+
+                                def _worker(_prop=dummy_proposal, _cb_fn=_cb, _out=exec_outcome, _fail=step_failed, _q=q):
+                                    try:
+                                        _out[0] = resolve_write_step(_prop, status_callback=_cb_fn)
+                                    except Exception as e:
+                                        _fail[0] = True
+                                        _out[0] = f"Execution failed: {e}"
+                                    finally:
+                                        _q.put(None)
+
+                                t = threading.Thread(target=_worker, daemon=True)
+                                t.start()
+
+                                while True:
+                                    try:
+                                        item = q.get(timeout=0.05)
+                                        if item is None:
+                                            break
+                                        yield item
+                                    except queue.Empty:
+                                        if not t.is_alive() and q.empty():
+                                            break
+
+                                t.join()
+
+                                if step_failed[0]:
+                                    attempt_failed = True
+                                    prior_str = f"Prior completed steps: {executed_outcomes}. " if executed_outcomes else ""
+                                    error_feedback = f"{prior_str}Step {step_idx} ({write_step.action}) failed: {exec_outcome[0]}"
+                                    raw_res = error_feedback
+                                    break
+                                else:
+                                    executed_outcomes.append(exec_outcome[0])
+
+                            if attempt_failed:
+                                continue
+                            else:
+                                error_feedback = ""
+                                if len(executed_outcomes) == 1:
+                                    raw_res = executed_outcomes[0]
+                                else:
+                                    raw_res = [
+                                        {"step": idx + 1, "action": ws.action, "outcome": out}
+                                        for idx, (ws, out) in enumerate(zip(write_steps, executed_outcomes))
+                                    ]
                                 break
 
-                        executed_outcomes = []
-                        attempt_failed = False
+                        action_summary = ", ".join(ws.action for ws in write_steps) if write_steps else "agent_action"
+                        yield {"type": "status", "stage": "generation", "message": "Synthesizing response..."}
+                        collector: Dict[str, Any] = {}
+                        yield from _stream_synthesize_agent_action_reply(
+                            user_query=clean_query,
+                            action_name=action_summary,
+                            execution_outcome=raw_res,
+                            collector=collector,
+                            read_narrations=_parts,
+                            history_text=history_text,
+                        )
+                        answer_text = collector.get("answer", "")
 
-                        for step_idx, write_step in enumerate(write_steps, 1):
-                            step_desc = write_step.description or write_step.action
-                            yield {
-                                "type": "status",
-                                "stage": "agent_action",
-                                "message": f"Executing step {step_idx}/{len(write_steps)}: {step_desc} (attempt {attempt + 1})...",
-                            }
+                    else:
+                        # Implicit action decided by agent -> stage all write_steps for HITL approval!
+                        staged_descs = []
+                        for ws in write_steps:
+                            try:
+                                stage_write_step(ws, artifacts, session_id=session_id)
+                            except Exception as exc:
+                                logger.warning(f" Could not stage write step: {exc}")
+                            target_f = ws.payload.get("target_file")
+                            desc = ws.description or ws.action
+                            if target_f and target_f not in desc:
+                                desc = f"{desc} ({target_f})"
+                            staged_descs.append(desc)
 
-                            q: queue.Queue = queue.Queue()
+                        combined_desc = "; ".join(staged_descs)
+                        _parts.append(
+                            f"To do the final step ({combined_desc}), "
+                            "I need your approval. Is that OK? Reply 'yes' to proceed or 'no' to cancel."
+                        )
+                        answer_text = "\n\n".join(_parts)
+                        yield {"type": "token", "text": answer_text}
 
-                            def _cb(stage_name: str, msg_text: str, _q=q):
-                                _q.put({"type": "status", "stage": stage_name, "message": msg_text})
-
-                            proposal_payload = dict(write_step.payload)
-                            proposal_payload.update({
-                                "action": write_step.action,
-                                "description": write_step.description,
-                                "source_url": artifacts.source_url,
-                                "file_paths": artifacts.file_paths,
-                                "verified_urls": artifacts.verified_urls,
-                                "session_id": session_id,
-                            })
-                            dummy_proposal = {"payload": proposal_payload}
-
-                            exec_outcome = [None]
-                            step_failed = [False]
-
-                            def _worker(_prop=dummy_proposal, _cb_fn=_cb, _out=exec_outcome, _fail=step_failed, _q=q):
-                                try:
-                                    _out[0] = resolve_write_step(_prop, status_callback=_cb_fn)
-                                except Exception as e:
-                                    _fail[0] = True
-                                    _out[0] = f"Execution failed: {e}"
-                                finally:
-                                    _q.put(None)
-
-                            t = threading.Thread(target=_worker, daemon=True)
-                            t.start()
-
-                            while True:
-                                try:
-                                    item = q.get(timeout=0.05)
-                                    if item is None:
-                                        break
-                                    yield item
-                                except queue.Empty:
-                                    if not t.is_alive() and q.empty():
-                                        break
-
-                            t.join()
-
-                            if step_failed[0]:
-                                attempt_failed = True
-                                prior_str = f"Prior completed steps: {executed_outcomes}. " if executed_outcomes else ""
-                                error_feedback = f"{prior_str}Step {step_idx} ({write_step.action}) failed: {exec_outcome[0]}"
-                                raw_res = error_feedback
-                                break
-                            else:
-                                executed_outcomes.append(exec_outcome[0])
-
-                        if attempt_failed:
-                            continue
-                        else:
-                            error_feedback = ""
-                            if len(executed_outcomes) == 1:
-                                raw_res = executed_outcomes[0]
-                            else:
-                                raw_res = [
-                                    {"step": idx + 1, "action": ws.action, "outcome": out}
-                                    for idx, (ws, out) in enumerate(zip(write_steps, executed_outcomes))
-                                ]
-                            break
-
-                    action_summary = ", ".join(ws.action for ws in write_steps) if write_steps else "agent_action"
+                elif not write_steps and _parts:
+                    # Read-only actions (inspections, web fetching, etc.)
                     yield {"type": "status", "stage": "generation", "message": "Synthesizing response..."}
                     collector: Dict[str, Any] = {}
                     yield from _stream_synthesize_agent_action_reply(
                         user_query=clean_query,
-                        action_name=action_summary,
-                        execution_outcome=raw_res,
+                        action_name="inspect_sources",
+                        execution_outcome="Inspection completed.",
                         collector=collector,
                         read_narrations=_parts,
                         history_text=history_text,
                     )
                     answer_text = collector.get("answer", "")
-
                 else:
-                    # Implicit action decided by agent -> stage all write_steps for HITL approval!
-                    staged_descs = []
-                    for ws in write_steps:
-                        try:
-                            stage_write_step(ws, artifacts, session_id=session_id)
-                        except Exception as exc:
-                            logger.warning(f" Could not stage write step: {exc}")
-                        target_f = ws.payload.get("target_file")
-                        desc = ws.description or ws.action
-                        if target_f and target_f not in desc:
-                            desc = f"{desc} ({target_f})"
-                        staged_descs.append(desc)
-
-                    combined_desc = "; ".join(staged_descs)
-                    _parts.append(
-                        f"To do the final step ({combined_desc}), "
-                        "I need your approval. Is that OK? Reply 'yes' to proceed or 'no' to cancel."
-                    )
-                    answer_text = "\n\n".join(_parts)
+                    answer_text = "I do not currently have a registered tool to execute that specific action. My available actions include inspecting URL sources, downloading & ingesting certificate files, updating or deleting database records, executing dynamic database operations, and querying compliance data."
                     yield {"type": "token", "text": answer_text}
-
-            elif not write_steps and _parts:
-                # Read-only actions (inspections, web fetching, etc.)
-                yield {"type": "status", "stage": "generation", "message": "Synthesizing response..."}
-                collector: Dict[str, Any] = {}
-                yield from _stream_synthesize_agent_action_reply(
-                    user_query=clean_query,
-                    action_name="inspect_sources",
-                    execution_outcome="Inspection completed.",
-                    collector=collector,
-                    read_narrations=_parts,
-                    history_text=history_text,
-                )
-                answer_text = collector.get("answer", "")
-            else:
-                answer_text = "I do not currently have a registered tool to execute that specific action. My available actions include inspecting URL sources, downloading & ingesting certificate files, updating or deleting database records, executing dynamic database operations, and querying compliance data."
-                yield {"type": "token", "text": answer_text}
 
             sources = [{"type": "agent_action", "url": _extract_url(clean_query)}]
 

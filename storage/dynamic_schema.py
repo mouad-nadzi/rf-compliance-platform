@@ -35,6 +35,8 @@ INTERNAL_ENGINE_TABLES = {
     "agent_actions",
     "workflows",
     "workflow_runs",
+    "expiry_alert_logs",
+    "users",
 }
 SYSTEM_TABLES = CORE_PLATFORM_TABLES | INTERNAL_ENGINE_TABLES
 

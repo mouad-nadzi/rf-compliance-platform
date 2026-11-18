@@ -127,6 +127,7 @@ def _llm_plan(
     urls: List[str],
     history: Optional[List[Dict[str, str]]] = None,
     error_feedback: str = "",
+    user_context: Optional[Dict[str, Any]] = None,
 ) -> PlanResult:
     """
     Ask the LLM to decompose the query into a structured plan.
@@ -141,18 +142,29 @@ def _llm_plan(
 
     Returns PlanResult with empty steps on JSON parse failure.
     """
+    from datetime import date
     from core.prompts import config_planner_system_prompt
     from core.llm import generate_json
 
+    today_iso = date.today().isoformat()
     history_text = _format_history_block(history)
     urls_formatted = ", ".join(urls) if urls else ""
+    user_ctx_block = ""
+    if user_context:
+        try:
+            from server.auth import format_user_context_for_prompt
+            user_ctx_block = format_user_context_for_prompt(user_context)
+        except Exception:
+            pass
     error_block = (
         f"PREVIOUS EXECUTION ERROR (re-plan to fix this):\n{error_feedback}\n\n"
         if error_feedback
         else ""
     )
     user_prompt = (
-        (f"{history_text}\n\n" if history_text else "")
+        f"CURRENT DATE: {today_iso}\n\n"
+        + (f"{user_ctx_block}\n" if user_ctx_block else "")
+        + (f"{history_text}\n\n" if history_text else "")
         + error_block
         + f"USER REQUEST: {query}\n\n"
         + (f"ACTIVE URL(S): {urls_formatted}\n\n" if urls_formatted else "")
@@ -164,7 +176,7 @@ def _llm_plan(
             system_prompt=config_planner_system_prompt(),
             user_prompt=user_prompt,
             disable_thinking=True,
-            max_tokens=512,
+            max_tokens=1536,
             response_prefix=_PLAN_SCHEMA_PREFIX,
             hop_name="agent_planner",
         )
@@ -216,6 +228,7 @@ def plan_agent_action(
     urls: Union[str, List[str], None] = None,
     history: Optional[List[Dict[str, str]]] = None,
     error_feedback: str = "",
+    user_context: Optional[Dict[str, Any]] = None,
 ) -> PlanResult:
     """
     Decompose an AGENT_ACTION query into a step plan using the LLM planner.
@@ -254,7 +267,9 @@ def plan_agent_action(
             if u not in url_list:
                 url_list.append(u)
 
-    plan_result = _llm_plan(query, url_list, history, error_feedback=error_feedback)
+    plan_result = _llm_plan(
+        query, url_list, history, error_feedback=error_feedback, user_context=user_context
+    )
 
     # Ensure URL(s) are populated in step payloads if active URLs are present
     primary_url = url_list[0] if url_list else ""
@@ -327,6 +342,24 @@ def stage_write_step(
             desc = mutation.get("preview", desc)
         except Exception as e_desc:
             logger.warning(f" Could not build detailed deletion preview: {e_desc}")
+
+    elif write_step.action == "insert_record":
+        try:
+            from core.agent.db_editor import build_mutation_sql
+            table_name = write_step.payload.get("table_name") or "certificates"
+            records = write_step.payload.get("records")
+            if isinstance(records, list) and records:
+                previews = [
+                    build_mutation_sql("insert", table_name, values=r).get("preview", "")
+                    for r in records
+                    if isinstance(r, dict) and r
+                ]
+                desc = "; ".join(p for p in previews if p) or desc
+            elif isinstance(values, dict) and values:
+                mutation = build_mutation_sql("insert", table_name, values=values)
+                desc = mutation.get("preview", desc)
+        except Exception as e_desc:
+            logger.warning(f" Could not build detailed insert preview: {e_desc}")
 
     elif write_step.action == "update_record":
         try:

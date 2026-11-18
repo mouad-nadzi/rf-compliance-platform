@@ -81,6 +81,8 @@ def _validate_typed_literal(col: str, value: Any, col_type: str) -> Any:
             return value
         if isinstance(value, str):
             s = value.strip()
+            if not s:
+                return None
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
                 return s
         raise ValueError(
@@ -90,8 +92,12 @@ def _validate_typed_literal(col: str, value: Any, col_type: str) -> Any:
     if "int" in ctype or "numeric" in ctype or "double" in ctype or "real" in ctype:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return value
-        if isinstance(value, str) and re.fullmatch(r"[-+]?\d+(?:\.\d+)?", value.strip()):
-            return int(value.strip()) if "int" in ctype else float(value.strip())
+        if isinstance(value, str):
+            s = value.strip()
+            if not s:
+                return None
+            if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", s):
+                return int(s) if "int" in ctype else float(s)
         raise ValueError(
             f"Column '{col}' has PostgreSQL type '{col_type}' and requires a numeric literal (got {value!r})."
         )
@@ -135,18 +141,35 @@ def build_mutation_sql(
 
     col_meta = dynamic_schema.get_table_columns(table)
     allowed_cols = {c["column_name"] for c in col_meta}
+    col_lookup = {c["column_name"].lower(): c["column_name"] for c in col_meta}
     col_types = {c["column_name"]: c["data_type"] for c in col_meta}
 
-    values = values or {}
+    values = dict(values or {})
+    if op == "insert":
+        # Strip empty auto-managed primary key / timestamp fields so DB defaults apply
+        for auto_col in ("id", "created_at"):
+            for k in list(values.keys()):
+                if k.strip().lower() == auto_col and (values[k] is None or str(values[k]).strip() == ""):
+                    values.pop(k, None)
+        if table == "certificates":
+            has_cert_id = any(
+                k.strip().lower() == "certificate_id" and str(v or "").strip()
+                for k, v in values.items()
+            )
+            if not has_cert_id:
+                import uuid
+                values["certificate_id"] = uuid.uuid4().hex
+
     if op in ("update", "insert") and not values:
         raise ValueError("'values' must be a non-empty dictionary of column -> value.")
 
     cleaned_values: Dict[str, Any] = {}
     for raw_col, val in values.items():
-        col = str(raw_col).strip()
-        _validate_identifier(col, "column")
+        col_raw = str(raw_col).strip()
+        _validate_identifier(col_raw, "column")
+        col = col_lookup.get(col_raw.lower(), col_raw)
         if col not in allowed_cols:
-            raise ValueError(f"Column '{col}' is not writable on table '{table}'.")
+            raise ValueError(f"Column '{col_raw}' is not writable on table '{table}'.")
         cleaned_values[col] = _validate_typed_literal(col, val, col_types.get(col, "text"))
     values = cleaned_values
 
@@ -159,10 +182,11 @@ def build_mutation_sql(
         where_clauses = []
         if row_filter:
             for raw_col, val in row_filter.items():
-                col = str(raw_col).strip()
-                _validate_identifier(col, "column")
+                col_raw = str(raw_col).strip()
+                _validate_identifier(col_raw, "column")
+                col = col_lookup.get(col_raw.lower(), col_raw)
                 if col not in allowed_cols:
-                    raise ValueError(f"Filter column '{col}' is not filterable on table '{table}'.")
+                    raise ValueError(f"Filter column '{col_raw}' is not filterable on table '{table}'.")
                 typed_val = _validate_typed_literal(col, val, col_types.get(col, "text"))
                 where_clauses.append(f"{col} = :{col}_filter")
                 params[f"{col}_filter"] = typed_val
@@ -185,10 +209,11 @@ def build_mutation_sql(
         where_clauses = []
         if row_filter:
             for raw_col, val in row_filter.items():
-                col = str(raw_col).strip()
-                _validate_identifier(col, "column")
+                col_raw = str(raw_col).strip()
+                _validate_identifier(col_raw, "column")
+                col = col_lookup.get(col_raw.lower(), col_raw)
                 if col not in allowed_cols:
-                    raise ValueError(f"Filter column '{col}' is not filterable on table '{table}'.")
+                    raise ValueError(f"Filter column '{col_raw}' is not filterable on table '{table}'.")
                 typed_val = _validate_typed_literal(col, val, col_types.get(col, "text"))
                 where_clauses.append(f"{col} = :{col}_filter")
                 params[f"{col}_filter"] = typed_val

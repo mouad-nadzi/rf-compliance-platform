@@ -68,24 +68,27 @@ The entire pipeline operates 100% locally — no external APIs. All inference ru
 ```
 rf-compliance-platform/
 ├── server/
-│   ├── main.py           FastAPI application (30+ REST endpoints, SSE streaming)
-│   ├── config.py         Central config (engines, context window, paths, secrets)
+│   ├── main.py           FastAPI application (40+ REST endpoints, RBAC middleware, SSE streaming)
+│   ├── auth.py           PBKDF2-SHA256 hashing, HMAC-SHA256 tokens, RBAC & agent user context
+│   ├── config.py         Central config (engines, context window, paths, SMTP, auth defaults)
 │   └── __init__.py
 │
 ├── core/
-│   ├── extractor.py      PDF→OCR→LLM extraction pipeline + notification creation
+│   ├── extractor.py      PDF->OCR->LLM extraction pipeline + notification creation
 │   ├── prompts.py        System prompts (extraction, router, QA, agent planner)
 │   ├── registry.py       Model registry (OCR_REGISTRY, LLM_REGISTRY) + lazy factory
 │   ├── base.py           Abstract BaseOCREngine / BaseLLMEngine contracts
 │   │
 │   ├── agent/
 │   │   ├── agent_loop.py      Agentic plan executor + HITL proposal staging
+│   │   ├── alerting.py        Certificate expiry alerting engine (30/60/90d + idempotency)
 │   │   ├── ingestor.py        Document ingestion orchestrator
+│   │   ├── mailer.py          Live SMTP email transport (STARTTLS/SSL)
 │   │   ├── memory.py          Long-term memory read/write (agent_memories table)
-│   │   ├── proposals.py       HITL proposal schema and lifecycle
+│   │   ├── proposals.py       HITL proposal schema, draft hydration & lifecycle
 │   │   ├── scraper.py         Web scraper (HTML + optional Playwright fallback)
-│   │   ├── tools.py           Registered agent tool registry
-│   │   ├── worker.py          Background batch worker
+│   │   ├── tools.py           Registered agent tool registry (incl. InsertRecordTool)
+│   │   ├── worker.py          Background APScheduler (ingestion + expiry alert scanner)
 │   │   ├── db_editor.py       Agent DB write operations (INSERT/UPDATE/DELETE)
 │   │   └── __init__.py
 │   │
@@ -143,17 +146,21 @@ rf-compliance-platform/
 │
 ├── frontend/                   React 18 + TypeScript SPA (Vite build)
 │   ├── src/
-│   │   ├── App.tsx             Root app with React Router
+│   │   ├── App.tsx             Root app with React Router & AuthProvider guards
 │   │   ├── api.ts              Typed API client (all backend endpoints)
 │   │   ├── index.css           Global design system & tokens
 │   │   ├── main.tsx            Vite entry point
+│   │   ├── context/
+│   │   │   └── AuthContext.tsx Role-aware auth state (admin / editor / viewer)
 │   │   ├── components/
-│   │   │   ├── Navbar/         Navigation bar with notification bell
-│   │   │   └── Sidebar/        Collapsible sidebar
+│   │   │   ├── Navbar/         Navigation bar with notification bell, Admin-only USERS tab & sign out
+│   │   │   └── Sidebar/        Collapsible sidebar (Pending Actions, Chat History, Tables)
 │   │   └── views/
+│   │       ├── LoginView.tsx       Sign In & Invite-Token Password Setup
+│   │       ├── UsersView.tsx       USERS (Admin-Only) — invite links, roles, user removal
 │   │       ├── DatabasesView.tsx   HOME — all compliance tables, import/export
-│   │       ├── ChatView.tsx        ASSISTANT — RAG Q&A with SSE streaming
-│   │       ├── ControlView.tsx     AUTOMATIONS — background agent control
+│   │       ├── ChatView.tsx        ASSISTANT — per-user RAG Q&A with SSE streaming
+│   │       ├── ControlView.tsx     AUTOMATIONS — scraper & expiry alerting cards
 │   │       └── SettingsView.tsx    SETTINGS — platform configuration
 │   ├── public/                 Static assets (Stellantis logo, icons)
 │   ├── package.json
@@ -170,6 +177,8 @@ rf-compliance-platform/
 │   └── postgres/              PostgreSQL 16 data volume (gitignored)
 │
 ├── tests/
+│   ├── test_alerting_system.py
+│   ├── test_auth_and_rbac.py
 │   ├── test_memory_engine.py
 │   ├── test_dynamic_schema.py
 │   ├── test_dag_engine.py
@@ -558,6 +567,24 @@ cd frontend && npm run dev
   - Persists user turns immediately at stream start (`_persist_streamed_user_turn`), tracks active jobs per session (`_SESSION_ACTIVE_JOBS`, `GET /api/v1/chat/sessions/{id}/active`, `from_index` resume on `/api/v1/chat/stream/{job_id}`), and scopes HITL proposals by `session_id`.
   - Lifted `EventSource` connections and per-session stream state into [`frontend/src/components/Layout/AppLayout.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/components/Layout/AppLayout.tsx) (`sessionStreams`) so switching sessions or navigating across views preserves live thinking, status, and streaming output without cross-session bleed.
 
+### H. Certificate Expiry Alerting System, Live SMTP, `InsertRecordTool`, & 3-Tier RBAC Authentication (2026-11-18)
+- **Automated Certificate Expiry Alerting Engine ([`core/agent/alerting.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/alerting.py), [`core/agent/worker.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/worker.py), [`schemas/extraction.py`](file:///home/mouadnadzi3/rf-compliance-platform/schemas/extraction.py)):**
+  - Queries `certificates` as the canonical source of truth via `LEFT JOIN LATERAL` against `components`, `responsibles`, and `countries` for upcoming expirations (`exp_date >= CURRENT_DATE AND exp_date <= CURRENT_DATE + make_interval(days => :alert_days)`), excluding permanent `2999-01-01` records.
+  - Deduplicates emitted alerts in `expiry_alert_logs` on `(certificate_id, exp_date, alert_window_days)`.
+  - Emits in-app notifications (`category="expiry_alert"`), drafts consolidated renewal alert emails per responsible engineer (routing unassigned components to `fallback_email`), and stages HITL `SEND_EMAIL` proposals (hydrated in Pending Actions with recipient, subject, and body preview).
+  - Exposed via `GET /api/v1/agent/alerts/config`, `POST /api/v1/agent/alerts/config`, and `POST /api/v1/agent/alerts/run`, with `30d`/`60d`/`90d` presets and `1-365` day lead-time adjustment on the **Certificate Expiry Alerting System** card in [`frontend/src/views/ControlView.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/ControlView.tsx).
+- **Live SMTP Email Dispatcher ([`core/agent/mailer.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/mailer.py)):**
+  - Sends approved `SEND_EMAIL` drafts and invite links over STARTTLS (`587`) / SSL (`465`), reading Admin-configured `sender_email` / `smtp_password` from `alerting_config.json` with `.env` fallback (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`).
+- **`InsertRecordTool` & Relational Schema Awareness ([`core/agent/tools.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/tools.py), [`core/agent/db_editor.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/db_editor.py)):**
+  - Registered `insert_record` (`InsertRecordTool`) supporting single/multi-row inserts, case-insensitive column binding, automatic `certificates.certificate_id` generation, idempotent upserts on `responsibles` (`email`) and `components` (`componentname`), and `CURRENT DATE` injection into `_llm_plan()`.
+- **Authentication, 3-Tier RBAC & Per-User Chat Isolation ([`server/auth.py`](file:///home/mouadnadzi3/rf-compliance-platform/server/auth.py), [`server/main.py`](file:///home/mouadnadzi3/rf-compliance-platform/server/main.py), [`frontend/src/views/UsersView.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/UsersView.tsx), [`frontend/src/views/LoginView.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/LoginView.tsx)):**
+  - Enforces 3 roles via centralized `rbac_auth_middleware` using PBKDF2-SHA256 passwords and HMAC-SHA256 `HttpOnly` cookie + Bearer tokens:
+    - `admin` (Unique Administrator, bootstrapped as `mouadnadzi3@gmail.com`): exclusive `/users` management page, invite-link generation/emailing, user removal/role switching, and Admin-only Sender Email + SMTP App Password configuration.
+    - `editor` (Allow to Edit): DB writes, ingestion, automations, and proposal approvals (blocked from `/api/v1/users*` and Sender Email credentials).
+    - `viewer` (Read-Only): read-only table browsing and Q&A chat (blocked from all mutations and automation triggers).
+  - Scopes `chat_sessions` per `user_id` and injects `[ACTIVE USER SESSION & PERMISSIONS]` at the tail of user prompts (preserving the 1014-token `[AGENT LONG-TERM MEMORY]` prefix checkpoint) with a deterministic `viewer` guard in `answer_compliance_query_stream()`.
+  - Verified with **30/30 passing unit & integration tests** (`python3 -m unittest discover tests -v`).
+
 ---
 
 ## 14. Major Engineering Milestones (Cumulative)
@@ -605,6 +632,9 @@ cd frontend && npm run dev
 | Unified RF Certificate Normalization Engine across all ingestion pathways (`core/normalization.py`) | Completed |
 | Sequence-state prefix checkpointing (`qwen35`), native `<think>` switch, & 4.6x chat latency speedup | Completed |
 | Session-independent chat streaming (`AppLayout` global stream store + backend active job reattach + scoped HITL proposals) | Completed |
+| Automated Certificate Expiry Alerting System (`expiry_alert_logs`, 30/60/90d configurable lead time, live SMTP mailer) | Completed |
+| `InsertRecordTool` (`insert_record`) with multi-table relational upsert & `CURRENT DATE` planner injection | Completed |
+| Authentication, 3-Tier RBAC (`admin` unique, `editor`, `viewer`), invite-link onboarding, & per-user chat isolation | Completed |
 
 ---
 
@@ -613,8 +643,6 @@ cd frontend && npm run dev
 | Priority | Feature |
 |---|---|
 | High | Certificate expiry alert dashboard (30/60/90 day heatmap) |
-| High | Role-based access control (RBAC) |
-| Medium | Email / Teams notification integration for expiry warnings |
 | Medium | Certificate renewal workflow tracking |
 | Medium | Multi-program portfolio analytics |
 | Low | Power BI / Tableau data connector |

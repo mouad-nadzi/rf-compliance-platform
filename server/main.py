@@ -29,7 +29,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Depends, Body
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Depends, Body, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
@@ -95,6 +96,7 @@ def _load_chat_sessions_from_db() -> None:
             for row in rows:
                 session = {
                     "id": row.id,
+                    "user_id": row.user_id,
                     "title": row.title or "",
                     "messages": [],
                     "created_at": row.created_at.isoformat() if row.created_at else "",
@@ -113,12 +115,13 @@ def _load_chat_sessions_from_db() -> None:
         logger.warning(f" Could not load chat sessions from PostgreSQL: {exc}")
 
 
-def _create_chat_session(title: str = "") -> Dict[str, Any]:
+def _create_chat_session(title: str = "", user_id: str | None = None) -> Dict[str, Any]:
     from schemas.extraction import ChatSession
 
     session_id = f"sess_{uuid.uuid4().hex[:12]}"
     session = {
         "id": session_id,
+        "user_id": user_id,
         "title": (title or "").strip()[:60],
         "messages": [],
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -130,7 +133,7 @@ def _create_chat_session(title: str = "") -> Dict[str, Any]:
     try:
         db = SessionLocal()
         try:
-            db.add(ChatSession(id=session_id, title=session["title"]))
+            db.add(ChatSession(id=session_id, user_id=user_id, title=session["title"]))
             db.commit()
         finally:
             db.close()
@@ -156,6 +159,7 @@ def _get_chat_session(session_id: str) -> Dict[str, Any] | None:
                 return None
             session = {
                 "id": row.id,
+                "user_id": row.user_id,
                 "title": row.title or "",
                 "messages": [
                     {"role": m.role, "content": m.content} for m in row.messages
@@ -173,12 +177,12 @@ def _get_chat_session(session_id: str) -> Dict[str, Any] | None:
         return None
 
 
-def _get_or_create_chat_session(session_id: str | None) -> Dict[str, Any]:
+def _get_or_create_chat_session(session_id: str | None, user_id: str | None = None) -> Dict[str, Any]:
     if session_id:
         existing = _get_chat_session(session_id)
-        if existing:
+        if existing and (not user_id or existing.get("user_id") in (None, user_id)):
             return existing
-    return _create_chat_session()
+    return _create_chat_session(user_id=user_id)
 
 
 def _persist_chat_turn(session_id: str, role: str, content: str, title: str | None = None, frozen: bool | None = None) -> None:
@@ -294,7 +298,21 @@ def _seed_table_schema_memories():
                 'email': {'semantic_type': 'email', 'label': 'Email Address'},
                 'mission_comment': {'semantic_type': 'text', 'label': 'Mission / Role Comment'}
             },
-            'description': 'Directory of responsible compliance engineers and contact info.'
+            'description': 'Directory of responsible compliance engineers and contact info (responsibles.email links to components.id_responsible).'
+        },
+        {
+            'table_name': 'components',
+            'display_name': 'Components',
+            'target_fields': ['componentname', 'modelname', 'supplier', 'freq', 'id_responsible', 'docinfo_link'],
+            'columns': {
+                'componentname': {'semantic_type': 'text', 'label': 'Component Name'},
+                'modelname': {'semantic_type': 'text', 'label': 'Model Name'},
+                'supplier': {'semantic_type': 'supplier', 'label': 'Supplier'},
+                'freq': {'semantic_type': 'text', 'label': 'Frequency'},
+                'id_responsible': {'semantic_type': 'email', 'label': 'Responsible Engineer Email'},
+                'docinfo_link': {'semantic_type': 'url', 'label': 'DocInfo Link'}
+            },
+            'description': 'Vehicle RF components catalog linking certificates (certificates.component = components.componentname) to their responsible engineer via email (components.id_responsible = responsibles.email).'
         }
     ]
 
@@ -338,6 +356,8 @@ def _seed_table_schema_memories():
                     except Exception:
                         pass
             session.commit()
+        from core.agent.memory import invalidate_memory_cache
+        invalidate_memory_cache()
     except Exception as ex:
         logger.debug(f"Warning seeding table schema memories: {ex}")
 
@@ -424,6 +444,406 @@ app = FastAPI(
     version="3.0.0",
     lifespan=lifespan
 )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Centralized Authentication & 3-Tier RBAC Middleware
+# ──────────────────────────────────────────────────────────────────────────────
+
+_PUBLIC_API_PATHS = {
+    "/api/v1/health",
+    "/api/v1/auth/login",
+    "/api/v1/auth/logout",
+    "/api/v1/auth/accept-invite",
+}
+
+
+@app.middleware("http")
+async def rbac_auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/") and not path.startswith("/files/"):
+        return await call_next(request)
+
+    if path in _PUBLIC_API_PATHS or path.startswith("/api/v1/auth/invite/"):
+        return await call_next(request)
+
+    from server.auth import get_authenticated_user
+
+    db = SessionLocal()
+    try:
+        user = get_authenticated_user(request, db)
+    finally:
+        db.close()
+
+    if user is None:
+        return JSONResponse(status_code=401, content={"detail": "Authentication required."})
+
+    request.state.user = user
+    role = str(user.get("role") or "viewer").lower()
+    method = request.method.upper()
+
+    # Exclusive Admin routes
+    if path.startswith("/api/v1/users"):
+        if role != "admin":
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Administrator privileges required for user management."},
+            )
+
+    # Read-Only (viewer) enforcement: allow GET + read-only chat stream + auth/me
+    if role == "viewer":
+        is_allowed_post = method == "POST" and path in (
+            "/api/v1/chat/stream",
+            "/api/v1/chat",
+            "/api/v1/chat/sessions",
+        )
+        is_own_chat_delete = method == "DELETE" and path.startswith("/api/v1/chat/sessions/")
+        is_allowed_me = path == "/api/v1/auth/me" and method in ("GET", "PUT")
+        if method not in ("GET", "HEAD", "OPTIONS") and not (is_allowed_post or is_own_chat_delete or is_allowed_me):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Read-Only (viewer) accounts cannot perform write or automation actions."},
+            )
+
+    return await call_next(request)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Authentication & Admin User Management Endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/auth/login")
+def auth_login(payload: dict, response: Response, db: Session = Depends(get_db)):
+    """Authenticate an active user and issue an HttpOnly session cookie + bearer token."""
+    from schemas.extraction import UserAccount
+    from server.auth import AUTH_COOKIE_NAME, create_access_token, verify_password
+
+    email = str((payload or {}).get("email") or "").strip().lower()
+    password = str((payload or {}).get("password") or "")
+    if not email or not password:
+        raise HTTPException(status_code=422, detail="Email and password are required.")
+
+    user = db.query(UserAccount).filter(UserAccount.email == email).first()
+    if not user or user.status != "active" or not verify_password(password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    user.last_login_at = datetime.utcnow()
+    db.commit()
+
+    token = create_access_token(user.id, user.email, user.role)
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=config.AUTH_TOKEN_TTL_HOURS * 3600,
+    )
+    return {
+        "token": token,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role,
+            "status": user.status,
+        },
+    }
+
+
+@app.post("/api/v1/auth/logout")
+def auth_logout(response: Response):
+    """Clear the session cookie."""
+    from server.auth import AUTH_COOKIE_NAME
+
+    response.delete_cookie(key=AUTH_COOKIE_NAME)
+    return {"status": "logged_out"}
+
+
+@app.get("/api/v1/auth/me")
+def auth_me(request: Request):
+    """Return the currently authenticated user's profile and role."""
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return {"user": user}
+
+
+@app.put("/api/v1/auth/me")
+def auth_update_me(payload: dict, request: Request, response: Response, db: Session = Depends(get_db)):
+    """Allow the signed-in user (including Unique Admin) to update their name, email, or password."""
+    from schemas.extraction import UserAccount
+    from server.auth import AUTH_COOKIE_NAME, create_access_token, hash_password, verify_password
+
+    current = getattr(request.state, "user", None)
+    if not current:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    user = db.query(UserAccount).filter(UserAccount.id == current["id"]).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    body = payload or {}
+    if body.get("full_name"):
+        user.full_name = str(body["full_name"]).strip()
+    if body.get("email"):
+        new_email = str(body["email"]).strip().lower()
+        if new_email != user.email:
+            clash = db.query(UserAccount).filter(UserAccount.email == new_email, UserAccount.id != user.id).first()
+            if clash:
+                raise HTTPException(status_code=409, detail="Email is already in use by another account.")
+            user.email = new_email
+    if body.get("new_password"):
+        cur_pwd = str(body.get("current_password") or "")
+        if not verify_password(cur_pwd, user.password_hash):
+            raise HTTPException(status_code=400, detail="Current password is incorrect.")
+        try:
+            user.password_hash = hash_password(str(body["new_password"]))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    db.commit()
+    db.refresh(user)
+    token = create_access_token(user.id, user.email, user.role)
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=config.AUTH_TOKEN_TTL_HOURS * 3600,
+    )
+    return {
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role,
+            "status": user.status,
+        }
+    }
+
+
+@app.get("/api/v1/auth/invite/{token}")
+def auth_validate_invite(token: str, db: Session = Depends(get_db)):
+    """Validate an onboarding invitation token before displaying the password setup form."""
+    from schemas.extraction import UserAccount
+
+    user = db.query(UserAccount).filter(UserAccount.invite_token == token).first()
+    if not user or user.status != "invited":
+        raise HTTPException(status_code=404, detail="Invitation link is invalid or has already been used.")
+    if user.invite_expires_at and user.invite_expires_at < datetime.utcnow():
+        raise HTTPException(status_code=410, detail="Invitation link has expired. Ask the Administrator for a new invite.")
+    return {
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+    }
+
+
+@app.post("/api/v1/auth/accept-invite")
+def auth_accept_invite(payload: dict, response: Response, db: Session = Depends(get_db)):
+    """Complete onboarding via an invitation token: set password, activate account, and sign in."""
+    from schemas.extraction import UserAccount
+    from server.auth import AUTH_COOKIE_NAME, create_access_token, hash_password
+
+    body = payload or {}
+    token_str = str(body.get("token") or "").strip()
+    password = str(body.get("password") or "")
+    full_name = str(body.get("full_name") or "").strip()
+
+    if not token_str or not password:
+        raise HTTPException(status_code=422, detail="Invitation token and password are required.")
+
+    user = db.query(UserAccount).filter(UserAccount.invite_token == token_str).first()
+    if not user or user.status != "invited":
+        raise HTTPException(status_code=404, detail="Invitation link is invalid or already used.")
+    if user.invite_expires_at and user.invite_expires_at < datetime.utcnow():
+        raise HTTPException(status_code=410, detail="Invitation link has expired.")
+
+    try:
+        user.password_hash = hash_password(password)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    if full_name:
+        user.full_name = full_name
+    user.status = "active"
+    user.invite_token = None
+    user.invite_expires_at = None
+    user.last_login_at = datetime.utcnow()
+    db.commit()
+
+    session_token = create_access_token(user.id, user.email, user.role)
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=session_token,
+        httponly=True,
+        samesite="lax",
+        max_age=config.AUTH_TOKEN_TTL_HOURS * 3600,
+    )
+    return {
+        "token": session_token,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role,
+            "status": user.status,
+        },
+    }
+
+
+@app.get("/api/v1/users")
+def list_users_endpoint(db: Session = Depends(get_db)):
+    """Administrator-only: list all registered and invited users."""
+    from schemas.extraction import UserAccount
+
+    rows = db.query(UserAccount).order_by(UserAccount.created_at.asc()).all()
+    return {
+        "users": [
+            {
+                "id": u.id,
+                "email": u.email,
+                "full_name": u.full_name,
+                "role": u.role,
+                "status": u.status,
+                "invite_token": u.invite_token if u.status == "invited" else None,
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+                "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+            }
+            for u in rows
+        ]
+    }
+
+
+@app.post("/api/v1/users/invite")
+def invite_user_endpoint(payload: dict, request: Request, db: Session = Depends(get_db)):
+    """Administrator-only: create or re-invite an Editor or Viewer user and email the onboarding link."""
+    import secrets
+    from datetime import timedelta
+    from schemas.extraction import UserAccount
+    from server.auth import INVITABLE_ROLES
+
+    body = payload or {}
+    email = str(body.get("email") or "").strip().lower()
+    full_name = str(body.get("full_name") or "").strip() or email.split("@")[0]
+    role = str(body.get("role") or "viewer").strip().lower()
+
+    if not email or "@" not in email:
+        raise HTTPException(status_code=422, detail="A valid email address is required.")
+    if role not in INVITABLE_ROLES:
+        raise HTTPException(
+            status_code=422,
+            detail="Invited users must have role 'editor' or 'viewer'. The Administrator account is unique.",
+        )
+
+    existing = db.query(UserAccount).filter(UserAccount.email == email).first()
+    if existing and existing.role == "admin":
+        raise HTTPException(status_code=409, detail="Cannot overwrite the unique Administrator account.")
+    if existing and existing.status == "active":
+        raise HTTPException(status_code=409, detail=f"User '{email}' is already active.")
+
+    invite_token = secrets.token_urlsafe(32)
+    expires_at = datetime.utcnow() + timedelta(hours=72)
+
+    if existing:
+        existing.full_name = full_name
+        existing.role = role
+        existing.invite_token = invite_token
+        existing.invite_expires_at = expires_at
+        user = existing
+    else:
+        user = UserAccount(
+            email=email,
+            full_name=full_name,
+            role=role,
+            status="invited",
+            invite_token=invite_token,
+            invite_expires_at=expires_at,
+        )
+        db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    base_url = str(request.base_url).rstrip("/")
+    invite_url = f"{base_url}/#/accept-invite?token={invite_token}"
+
+    email_sent = False
+    email_error = None
+    try:
+        from core.agent.mailer import send_email_via_smtp
+
+        role_desc = "Allow to Edit (Editor)" if role == "editor" else "Read-Only (Viewer)"
+        subject = "[RF Compliance Platform] You have been invited to join"
+        body_text = (
+            f"Hello {user.full_name},\n\n"
+            f"The RF Compliance Platform Administrator has invited you with {role_desc} permissions.\n\n"
+            f"Click the link below to set your password and activate your account (valid for 72 hours):\n"
+            f"{invite_url}\n\n"
+            f"-- Stellantis RF Compliance Intelligence Platform"
+        )
+        send_email_via_smtp(recipient=user.email, subject=subject, body_content=body_text)
+        email_sent = True
+    except Exception as exc:
+        email_error = str(exc)
+        logger.warning(f"Invite created for {user.email}, but email delivery failed: {exc}")
+
+    return {
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role,
+            "status": user.status,
+            "invite_token": user.invite_token,
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+        },
+        "invite_url": invite_url,
+        "email_sent": email_sent,
+        "email_error": email_error,
+    }
+
+
+@app.put("/api/v1/users/{user_id}/role")
+def update_user_role_endpoint(user_id: str, payload: dict, db: Session = Depends(get_db)):
+    """Administrator-only: change a non-admin user's role between 'editor' and 'viewer'."""
+    from schemas.extraction import UserAccount
+    from server.auth import INVITABLE_ROLES
+
+    new_role = str((payload or {}).get("role") or "").strip().lower()
+    if new_role not in INVITABLE_ROLES:
+        raise HTTPException(status_code=422, detail="Role must be 'editor' or 'viewer'.")
+
+    user = db.query(UserAccount).filter(UserAccount.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if user.role == "admin":
+        raise HTTPException(status_code=403, detail="Cannot change the role of the unique Administrator.")
+
+    user.role = new_role
+    db.commit()
+    return {"id": user.id, "email": user.email, "role": user.role}
+
+
+@app.delete("/api/v1/users/{user_id}")
+def delete_user_endpoint(user_id: str, db: Session = Depends(get_db)):
+    """Administrator-only: remove a non-admin user and their chat sessions."""
+    from schemas.extraction import ChatSession, UserAccount
+
+    user = db.query(UserAccount).filter(UserAccount.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if user.role == "admin":
+        raise HTTPException(status_code=403, detail="Cannot delete the unique Administrator account.")
+
+    db.query(ChatSession).filter(ChatSession.user_id == user_id).delete(synchronize_session=False)
+    with _CHAT_SESSIONS_LOCK:
+        to_remove = [sid for sid, s in _CHAT_SESSIONS.items() if s.get("user_id") == user_id]
+        for sid in to_remove:
+            _CHAT_SESSIONS.pop(sid, None)
+
+    db.delete(user)
+    db.commit()
+    return {"status": "deleted", "id": user_id}
 
 # Serve raw uploaded certificate files statically at /files/<path>
 from server.config import FILES_STORAGE_DIR as _FILES_STORAGE_DIR
@@ -2319,14 +2739,20 @@ class ChatRequest(BaseModel):
 
 
 @app.get("/api/v1/chat/sessions")
-def list_chat_sessions():
-    """Lists all chat sessions (newest first) with title, message count, freeze status, and live stream status."""
+def list_chat_sessions(http_req: Request):
+    """Lists chat sessions belonging to the authenticated user (newest first)."""
     from schemas.extraction import ChatMessage, ChatSession
+
+    current_user = getattr(http_req.state, "user", None)
+    user_id = current_user["id"] if current_user else None
 
     try:
         db = SessionLocal()
         try:
-            rows = db.query(ChatSession).order_by(ChatSession.created_at.desc()).all()
+            q = db.query(ChatSession)
+            if user_id:
+                q = q.filter(ChatSession.user_id == user_id)
+            rows = q.order_by(ChatSession.created_at.desc()).all()
             result = []
             for row in rows:
                 count = db.query(ChatMessage).filter(ChatMessage.session_id == row.id).count()
@@ -2348,18 +2774,26 @@ def list_chat_sessions():
 
 
 @app.post("/api/v1/chat/sessions")
-def create_chat_session():
-    """Creates a new empty chat session."""
-    return _create_chat_session()
+def create_chat_session(http_req: Request):
+    """Creates a new empty chat session scoped to the authenticated user."""
+    current_user = getattr(http_req.state, "user", None)
+    user_id = current_user["id"] if current_user else None
+    return _create_chat_session(user_id=user_id)
 
 
 @app.delete("/api/v1/chat/sessions/{session_id}")
-def delete_chat_session(session_id: str):
-    """Deletes a chat session and its history (from PostgreSQL and cache)."""
+def delete_chat_session(session_id: str, http_req: Request):
+    """Deletes a chat session belonging to the authenticated user."""
     from schemas.extraction import ChatSession
 
+    current_user = getattr(http_req.state, "user", None)
+    user_id = current_user["id"] if current_user else None
+
     with _CHAT_SESSIONS_LOCK:
-        cached = _CHAT_SESSIONS.pop(session_id, None)
+        cached = _CHAT_SESSIONS.get(session_id)
+        if cached is not None and user_id and cached.get("user_id") not in (None, user_id):
+            raise HTTPException(status_code=403, detail="Access denied to this chat session.")
+        _CHAT_SESSIONS.pop(session_id, None)
     with _CHAT_STREAM_JOBS_LOCK:
         _SESSION_ACTIVE_JOBS.pop(session_id, None)
     try:
@@ -2369,6 +2803,8 @@ def delete_chat_session(session_id: str):
             if row is None and cached is None:
                 raise HTTPException(status_code=404, detail="Session not found.")
             if row is not None:
+                if user_id and row.user_id not in (None, user_id):
+                    raise HTTPException(status_code=403, detail="Access denied to this chat session.")
                 db.delete(row)
                 db.commit()
         finally:
@@ -2383,11 +2819,16 @@ def delete_chat_session(session_id: str):
 
 
 @app.get("/api/v1/chat/sessions/{session_id}/messages")
-def get_chat_session_messages(session_id: str):
+def get_chat_session_messages(session_id: str, http_req: Request):
     """Returns the full message history, context usage, freeze status, and any active streaming job for a session."""
+    current_user = getattr(http_req.state, "user", None)
+    user_id = current_user["id"] if current_user else None
+
     session = _get_chat_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found.")
+    if user_id and session.get("user_id") not in (None, user_id):
+        raise HTTPException(status_code=403, detail="Access denied to this chat session.")
     return {
         "id": session["id"],
         "title": session.get("title") or "New chat",
@@ -2400,8 +2841,13 @@ def get_chat_session_messages(session_id: str):
 
 
 @app.get("/api/v1/chat/sessions/{session_id}/active")
-def get_chat_session_active_job(session_id: str):
+def get_chat_session_active_job(session_id: str, http_req: Request):
     """Returns the currently running streaming job metadata for a session, or null if idle."""
+    current_user = getattr(http_req.state, "user", None)
+    user_id = current_user["id"] if current_user else None
+    session = _get_chat_session(session_id)
+    if session is not None and user_id and session.get("user_id") not in (None, user_id):
+        raise HTTPException(status_code=403, detail="Access denied to this chat session.")
     return {
         "session_id": session_id,
         "active_job": _get_active_job_for_session(session_id),
@@ -2570,6 +3016,7 @@ def _run_chat_stream_job(
     session_id: str,
     history: List[Dict[str, str]],
     deep_thinking: bool = False,
+    user_context: Dict[str, Any] | None = None,
 ) -> None:
     """Background worker: runs the streaming RAG pipeline and persists the assistant turn."""
     from core.rag import answer_compliance_query_stream
@@ -2582,6 +3029,7 @@ def _run_chat_stream_job(
                 history=history,
                 session_id=session_id,
                 deep_thinking=deep_thinking,
+                user_context=user_context,
             ):
                 if evt["type"] == "done":
                     evt["session_id"] = session_id
@@ -2645,7 +3093,7 @@ def _purge_stale_chat_jobs() -> None:
 
 
 @app.post("/api/v1/chat/stream")
-def start_chat_stream(request: ChatRequest):
+def start_chat_stream(request: ChatRequest, http_req: Request):
     """
     Starts a streaming chat job. Immediately persists the user turn and registers
     the active job under `session_id` so switching sessions or pages never loses state.
@@ -2654,7 +3102,9 @@ def start_chat_stream(request: ChatRequest):
     if not clean_query:
         raise HTTPException(status_code=422, detail="query field cannot be blank.")
 
-    session = _get_or_create_chat_session(request.session_id)
+    current_user = getattr(http_req.state, "user", None)
+    user_id = current_user["id"] if current_user else None
+    session = _get_or_create_chat_session(request.session_id, user_id=user_id)
     base_response = {
         "job_id": None,
         "session_id": session["id"],
@@ -2727,7 +3177,7 @@ def start_chat_stream(request: ChatRequest):
 
     worker = threading.Thread(
         target=_run_chat_stream_job,
-        args=(job, clean_query, session["id"], prior_history, bool(request.deep_thinking)),
+        args=(job, clean_query, session["id"], prior_history, bool(request.deep_thinking), current_user),
         daemon=True,
     )
     worker.start()
@@ -2906,7 +3356,7 @@ def list_agent_proposals():
 
 
 @app.post("/api/v1/agent/proposals/{proposal_id}/approve")
-def approve_agent_proposal(proposal_id: str, db: Session = Depends(get_db)):
+def approve_agent_proposal(proposal_id: str, payload: dict | None = None, db: Session = Depends(get_db)):
     """
     Executes an approved proposal inside a strict transaction.
 
@@ -2917,6 +3367,9 @@ def approve_agent_proposal(proposal_id: str, db: Session = Depends(get_db)):
     """
     from core.agent.proposals import proposal_manager
     from core.agent.db_editor import build_mutation_sql, execute_mutation
+
+    if isinstance(payload, dict) and str(payload.get("decision") or "").strip().lower() == "rejected":
+        return reject_agent_proposal(proposal_id)
 
     proposal = proposal_manager.get_proposal(proposal_id)
     if proposal is None:
@@ -2944,21 +3397,28 @@ def approve_agent_proposal(proposal_id: str, db: Session = Depends(get_db)):
             draft_id = proposal.get("payload", {}).get("draft_id")
             if not draft_id:
                 raise HTTPException(status_code=422, detail="SEND_EMAIL proposal missing 'draft_id' in payload.")
+            from core.agent.mailer import dispatch_email_draft
             from core.agent.tools import DRAFTS_DIR
 
             draft_path = os.path.join(DRAFTS_DIR, f"{draft_id}.json")
             if not os.path.exists(draft_path):
                 raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found in drafts directory.")
-            with open(draft_path, encoding="utf-8") as fh:
-                draft = json.load(fh)
-            draft["status"] = "dispatched"
-            with open(draft_path, "w", encoding="utf-8") as fh:
-                json.dump(draft, fh, indent=2, ensure_ascii=False)
-            detail = {
-                "draft_id": draft_id,
-                "recipient": draft.get("recipient"),
-                "message": "Draft marked as dispatched.",
-            }
+            detail = dispatch_email_draft(draft_path)
+            try:
+                from schemas.extraction import NotificationItem
+                db.add(
+                    NotificationItem(
+                        id=uuid.uuid4().hex,
+                        title=f"Email Alert Sent: {detail.get('recipient', 'Recipient')}"[:255],
+                        message=f"Approved and sent email '{detail.get('subject', draft_id)}' to {detail.get('recipient', 'N/A')}.",
+                        category="expiry_alert",
+                        is_read=False,
+                        created_at=datetime.utcnow(),
+                    )
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
         elif proposal["type"] == "INGEST_DOCUMENT":
             file_path = proposal.get("payload", {}).get("file_path")
             source_url = proposal.get("payload", {}).get("source_url")
@@ -3130,6 +3590,127 @@ def get_autonomous_run(run_id: str):
     if run is None:
         raise HTTPException(status_code=404, detail=f"Autonomous run {run_id} not found.")
     return run
+
+
+@app.get("/api/v1/agent/alerts/config")
+def get_alerting_config_endpoint(db: Session = Depends(get_db)):
+    """Returns the certificate expiry alerting configuration and live in-window certificate count."""
+    from core.agent.alerting import query_expiring_certificates
+    from core.agent.worker import get_alerting_status
+
+    status = get_alerting_status()
+    try:
+        matches = query_expiring_certificates(
+            db,
+            alert_days_before=status["alert_days_before"],
+        )
+        status["in_window_count"] = len(matches)
+    except Exception as exc:
+        logger.warning(f"Could not compute in-window certificate count: {exc}")
+        status["in_window_count"] = 0
+    return status
+
+
+@app.post("/api/v1/agent/alerts/config")
+def update_alerting_config_endpoint(payload: dict, request: Request, db: Session = Depends(get_db)):
+    """Updates the certificate expiry alerting configuration and reschedules the background job."""
+    from core.agent.alerting import query_expiring_certificates
+    from core.agent.worker import update_alerting_config
+
+    current_user = getattr(request.state, "user", None)
+    user_role = str((current_user or {}).get("role") or "").lower()
+
+    body = payload or {}
+    enabled = body.get("enabled")
+    require_approval = body.get("require_approval")
+    interval_seconds = body.get("interval_seconds")
+    if interval_seconds is None and body.get("interval_hours") is not None:
+        try:
+            interval_seconds = max(1, int(body["interval_hours"])) * 3600
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="'interval_hours' must be a positive integer.")
+    alert_days_before = body.get("alert_days_before")
+    fallback_email = body.get("fallback_email")
+    sender_email = body.get("sender_email")
+    smtp_password = body.get("smtp_password")
+
+    if (sender_email is not None or smtp_password is not None) and user_role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Only the Administrator can configure the Sender Email or SMTP App Password.",
+        )
+
+    if enabled is not None and not isinstance(enabled, bool):
+        raise HTTPException(status_code=422, detail="'enabled' must be a boolean.")
+    if require_approval is not None and not isinstance(require_approval, bool):
+        raise HTTPException(status_code=422, detail="'require_approval' must be a boolean.")
+    if interval_seconds is not None:
+        try:
+            interval_seconds = int(interval_seconds)
+            if interval_seconds < 60:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="'interval_seconds' must be an integer >= 60.")
+    if alert_days_before is not None:
+        try:
+            alert_days_before = int(alert_days_before)
+            if alert_days_before < 1 or alert_days_before > 365:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="'alert_days_before' must be an integer between 1 and 365.")
+    if fallback_email is not None and not isinstance(fallback_email, str):
+        raise HTTPException(status_code=422, detail="'fallback_email' must be a string.")
+    if sender_email is not None and not isinstance(sender_email, str):
+        raise HTTPException(status_code=422, detail="'sender_email' must be a string.")
+    if smtp_password is not None and not isinstance(smtp_password, str):
+        raise HTTPException(status_code=422, detail="'smtp_password' must be a string.")
+
+    try:
+        status = update_alerting_config(
+            enabled=enabled,
+            require_approval=require_approval,
+            interval_seconds=interval_seconds,
+            alert_days_before=alert_days_before,
+            fallback_email=fallback_email,
+            sender_email=sender_email,
+            smtp_password=smtp_password,
+        )
+        matches = query_expiring_certificates(
+            db,
+            alert_days_before=status["alert_days_before"],
+        )
+        status["in_window_count"] = len(matches)
+        return status
+    except Exception as exc:
+        logger.error(f"Failed to update expiry alerting config: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/v1/agent/alerts/run")
+def run_expiry_alerts_now(payload: dict | None = None, db: Session = Depends(get_db)):
+    """Manually triggers the certificate expiry alert scan and returns the execution summary."""
+    from core.agent.alerting import run_expiry_alert_scan
+    from core.agent.worker import _load_alerting_config
+
+    body = payload or {}
+    cfg = _load_alerting_config()
+    alert_days = body.get("alert_days_before", cfg["alert_days_before"])
+    require_approval = bool(body.get("require_approval", cfg["require_approval"]))
+    fallback_email = body.get("fallback_email", cfg["fallback_email"])
+    force_rescan = bool(body.get("force_rescan", False))
+
+    try:
+        summary = run_expiry_alert_scan(
+            alert_days_before=int(alert_days),
+            require_approval=require_approval,
+            fallback_email=fallback_email or None,
+            force_rescan=force_rescan,
+            db_session=db,
+        )
+        return {"status": "completed", **summary}
+    except Exception as exc:
+        logger.error(f"Manual expiry alert scan failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 def _ingest_document_file(file_path: str, source_url: str) -> dict:

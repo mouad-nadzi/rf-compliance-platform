@@ -824,7 +824,7 @@ class ExecuteRawSQLTool(BaseTool):
                 system_prompt=system_prompt,
                 user_prompt=f"OBJECTIVE: {objective}\n\nReturn ONLY the raw JSON output matching the schema.",
                 disable_thinking=True,
-                max_tokens=512,
+                max_tokens=1024,
                 response_prefix='{"sql_query": "',
                 hop_name="raw_sql_gen",
             )
@@ -969,6 +969,15 @@ class UpdateRecordTool(BaseTool):
             )
             with get_db_session() as db:
                 count = execute_mutation(db, mutation)
+                if count == 0 and table_name == "components" and isinstance(filters, dict) and values:
+                    comp_key = next(
+                        (k for k in filters if k.strip().lower() == "componentname" and str(filters[k] or "").strip()),
+                        None,
+                    )
+                    if comp_key is not None:
+                        upsert_vals = {**filters, **values}
+                        insert_mut = build_mutation_sql("insert", table_name, values=upsert_vals)
+                        count = execute_mutation(db, insert_mut)
                 from storage.backup import export_database_to_sql
                 export_database_to_sql()
                 return f"Successfully updated {count} record(s) in table '{table_name}' with {values}."
@@ -977,6 +986,129 @@ class UpdateRecordTool(BaseTool):
                 f"Generate a single PostgreSQL UPDATE statement on table '{table_name}'. "
                 f"Task description: {description}. Requested updates: {values}. Filter criteria: {filters or target_id}. "
                 f"If replacing a year on a DATE column, preserve the month and day (e.g. MAKE_DATE or REPLACE(col::text, old, new)::date)."
+            )
+            return ExecuteRawSQLTool().execute(objective=objective)
+
+
+class InsertRecordTool(BaseTool):
+    """Inserts one or more new records into a database table (e.g. certificates, responsibles, components, sources)."""
+
+    name: str = "insert_record"
+    requires_approval: bool = True
+
+    def get_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "table_name": {
+                    "type": "string",
+                    "description": "Target table name (e.g. 'certificates', 'responsibles', 'components', 'sources')",
+                },
+                "values": {
+                    "type": "object",
+                    "description": "Column-value mapping for a single record to insert",
+                },
+                "records": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Optional list of column-value dicts when inserting multiple records in one step",
+                },
+            },
+            "required": ["table_name"],
+        }
+
+    def execute(self, **kwargs: Any) -> Any:
+        from sqlalchemy import text
+        from core.agent.db_editor import build_mutation_sql, execute_mutation
+        from storage.database import get_db_session
+        from storage.dynamic_schema import resolve_physical_table_name
+
+        table_name = resolve_physical_table_name(kwargs.get("table_name") or "certificates")
+        description = str(kwargs.get("description") or "").strip()
+
+        raw_records: List[Dict[str, Any]] = []
+        if isinstance(kwargs.get("records"), list):
+            raw_records = [r for r in kwargs["records"] if isinstance(r, dict) and r]
+        elif isinstance(kwargs.get("values"), list):
+            raw_records = [r for r in kwargs["values"] if isinstance(r, dict) and r]
+        elif isinstance(kwargs.get("values"), dict) and kwargs["values"]:
+            raw_records = [kwargs["values"]]
+        elif isinstance(kwargs.get("record"), dict) and kwargs["record"]:
+            raw_records = [kwargs["record"]]
+
+        if not raw_records:
+            if description:
+                objective = (
+                    f"Generate a PostgreSQL INSERT statement into table '{table_name}'. "
+                    f"Task description: {description}."
+                )
+                return ExecuteRawSQLTool().execute(objective=objective)
+            raise ValueError(f"Cannot insert into '{table_name}': 'values' or 'records' is required.")
+
+        try:
+            inserted_count = 0
+            with get_db_session() as db:
+                for row_dict in raw_records:
+                    clean_row = dict(row_dict)
+                    if table_name == "certificates":
+                        try:
+                            from core.normalization import normalize_certificate_dict
+                            norm = normalize_certificate_dict(clean_row, db)
+                            for k in list(clean_row.keys()):
+                                kl = k.strip().lower()
+                                if kl in norm and norm[kl] not in ("", None):
+                                    clean_row[k] = norm[kl]
+                            # Include auto-filled country/authority/supplier if derived
+                            for auto_k in ("country", "authority", "supplier"):
+                                if norm.get(auto_k) and not clean_row.get(auto_k):
+                                    clean_row[auto_k] = norm[auto_k]
+                        except Exception:
+                            pass
+
+                    # Upsert semantics on natural unique keys for responsibles (email) and components (componentname)
+                    if table_name == "responsibles":
+                        email_val = next(
+                            (str(v).strip() for k, v in clean_row.items() if k.strip().lower() == "email" and str(v or "").strip()),
+                            None,
+                        )
+                        if email_val:
+                            existing = db.execute(
+                                text("SELECT id FROM responsibles WHERE LOWER(TRIM(email)) = LOWER(TRIM(:email)) LIMIT 1"),
+                                {"email": email_val},
+                            ).fetchone()
+                            if existing:
+                                upd_mut = build_mutation_sql("update", table_name, values=clean_row, row_filter={"id": existing.id})
+                                execute_mutation(db, upd_mut)
+                                inserted_count += 1
+                                continue
+
+                    elif table_name == "components":
+                        comp_val = next(
+                            (str(v).strip() for k, v in clean_row.items() if k.strip().lower() == "componentname" and str(v or "").strip()),
+                            None,
+                        )
+                        if comp_val:
+                            existing = db.execute(
+                                text("SELECT id FROM components WHERE LOWER(TRIM(componentname)) = LOWER(TRIM(:comp)) LIMIT 1"),
+                                {"comp": comp_val},
+                            ).fetchone()
+                            if existing:
+                                upd_mut = build_mutation_sql("update", table_name, values=clean_row, row_filter={"id": existing.id})
+                                execute_mutation(db, upd_mut)
+                                inserted_count += 1
+                                continue
+
+                    mutation = build_mutation_sql("insert", table_name, values=clean_row)
+                    execute_mutation(db, mutation)
+                    inserted_count += 1
+
+                from storage.backup import export_database_to_sql
+                export_database_to_sql()
+                return f"Successfully inserted {inserted_count} record(s) into table '{table_name}': {raw_records}"
+        except ValueError:
+            objective = (
+                f"Generate a PostgreSQL INSERT statement into table '{table_name}'. "
+                f"Task description: {description}. Records to insert: {raw_records}."
             )
             return ExecuteRawSQLTool().execute(objective=objective)
 
@@ -995,6 +1127,7 @@ def get_tool_registry() -> Dict[str, BaseTool]:
         CheckUrlTool.name: CheckUrlTool(),
         DownloadDocumentsTool.name: DownloadDocumentsTool(),
         IngestToDatabaseTool.name: IngestToDatabaseTool(),
+        InsertRecordTool.name: InsertRecordTool(),
         DeleteRecordTool.name: DeleteRecordTool(),
         UpdateRecordTool.name: UpdateRecordTool(),
         DataConverterTool.name: DataConverterTool(),

@@ -29,9 +29,13 @@ scheduler = AsyncIOScheduler()
 
 #: APScheduler job id for the autonomous ingestion job.
 JOB_ID: str = "autonomous_ingestion"
+#: APScheduler job id for the certificate expiry alerting scanner.
+ALERT_JOB_ID: str = "expiry_alert_scanner"
 
 #: Persisted scheduler configuration (survives restarts; editable from CONTROL page).
 SCHEDULER_CONFIG_FILE: str = os.path.join(AGENT_DATA_DIR, "scheduler_config.json")
+#: Persisted expiry alerting configuration (survives restarts; editable from CONTROL page).
+ALERTING_CONFIG_FILE: str = os.path.join(AGENT_DATA_DIR, "alerting_config.json")
 
 #: Explicit lifecycle flag. APScheduler's `shutdown(wait=False)` clears `running`
 #: asynchronously (next loop iteration), so `scheduler.running` alone is not a
@@ -65,6 +69,80 @@ def _save_scheduler_config(cfg: Dict[str, Any]) -> None:
     os.makedirs(os.path.dirname(SCHEDULER_CONFIG_FILE), exist_ok=True)
     with open(SCHEDULER_CONFIG_FILE, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2)
+
+
+def _load_alerting_config() -> Dict[str, Any]:
+    """Load persisted expiry alerting config; falls back to server.config defaults."""
+    from server.config import (
+        EXPIRY_ALERT_DEFAULT_DAYS,
+        EXPIRY_ALERT_FALLBACK_EMAIL,
+        EXPIRY_ALERT_INTERVAL_SECONDS,
+    )
+
+    try:
+        with open(ALERTING_CONFIG_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return {
+            "enabled": bool(data.get("enabled", True)),
+            "require_approval": bool(data.get("require_approval", True)),
+            "interval_seconds": max(60, int(data.get("interval_seconds", EXPIRY_ALERT_INTERVAL_SECONDS))),
+            "alert_days_before": max(1, min(365, int(data.get("alert_days_before", EXPIRY_ALERT_DEFAULT_DAYS)))),
+            "fallback_email": str(data.get("fallback_email", EXPIRY_ALERT_FALLBACK_EMAIL) or "").strip(),
+            "sender_email": str(data.get("sender_email", "") or "").strip(),
+            "smtp_password": str(data.get("smtp_password", "") or "").strip(),
+        }
+    except Exception:
+        return {
+            "enabled": True,
+            "require_approval": True,
+            "interval_seconds": int(EXPIRY_ALERT_INTERVAL_SECONDS),
+            "alert_days_before": int(EXPIRY_ALERT_DEFAULT_DAYS),
+            "fallback_email": str(EXPIRY_ALERT_FALLBACK_EMAIL or "").strip(),
+            "sender_email": "",
+            "smtp_password": "",
+        }
+
+
+def _save_alerting_config(cfg: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(ALERTING_CONFIG_FILE), exist_ok=True)
+    with open(ALERTING_CONFIG_FILE, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=2)
+
+
+def _add_alert_interval_job(interval_seconds: int) -> None:
+    """Register/reschedule the expiry alert scanner job on a fixed interval."""
+    scheduler.add_job(
+        expiry_alert_job,
+        trigger="interval",
+        seconds=max(int(interval_seconds), 60),
+        id=ALERT_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
+
+async def expiry_alert_job(force_rescan: bool = False) -> Optional[Dict[str, Any]]:
+    """
+    Autonomous background job: scans `certificates` for upcoming expirations
+    within the configured `alert_days_before` window, emits in-app notifications,
+    and drafts/stages renewal alert emails for responsible engineers.
+    """
+    from core.agent.alerting import run_expiry_alert_scan
+
+    cfg = _load_alerting_config()
+    try:
+        return await asyncio.to_thread(
+            run_expiry_alert_scan,
+            alert_days_before=cfg["alert_days_before"],
+            require_approval=cfg["require_approval"],
+            fallback_email=cfg["fallback_email"] or None,
+            force_rescan=force_rescan,
+        )
+    except Exception as exc:
+        logger.error(f"Expiry alert job failed: {exc}")
+        return None
 
 
 def _add_interval_job(interval_seconds: int, target_url: Optional[str]) -> None:
@@ -305,11 +383,23 @@ def start_scheduler(
 
     if cfg["enabled"]:
         _add_interval_job(interval, url or None)
+        logger.info(f"Scheduler configured: autonomous ingestion every {interval}s.")
+    else:
+        logger.info("Autonomous ingestion is configured as disabled.")
+
+    alert_cfg = _load_alerting_config()
+    if alert_cfg["enabled"]:
+        _add_alert_interval_job(alert_cfg["interval_seconds"])
+        logger.info(
+            f"Scheduler configured: expiry alert scanner every {alert_cfg['interval_seconds']}s "
+            f"(lead_time={alert_cfg['alert_days_before']}d)."
+        )
+    else:
+        logger.info("Expiry alert scanner is configured as disabled.")
+
+    if cfg["enabled"] or alert_cfg["enabled"]:
         scheduler.start()
         _scheduler_started = True
-        logger.info(f"Scheduler started: autonomous ingestion every {interval}s.")
-    else:
-        logger.info("Scheduler is configured as disabled; not starting autonomous ingestion.")
     return scheduler
 
 
@@ -402,6 +492,109 @@ def update_scheduler_config(
     _save_scheduler_config(cfg)
     _apply_scheduler_config(cfg)
     return get_scheduler_status()
+
+
+def _apply_alerting_config(cfg: Dict[str, Any]) -> None:
+    """Apply an alerting config to the live scheduler (add/remove/reschedule)."""
+    global _scheduler_started
+
+    if cfg["enabled"]:
+        _add_alert_interval_job(cfg["interval_seconds"])
+        if not scheduler.running:
+            try:
+                scheduler.start()
+                _scheduler_started = True
+            except Exception as exc:
+                logger.warning(f"Could not start scheduler inline ({exc}); alert job configured for active loop.")
+        logger.info(
+            f"Expiry alert scheduler reconfigured: every {cfg['interval_seconds']}s, "
+            f"lead_time={cfg['alert_days_before']}d"
+        )
+    else:
+        try:
+            scheduler.remove_job(ALERT_JOB_ID)
+        except Exception:
+            pass
+        logger.info("Expiry alert scheduler disabled: scanner job removed.")
+
+
+def get_alerting_status() -> Dict[str, Any]:
+    """Return the expiry alerting configuration and live job state for the CONTROL page."""
+    from schemas.automation import AutomationConfig
+
+    cfg = _load_alerting_config()
+    next_run = None
+    try:
+        job = scheduler.get_job(ALERT_JOB_ID)
+        if job is not None and job.next_run_time is not None:
+            next_run = job.next_run_time.isoformat()
+    except Exception:
+        pass
+
+    from server.config import SMTP_USER, SMTP_PASSWORD
+
+    effective_sender = cfg.get("sender_email") or str(SMTP_USER or "").strip()
+    has_pwd = bool(cfg.get("smtp_password") or str(SMTP_PASSWORD or "").strip())
+
+    auto_config = AutomationConfig(
+        id="expiry_alert_scanner",
+        title="Certificate Expiry Alerting System",
+        description="Automatically monitors certificate expiration dates, notifies compliance teams, and drafts renewal alerts for responsible engineers.",
+        enabled=cfg.get("enabled", True),
+        require_approval=cfg.get("require_approval", True),
+        interval_hours=max(1, int((cfg.get("interval_seconds") or 86400) // 3600)),
+        action_type="certificate_expiry_alert",
+        running=bool(scheduler.running),
+        next_run_time=next_run,
+        custom_params={
+            "interval_seconds": cfg.get("interval_seconds", 86400),
+            "alert_days_before": cfg.get("alert_days_before", 30),
+            "fallback_email": cfg.get("fallback_email", ""),
+            "sender_email": effective_sender,
+            "has_smtp_password": has_pwd,
+        },
+    )
+
+    result = auto_config.to_dict()
+    result["interval_seconds"] = cfg.get("interval_seconds", 86400)
+    result["alert_days_before"] = cfg.get("alert_days_before", 30)
+    result["fallback_email"] = cfg.get("fallback_email", "")
+    result["sender_email"] = effective_sender
+    result["has_smtp_password"] = has_pwd
+    return result
+
+
+def update_alerting_config(
+    enabled: Optional[bool] = None,
+    require_approval: Optional[bool] = None,
+    interval_seconds: Optional[int] = None,
+    alert_days_before: Optional[int] = None,
+    fallback_email: Optional[str] = None,
+    sender_email: Optional[str] = None,
+    smtp_password: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Persist and apply an expiry alerting configuration change."""
+    cfg = _load_alerting_config()
+    if enabled is not None:
+        cfg["enabled"] = bool(enabled)
+    if require_approval is not None:
+        cfg["require_approval"] = bool(require_approval)
+    if interval_seconds is not None:
+        cfg["interval_seconds"] = max(int(interval_seconds), 60)
+    if alert_days_before is not None:
+        cfg["alert_days_before"] = max(1, min(365, int(alert_days_before)))
+    if fallback_email is not None:
+        cfg["fallback_email"] = str(fallback_email or "").strip()
+    if sender_email is not None:
+        cfg["sender_email"] = str(sender_email or "").strip()
+    if smtp_password is not None:
+        # Empty string leaves existing password untouched unless explicitly cleared; non-empty updates it
+        cleaned_pwd = str(smtp_password).strip()
+        if cleaned_pwd:
+            cfg["smtp_password"] = cleaned_pwd
+    _save_alerting_config(cfg)
+    _apply_alerting_config(cfg)
+    return get_alerting_status()
 
 
 def shutdown_scheduler() -> None:

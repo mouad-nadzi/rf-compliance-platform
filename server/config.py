@@ -144,3 +144,23 @@ SCRAPER_USE_LLM_FILTER: bool = os.getenv("SCRAPER_USE_LLM_FILTER", "1") == "1"
 # Append-only manifest of already-fetched URLs (dedup across runs).
 SCRAPER_FETCHED_MANIFEST: str = os.path.join(BASE_DIR, "data", "agent", "fetched_urls.json")
 
+# ── Automated Certificate Expiry Alerting ─────────────────────────────────────
+EXPIRY_ALERT_DEFAULT_DAYS: int = int(os.getenv("EXPIRY_ALERT_DEFAULT_DAYS", "30"))
+EXPIRY_ALERT_INTERVAL_SECONDS: int = int(os.getenv("EXPIRY_ALERT_INTERVAL_SECONDS", str(24 * 60 * 60)))
+EXPIRY_ALERT_FALLBACK_EMAIL: str = os.getenv("EXPIRY_ALERT_FALLBACK_EMAIL", "compliance-admin@stellantis.com")
+
+# ── Live SMTP Email Transport (credentials ingested from .env / environment) ──
+SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER: str = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM: str = os.getenv("SMTP_FROM", "")
+SMTP_USE_TLS: bool = os.getenv("SMTP_USE_TLS", "true").strip().lower() in ("1", "true", "yes")
+
+# ── Authentication & 3-Tier RBAC ──────────────────────────────────────────────
+AUTH_SECRET_KEY: str = os.getenv("AUTH_SECRET_KEY", "")
+AUTH_TOKEN_TTL_HOURS: int = int(os.getenv("AUTH_TOKEN_TTL_HOURS", "168"))
+ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "mouadnadzi3@gmail.com").strip().lower()
+ADMIN_NAME: str = os.getenv("ADMIN_NAME", "Mouad Nadzi").strip()
+ADMIN_INITIAL_PASSWORD: str = os.getenv("ADMIN_INITIAL_PASSWORD", "Admin@2026!")
+

@@ -71,6 +71,7 @@ class ProposalManager:
         resolved_session_id = session_id or (payload.get("session_id") if isinstance(payload, dict) else None)
         proposal_id = uuid.uuid4().hex[:12]
         proposal = {
+            "id": proposal_id,
             "proposal_id": proposal_id,
             "type": proposal_type,
             "session_id": resolved_session_id,
@@ -78,9 +79,47 @@ class ProposalManager:
             "status": "PENDING",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "sql_preview": sql_preview,
+            "reasoning": sql_preview or (payload.get("description") if isinstance(payload, dict) else None) or "",
         }
         self._write(proposal)
         logger.info(f" Staged {proposal_type} proposal {proposal_id} (session={resolved_session_id}).")
+        return self._enrich(proposal)
+
+    def _enrich(self, proposal: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure proposal dict always exposes id, proposal_id, reasoning, and hydrated email draft details."""
+        pid = proposal.get("proposal_id") or proposal.get("id") or ""
+        proposal["proposal_id"] = pid
+        proposal["id"] = pid
+        payload = proposal.get("payload") if isinstance(proposal.get("payload"), dict) else {}
+
+        if proposal.get("type") == "SEND_EMAIL":
+            draft_id = payload.get("draft_id")
+            if draft_id and not payload.get("body_content"):
+                try:
+                    from core.agent.tools import DRAFTS_DIR
+                    draft_path = os.path.join(DRAFTS_DIR, f"{draft_id}.json")
+                    if os.path.exists(draft_path):
+                        with open(draft_path, encoding="utf-8") as fh:
+                            draft_data = json.load(fh)
+                        payload["recipient"] = payload.get("recipient") or draft_data.get("recipient")
+                        payload["subject"] = payload.get("subject") or draft_data.get("subject")
+                        payload["body_content"] = draft_data.get("body_content", "")
+                        proposal["payload"] = payload
+                except Exception:
+                    pass
+
+        if not proposal.get("reasoning"):
+            if proposal.get("type") == "SEND_EMAIL" and (payload.get("recipient") or payload.get("subject")):
+                proposal["reasoning"] = (
+                    f"To: {payload.get('recipient', 'N/A')} | Subject: {payload.get('subject', 'N/A')}"
+                )
+            else:
+                proposal["reasoning"] = (
+                    proposal.get("sql_preview")
+                    or payload.get("description")
+                    or payload.get("source_url")
+                    or proposal.get("type", "")
+                )
         return proposal
 
     def get_proposal(self, proposal_id: str) -> Optional[Dict[str, Any]]:
@@ -90,7 +129,7 @@ class ProposalManager:
             return None
         try:
             with open(path, encoding="utf-8") as fh:
-                return json.load(fh)
+                return self._enrich(json.load(fh))
         except Exception as exc:
             logger.warning(f" Could not read proposal {proposal_id}: {exc}")
             return None

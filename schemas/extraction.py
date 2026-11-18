@@ -101,6 +101,7 @@ class ChatSession(Base):
     __tablename__ = "chat_sessions"
 
     id = Column(String(64), primary_key=True, index=True, comment="Session identifier (sess_<hex>)")
+    user_id = Column(String(64), nullable=True, index=True, comment="Owning user_id for per-user session isolation")
     title = Column(String(255), nullable=False, default="", comment="Session title derived from first question")
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, comment="Session creation timestamp")
     frozen = Column(Boolean, nullable=False, default=False, comment="True when the context window budget is exhausted")
@@ -168,6 +169,48 @@ class NotificationItem(Base):
     id = Column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex, comment="Notification item primary key")
     title = Column(String(255), nullable=False, comment="Short notification title")
     message = Column(Text, nullable=False, comment="Notification description text")
-    category = Column(String(50), default="standardization", comment="Category: standardization, import, system")
+    category = Column(String(50), default="standardization", comment="Category: standardization, import, system, expiry_alert")
     is_read = Column(Boolean, default=False, comment="Whether notification has been read")
     created_at = Column(DateTime, default=datetime.utcnow, comment="Notification timestamp")
+
+
+class ExpiryAlertLog(Base):
+    """
+    Tracks dispatched or staged expiration alerts per (certificate_id, exp_date, alert_window_days)
+    to guarantee idempotency across scheduled background scans.
+    """
+    __tablename__ = "expiry_alert_logs"
+    __table_args__ = {"extend_existing": True}
+
+    id = Column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex, comment="Alert log primary key")
+    certificate_id = Column(String(64), nullable=False, index=True, comment="Referenced certificate_id")
+    certif_number = Column(String(255), nullable=True, comment="Certificate number at alert time")
+    component = Column(String(255), nullable=True, comment="Component name at alert time")
+    country = Column(String(100), nullable=True, comment="Country at alert time")
+    exp_date = Column(Date, nullable=False, comment="Certificate expiration date at alert time")
+    alert_window_days = Column(Integer, nullable=False, comment="Lead-time threshold in days (e.g. 30, 60, 90)")
+    recipient_email = Column(String(255), nullable=True, comment="Target responsible or fallback email")
+    proposal_id = Column(String(64), nullable=True, comment="Associated HITL SEND_EMAIL proposal_id, if staged")
+    alerted_at = Column(DateTime, default=datetime.utcnow, comment="Timestamp when alert was generated")
+
+
+class UserAccount(Base):
+    """
+    Platform user account for 3-tier RBAC:
+      - 'admin': Unique Administrator (user management, invite links, sender email config, full access)
+      - 'editor': Allow-to-Edit user (database writes, ingestion, automations, email approvals)
+      - 'viewer': Read-Only user (view tables, run Q&A chat; no mutations or automation triggers)
+    """
+    __tablename__ = "users"
+    __table_args__ = {"extend_existing": True}
+
+    id = Column(String(64), primary_key=True, default=lambda: f"usr_{uuid.uuid4().hex[:12]}", comment="User primary key")
+    email = Column(String(255), unique=True, nullable=False, index=True, comment="Canonical lowercase user email")
+    full_name = Column(String(255), nullable=False, comment="User display name")
+    role = Column(String(32), nullable=False, default="viewer", comment="Role: admin | editor | viewer")
+    password_hash = Column(String(255), nullable=True, comment="PBKDF2-SHA256 salted password hash; NULL while invited")
+    status = Column(String(32), nullable=False, default="invited", comment="Account status: active | invited")
+    invite_token = Column(String(128), nullable=True, index=True, comment="Single-use onboarding invitation token")
+    invite_expires_at = Column(DateTime, nullable=True, comment="Invitation expiration timestamp (UTC)")
+    created_at = Column(DateTime, default=datetime.utcnow, comment="Account creation timestamp")
+    last_login_at = Column(DateTime, nullable=True, comment="Last successful login timestamp")

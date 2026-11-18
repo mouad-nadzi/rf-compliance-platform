@@ -213,16 +213,18 @@ GENERAL TARGET & PARAMETER RESOLUTION RULES:
   - If the user asks to download or fetch candidate files (or a specific file from a portal/URL), plan `download_documents` (specify `target_file` when referencing a specific document or number from history).
   - If the user asks to ingest/import/bring documents into the database, plan `ingest_to_database` (set `"ingest_mode": "single"` or `"bulk"` and specify `target_file` when referencing a specific document; `ingest_to_database` automatically downloads the file if needed).
 - Database Modifications & Schema Transformations:
+  - If the user asks to create, add, or insert new records into any database table (e.g. `certificates`, `responsibles`, `components`, `sources`, or custom tables), plan `insert_record` with `table_name` and `values` (for a single row) or `records` (a list of row dicts for multiple rows). When associating a component with a responsible engineer, insert or update `components` with `componentname` set to the certificate's `component` and `id_responsible` set to the engineer's `email` from `responsibles`.
   - If the user asks to delete records, plan `delete_record` with the relevant `filters`, `target_id`, or `"delete_all": true`.
   - If the user asks to update, edit, or transform database records or attributes, plan `update_record` with `table_name`, `values` (columns and new values to set), and `filters` (matching conditions).
   - If the user asks to drop columns, add columns, or combine/merge columns in a table (e.g. "delete unused columns", "combine firstname and lastname", "only keep columns X, Y, Z in table T"), plan `manage_schema` with `action: "drop_columns"` / `"add_columns"` / `"combine_columns"` (or plan `execute_raw_sql` with a migration query).
-  - If the user asks to merge tables, perform complex aggregations, or run advanced ETL workflows (e.g., `INSERT INTO ... SELECT`), plan `execute_raw_sql` with `"sql_query"`.
+  - If the user asks to merge tables, perform complex aggregations, or run advanced multi-table SQL/ETL workflows (e.g., `INSERT INTO ... SELECT`), plan `execute_raw_sql` with `"sql_query"`.
 - Contextual Follow-ups:
   - When the user refers to prior context (e.g., "import it", "delete this", "retry"), resolve the referenced target document, ID, or parameters from the conversation history into the step payload.
-  - Database operations (updates, deletions, schema changes) operate purely on database tables and do not require URL fetching or document extractions.
+  - Database operations (inserts, updates, deletions, schema changes) operate purely on database tables and do not require URL fetching or document extractions.
 
 PLANNING RULES:
 - Include ONLY the steps necessary to fulfill the user's explicit request. Do not add unrequested actions.
+- Resolve relative dates (e.g., "expiring in 30 days from now") into concrete `YYYY-MM-DD` ISO dates using `CURRENT DATE`.
 - Essential Column Protection: NEVER plan dropping 'certificate_id' from the core 'certificates' table, and NEVER plan dropping 'id' or 'created_at' from any table.
 - Mark database-mutating steps as `"kind": "write"` and read-only steps as `"kind": "read"`.
 - Provide a clear, human-readable `"description"` for each step.
@@ -241,7 +243,8 @@ Return raw valid JSON matching this exact structure:
       "target_id": "<optional certificate_id or record id if specified, otherwise omitted>",
       "ingest_mode": "<optional 'single'|'bulk' if ingesting, otherwise omitted>",
       "table_name": "<optional target table name, default 'certificates'>",
-      "values": "<optional dict of column -> value to set if update_record, otherwise omitted>",
+      "values": "<optional dict of column -> value to set for insert_record or update_record, otherwise omitted>",
+      "records": "<optional list of column -> value dicts when inserting multiple rows with insert_record, otherwise omitted>",
       "filters": "<optional filter dict if targeting specific criteria, otherwise omitted>",
       "delete_all": "<optional boolean true if deleting all records, otherwise omitted>",
       "action_type": "<optional action name for manage_schema: 'drop_columns'|'add_columns'|'combine_columns'|'create_table', otherwise omitted>",
@@ -274,6 +277,7 @@ STRICT RULES:
   "sql_query": "<your generated raw SQL query>"
 }
 - NEVER hallucinate column names. Use exactly the columns provided in the schema.
+- When inserting into `certificates`, `certificate_id` is auto-generated if omitted (or use `md5(random()::text || clock_timestamp()::text)`).
 - Do NOT wrap the output in markdown code blocks. Return pure JSON only.
 """
 

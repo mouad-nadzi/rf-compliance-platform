@@ -206,7 +206,7 @@ DEFAULT_IDENTITY_MEMORIES = [
     },
     {
         "memory_key": "platform_tools",
-        "fact_text": "You operate directly through the platform's integrated tools: 1) search_database_sql (structured queries across all compliance tables), 2) search_document_chunks (semantic retrieval over certificate document text), 3) search_hybrid (combined structured and document search), 4) execute_agent_action (check_url for portal discovery, download_documents for direct URL downloading, ingest_to_database for OCR extraction and database persistence, and update_record/delete_record/manage_schema/execute_raw_sql for database management), and 5) Bidirectional Authority-Country-Supplier lookup knowledge base.",
+        "fact_text": "You operate directly through the platform's integrated tools: 1) search_database_sql (structured queries across all compliance tables), 2) search_document_chunks (semantic retrieval over certificate document text), 3) search_hybrid (combined structured and document search), 4) execute_agent_action (check_url for portal discovery, download_documents for direct URL downloading, ingest_to_database for OCR extraction and database persistence, and insert_record/update_record/delete_record/manage_schema/execute_raw_sql for database management), and 5) Bidirectional Authority-Country-Supplier lookup knowledge base.",
     },
 ]
 
