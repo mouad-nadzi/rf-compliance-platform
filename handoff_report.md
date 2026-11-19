@@ -83,9 +83,10 @@ rf-compliance-platform/
 │   │   ├── agent_loop.py      Agentic plan executor + HITL proposal staging
 │   │   ├── alerting.py        Certificate expiry alerting engine (30/60/90d + idempotency)
 │   │   ├── ingestor.py        Document ingestion orchestrator
-│   │   ├── mailer.py          Live SMTP email transport (STARTTLS/SSL)
+│   │   ├── mailer.py          Google OAuth 2.0 Gmail REST API + SMTP fallback dispatcher
 │   │   ├── memory.py          Long-term memory read/write (agent_memories table)
 │   │   ├── proposals.py       HITL proposal schema, draft hydration & lifecycle
+│   │   ├── report_pdf.py      Stellantis-branded A4 PDF renewal report generator
 │   │   ├── scraper.py         Web scraper (HTML + optional Playwright fallback)
 │   │   ├── tools.py           Registered agent tool registry (incl. InsertRecordTool)
 │   │   ├── worker.py          Background APScheduler (ingestion + expiry alert scanner)
@@ -571,10 +572,11 @@ cd frontend && npm run dev
 - **Automated Certificate Expiry Alerting Engine ([`core/agent/alerting.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/alerting.py), [`core/agent/worker.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/worker.py), [`schemas/extraction.py`](file:///home/mouadnadzi3/rf-compliance-platform/schemas/extraction.py)):**
   - Queries `certificates` as the canonical source of truth via `LEFT JOIN LATERAL` against `components`, `responsibles`, and `countries` for upcoming expirations (`exp_date >= CURRENT_DATE AND exp_date <= CURRENT_DATE + make_interval(days => :alert_days)`), excluding permanent `2999-01-01` records.
   - Deduplicates emitted alerts in `expiry_alert_logs` on `(certificate_id, exp_date, alert_window_days)`.
-  - Emits in-app notifications (`category="expiry_alert"`), drafts consolidated renewal alert emails per responsible engineer (routing unassigned components to `fallback_email`), and stages HITL `SEND_EMAIL` proposals (hydrated in Pending Actions with recipient, subject, and body preview).
-  - Exposed via `GET /api/v1/agent/alerts/config`, `POST /api/v1/agent/alerts/config`, and `POST /api/v1/agent/alerts/run`, with `30d`/`60d`/`90d` presets and `1-365` day lead-time adjustment on the **Certificate Expiry Alerting System** card in [`frontend/src/views/ControlView.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/ControlView.tsx).
-- **Live SMTP Email Dispatcher ([`core/agent/mailer.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/mailer.py)):**
-  - Sends approved `SEND_EMAIL` drafts and invite links over STARTTLS (`587`) / SSL (`465`), reading Admin-configured `sender_email` / `smtp_password` from `alerting_config.json` with `.env` fallback (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`).
+  - Emits in-app notifications (`category="expiry_alert"`), generates a Stellantis-branded multi-page A4 PDF renewal report ([`core/agent/report_pdf.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/report_pdf.py)) with the Stellantis header logo and structured certificate table, drafts concise renewal alert emails with the PDF attached, and stages HITL `SEND_EMAIL` proposals (hydrated in Pending Actions with recipient, subject, body, and clickable PDF preview via `GET /api/v1/agent/drafts/{draft_id}/attachment`).
+  - Exposed via `GET /api/v1/agent/alerts/config`, `POST /api/v1/agent/alerts/config`, and `POST /api/v1/agent/alerts/run` (with `force_rescan` support), with `30d`/`60d`/`90d` presets, `1-365` day lead-time adjustment, and a **Force Rescan** toggle on the **Certificate Expiry Alerting System** card in [`frontend/src/views/ControlView.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/ControlView.tsx).
+- **Google OAuth 2.0 Gmail API & SMTP Fallback Dispatcher ([`core/agent/mailer.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/mailer.py)):**
+  - Primary transport uses **Google OAuth 2.0 + Gmail REST API** (`https://gmail.googleapis.com/gmail/v1/users/me/messages/send`) with automatic `refresh_token` rotation, Admin-only OAuth setup (`GET /api/v1/agent/alerts/oauth/start`, `GET /api/v1/auth/google/callback`, `POST /api/v1/agent/alerts/oauth/disconnect`, auto-mapping raw IPv4 origins to `<ipv4>.sslip.io` for Google redirect validation).
+  - Builds full RFC 2822 MIME messages with explicit `Date`, `Message-ID`, `multipart/alternative` (plain text + HTML), and `application/pdf` attachments, falling back to STARTTLS (`587`) / SSL (`465`) SMTP when OAuth is not connected.
 - **`InsertRecordTool` & Relational Schema Awareness ([`core/agent/tools.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/tools.py), [`core/agent/db_editor.py`](file:///home/mouadnadzi3/rf-compliance-platform/core/agent/db_editor.py)):**
   - Registered `insert_record` (`InsertRecordTool`) supporting single/multi-row inserts, case-insensitive column binding, automatic `certificates.certificate_id` generation, idempotent upserts on `responsibles` (`email`) and `components` (`componentname`), and `CURRENT DATE` injection into `_llm_plan()`.
 - **Authentication, 3-Tier RBAC & Per-User Chat Isolation ([`server/auth.py`](file:///home/mouadnadzi3/rf-compliance-platform/server/auth.py), [`server/main.py`](file:///home/mouadnadzi3/rf-compliance-platform/server/main.py), [`frontend/src/views/UsersView.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/UsersView.tsx), [`frontend/src/views/LoginView.tsx`](file:///home/mouadnadzi3/rf-compliance-platform/frontend/src/views/LoginView.tsx)):**
@@ -583,7 +585,7 @@ cd frontend && npm run dev
     - `editor` (Allow to Edit): DB writes, ingestion, automations, and proposal approvals (blocked from `/api/v1/users*` and Sender Email credentials).
     - `viewer` (Read-Only): read-only table browsing and Q&A chat (blocked from all mutations and automation triggers).
   - Scopes `chat_sessions` per `user_id` and injects `[ACTIVE USER SESSION & PERMISSIONS]` at the tail of user prompts (preserving the 1014-token `[AGENT LONG-TERM MEMORY]` prefix checkpoint) with a deterministic `viewer` guard in `answer_compliance_query_stream()`.
-  - Verified with **30/30 passing unit & integration tests** (`python3 -m unittest discover tests -v`).
+  - Verified with **32/32 passing unit & integration tests** (`python3 -m unittest discover tests -v`).
 
 ---
 
@@ -632,7 +634,8 @@ cd frontend && npm run dev
 | Unified RF Certificate Normalization Engine across all ingestion pathways (`core/normalization.py`) | Completed |
 | Sequence-state prefix checkpointing (`qwen35`), native `<think>` switch, & 4.6x chat latency speedup | Completed |
 | Session-independent chat streaming (`AppLayout` global stream store + backend active job reattach + scoped HITL proposals) | Completed |
-| Automated Certificate Expiry Alerting System (`expiry_alert_logs`, 30/60/90d configurable lead time, live SMTP mailer) | Completed |
+| Automated Certificate Expiry Alerting System (`expiry_alert_logs`, 30/60/90d configurable lead time, Force Rescan) | Completed |
+| Google OAuth 2.0 + Gmail REST API sender & Stellantis-branded PDF renewal report attachment (`core/agent/report_pdf.py`) | Completed |
 | `InsertRecordTool` (`insert_record`) with multi-table relational upsert & `CURRENT DATE` planner injection | Completed |
 | Authentication, 3-Tier RBAC (`admin` unique, `editor`, `viewer`), invite-link onboarding, & per-user chat isolation | Completed |
 

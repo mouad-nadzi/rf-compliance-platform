@@ -157,6 +157,10 @@ SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM: str = os.getenv("SMTP_FROM", "")
 SMTP_USE_TLS: bool = os.getenv("SMTP_USE_TLS", "true").strip().lower() in ("1", "true", "yes")
 
+# ── Google OAuth 2.0 + Gmail API (credentials ingested from .env or Admin UI) ─
+GOOGLE_OAUTH_CLIENT_ID: str = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+GOOGLE_OAUTH_CLIENT_SECRET: str = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+
 # ── Authentication & 3-Tier RBAC ──────────────────────────────────────────────
 AUTH_SECRET_KEY: str = os.getenv("AUTH_SECRET_KEY", "")
 AUTH_TOKEN_TTL_HOURS: int = int(os.getenv("AUTH_TOKEN_TTL_HOURS", "168"))

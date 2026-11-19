@@ -104,6 +104,8 @@ class ProposalManager:
                         payload["recipient"] = payload.get("recipient") or draft_data.get("recipient")
                         payload["subject"] = payload.get("subject") or draft_data.get("subject")
                         payload["body_content"] = draft_data.get("body_content", "")
+                        payload["attachment_path"] = payload.get("attachment_path") or draft_data.get("attachment_path")
+                        payload["attachment_name"] = payload.get("attachment_name") or draft_data.get("attachment_name")
                         proposal["payload"] = payload
                 except Exception:
                     pass

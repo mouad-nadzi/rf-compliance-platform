@@ -128,57 +128,22 @@ def _build_email_body(
     alert_days_before: int,
     is_fallback: bool,
 ) -> Tuple[str, str]:
-    """Build consolidated subject and plain-text body for a recipient group."""
-    count = len(certs)
+    """Build concise subject and body matching the Stellantis renewal alert template."""
     if is_fallback:
-        subject = (
-            f"[RF Compliance] Unassigned Expiring Certificates Alert "
-            f"({count} certificate{'s' if count != 1 else ''} within {alert_days_before} days)"
-        )
-        greeting = "Hello Compliance Administration Team,"
-        intro = (
-            f"The following {count} RF homologation certificate(s) are expiring within "
-            f"{alert_days_before} days and currently have no assigned "
-            f"responsible engineer in the components directory:"
-        )
+        subject = "URGENT! RF Certification Renewal Alert (Unassigned Components)"
+        greeting = "Dear Compliance Administration Team,"
     else:
-        subject = (
-            f"[RF Compliance] Action Required: {count} Certificate"
-            f"{'s' if count != 1 else ''} Expiring Within {alert_days_before} Days"
-        )
-        greeting = f"Hello {recipient_name or 'Responsible Engineer'},"
-        intro = (
-            f"The following {count} RF homologation certificate(s) assigned to you "
-            f"are within the {alert_days_before}-day expiration alert window:"
-        )
+        subject = "URGENT! RF Certification Renewal Alert"
+        greeting = f"Dear {recipient_name or 'Responsible Engineer'},"
 
-    lines = [greeting, "", intro, ""]
-    for idx, cert in enumerate(certs, start=1):
-        days_rem = cert["days_remaining"]
-        status_label = (
-            f"EXPIRED {abs(days_rem)} day(s) ago"
-            if days_rem < 0
-            else ("EXPIRES TODAY" if days_rem == 0 else f"expires in {days_rem} day(s)")
-        )
-        priority_str = f" | Priority: {cert['market_priority']}" if cert.get("market_priority") else ""
-        lines.append(
-            f"{idx}. Component: {cert['component'] or 'N/A'} | Country: {cert['country'] or 'N/A'}{priority_str}"
-        )
-        lines.append(
-            f"   Cert #: {cert['certif_number'] or 'N/A'} | Authority: {cert['authority'] or 'N/A'} | "
-            f"Supplier: {cert['supplier'] or 'N/A'}"
-        )
-        lines.append(
-            f"   Expiration Date: {cert['exp_date'].isoformat() if isinstance(cert['exp_date'], date) else cert['exp_date']} "
-            f"({status_label})"
-        )
-        if cert.get("docinfo_link"):
-            lines.append(f"   DocInfo: {cert['docinfo_link']}")
-        lines.append("")
-
-    lines.append("Please initiate renewal or update the homologation status in the RF Compliance Platform.")
-    lines.append("")
-    lines.append("-- Stellantis RF Compliance Intelligence Platform")
+    lines = [
+        greeting,
+        "",
+        "Please find attached the list of certificates that need to be renewed as soon as possible.",
+        "Please ensure that the renewals are provided before the expiration dates.",
+        "",
+        "-- Stellantis RF Compliance Platform",
+    ]
     return subject, "\n".join(lines)
 
 
@@ -293,10 +258,18 @@ def run_expiry_alert_scan(
             recipient_name = next((c.get("responsible_name") for c in certs if c.get("responsible_name")), None)
             subject, body = _build_email_body(recipient_name, certs, window_days, is_fallback=is_fallback)
 
+            from core.agent.report_pdf import generate_renewal_alert_pdf
+            pdf_path = generate_renewal_alert_pdf(
+                certs=certs,
+                recipient_name=recipient_name or ("Compliance Administration Team" if is_fallback else "Responsible Engineer"),
+                alert_days_before=window_days,
+            )
+
             draft_res = email_tool.execute(
                 recipient=target_email,
                 subject=subject,
                 body_content=body,
+                attachment_path=pdf_path,
             )
             emails_drafted += 1
             draft_id = draft_res["draft_id"]
@@ -320,6 +293,8 @@ def run_expiry_alert_scan(
                         "recipient": target_email,
                         "subject": subject,
                         "body_content": body,
+                        "attachment_path": pdf_path,
+                        "attachment_name": os.path.basename(pdf_path),
                         "certificate_count": len(certs),
                         "alert_window_days": window_days,
                         "certificates": cert_summaries,

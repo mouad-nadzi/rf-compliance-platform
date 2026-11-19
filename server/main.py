@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Depends, Body, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
@@ -455,6 +455,7 @@ _PUBLIC_API_PATHS = {
     "/api/v1/auth/login",
     "/api/v1/auth/logout",
     "/api/v1/auth/accept-invite",
+    "/api/v1/auth/google/callback",
 }
 
 
@@ -3475,6 +3476,26 @@ def get_agent_draft(draft_id: str):
         return json.load(fh)
 
 
+@app.get("/api/v1/agent/drafts/{draft_id}/attachment")
+def get_agent_draft_attachment(draft_id: str):
+    """Serves the attached PDF renewal report for a staged email draft."""
+    from core.agent.tools import DRAFTS_DIR
+
+    draft_path = os.path.join(DRAFTS_DIR, f"{draft_id}.json")
+    if not os.path.exists(draft_path):
+        raise HTTPException(status_code=404, detail=f"Draft {draft_id} not found.")
+    with open(draft_path, encoding="utf-8") as fh:
+        draft = json.load(fh)
+    att_path = draft.get("attachment_path")
+    if not att_path or not os.path.exists(att_path):
+        raise HTTPException(status_code=404, detail="No attachment found for this email draft.")
+    return FileResponse(
+        att_path,
+        media_type="application/pdf",
+        filename=os.path.basename(att_path),
+    )
+
+
 @app.get("/api/v1/agent/autonomous/config")
 async def get_autonomous_config():
     """Returns the scheduled-ingestion configuration (on/off, interval, persistent URL)."""
@@ -3633,11 +3654,18 @@ def update_alerting_config_endpoint(payload: dict, request: Request, db: Session
     fallback_email = body.get("fallback_email")
     sender_email = body.get("sender_email")
     smtp_password = body.get("smtp_password")
+    google_client_id = body.get("google_client_id")
+    google_client_secret = body.get("google_client_secret")
 
-    if (sender_email is not None or smtp_password is not None) and user_role != "admin":
+    if (
+        sender_email is not None
+        or smtp_password is not None
+        or google_client_id is not None
+        or google_client_secret is not None
+    ) and user_role != "admin":
         raise HTTPException(
             status_code=403,
-            detail="Only the Administrator can configure the Sender Email or SMTP App Password.",
+            detail="Only the Administrator can configure Sender Email, SMTP, or Google OAuth credentials.",
         )
 
     if enabled is not None and not isinstance(enabled, bool):
@@ -3664,6 +3692,10 @@ def update_alerting_config_endpoint(payload: dict, request: Request, db: Session
         raise HTTPException(status_code=422, detail="'sender_email' must be a string.")
     if smtp_password is not None and not isinstance(smtp_password, str):
         raise HTTPException(status_code=422, detail="'smtp_password' must be a string.")
+    if google_client_id is not None and not isinstance(google_client_id, str):
+        raise HTTPException(status_code=422, detail="'google_client_id' must be a string.")
+    if google_client_secret is not None and not isinstance(google_client_secret, str):
+        raise HTTPException(status_code=422, detail="'google_client_secret' must be a string.")
 
     try:
         status = update_alerting_config(
@@ -3674,6 +3706,8 @@ def update_alerting_config_endpoint(payload: dict, request: Request, db: Session
             fallback_email=fallback_email,
             sender_email=sender_email,
             smtp_password=smtp_password,
+            google_client_id=google_client_id,
+            google_client_secret=google_client_secret,
         )
         matches = query_expiring_certificates(
             db,
@@ -3684,6 +3718,132 @@ def update_alerting_config_endpoint(payload: dict, request: Request, db: Session
     except Exception as exc:
         logger.error(f"Failed to update expiry alerting config: {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+_GOOGLE_OAUTH_STATES: Dict[str, Dict[str, Any]] = {}
+_GOOGLE_OAUTH_STATES_LOCK = threading.Lock()
+
+
+@app.get("/api/v1/agent/alerts/oauth/start")
+def start_google_oauth(request: Request):
+    """Administrator-only: generate the Google OAuth 2.0 consent URL for Gmail sending."""
+    import ipaddress
+    import secrets
+    from urllib.parse import urlparse
+    from core.agent.mailer import build_google_oauth_url
+
+    current_user = getattr(request.state, "user", None)
+    if str((current_user or {}).get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Only the Administrator can connect the Gmail sender account.")
+
+    parsed_base = urlparse(str(request.base_url).rstrip("/"))
+    host = parsed_base.hostname or ""
+    is_ipv4 = False
+    try:
+        is_ipv4 = isinstance(ipaddress.ip_address(host), ipaddress.IPv4Address) and host != "127.0.0.1"
+    except ValueError:
+        is_ipv4 = False
+
+    if is_ipv4:
+        port_part = f":{parsed_base.port}" if parsed_base.port else ""
+        oauth_origin = f"{parsed_base.scheme}://{host}.sslip.io{port_part}"
+    else:
+        oauth_origin = str(request.base_url).rstrip("/")
+
+    redirect_uri = f"{oauth_origin}/api/v1/auth/google/callback"
+    state = secrets.token_urlsafe(24)
+    now = time.time()
+    with _GOOGLE_OAUTH_STATES_LOCK:
+        expired = [k for k, v in _GOOGLE_OAUTH_STATES.items() if v.get("expires_at", 0) < now]
+        for k in expired:
+            _GOOGLE_OAUTH_STATES.pop(k, None)
+        _GOOGLE_OAUTH_STATES[state] = {
+            "redirect_uri": redirect_uri,
+            "user_id": current_user["id"],
+            "expires_at": now + 600,
+        }
+
+    try:
+        auth_url = build_google_oauth_url(redirect_uri=redirect_uri, state=state)
+        return {"auth_url": auth_url, "redirect_uri": redirect_uri}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/v1/auth/google/callback")
+def google_oauth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    """OAuth 2.0 redirect handler: exchanges authorization code and notifies opener window."""
+    import html
+    from core.agent.mailer import exchange_google_oauth_code
+
+    def _popup_html(ok: bool, msg: str, email: str = "") -> HTMLResponse:
+        safe_msg = html.escape(msg)
+        payload_json = json.dumps({"type": "google-oauth-connected", "ok": ok, "email": email, "message": msg})
+        return HTMLResponse(
+            content=f"""<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Google Gmail Connection</title></head>
+<body style="font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f8fafc;color:#0f172a;margin:0;">
+  <div style="background:#fff;border:1px solid #000;border-radius:10px;padding:1.5rem 2rem;max-width:420px;text-align:center;">
+    <h3 style="margin:0 0 0.5rem 0;color:{'#10b981' if ok else '#ef4444'};">{'Gmail Connected' if ok else 'Connection Failed'}</h3>
+    <p style="font-size:0.9rem;margin:0 0 1rem 0;">{safe_msg}</p>
+    <button onclick="window.close();window.location.href='/#/control';" style="padding:0.5rem 1rem;border:1px solid #000;border-radius:6px;background:#243881;color:#fff;cursor:pointer;">Return to Automations</button>
+  </div>
+  <script>
+    try {{
+      if (window.opener) {{
+        window.opener.postMessage({payload_json}, '*');
+        setTimeout(function() {{ window.close(); }}, 900);
+      }}
+    }} catch (e) {{}}
+  </script>
+</body>
+</html>"""
+        )
+
+    if error:
+        return _popup_html(False, f"Google authorization canceled or denied: {error}")
+    if not code or not state:
+        return _popup_html(False, "Missing authorization code or state parameter.")
+
+    with _GOOGLE_OAUTH_STATES_LOCK:
+        state_entry = _GOOGLE_OAUTH_STATES.pop(state, None)
+
+    if not state_entry or state_entry.get("expires_at", 0) < time.time():
+        return _popup_html(False, "OAuth session expired or invalid. Please click 'Connect Gmail via Google OAuth' again.")
+
+    try:
+        res = exchange_google_oauth_code(code=code, redirect_uri=state_entry["redirect_uri"])
+        return _popup_html(True, f"Successfully connected Gmail sender: {res['email']}", email=res["email"])
+    except Exception as exc:
+        logger.error(f"Google OAuth callback error: {exc}")
+        return _popup_html(False, str(exc))
+
+
+@app.post("/api/v1/agent/alerts/oauth/disconnect")
+def disconnect_google_oauth_endpoint(request: Request, db: Session = Depends(get_db)):
+    """Administrator-only: disconnect the connected Google OAuth Gmail sender account."""
+    from core.agent.alerting import query_expiring_certificates
+    from core.agent.mailer import disconnect_google_oauth
+    from core.agent.worker import get_alerting_status
+
+    current_user = getattr(request.state, "user", None)
+    if str((current_user or {}).get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Only the Administrator can disconnect the Gmail sender account.")
+
+    disconnect_google_oauth()
+    status = get_alerting_status()
+    try:
+        status["in_window_count"] = len(
+            query_expiring_certificates(db, alert_days_before=status["alert_days_before"])
+        )
+    except Exception:
+        status["in_window_count"] = 0
+    return status
 
 
 @app.post("/api/v1/agent/alerts/run")

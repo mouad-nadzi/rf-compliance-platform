@@ -252,6 +252,10 @@ class EmailDraftingTool(BaseTool):
                     "type": "string",
                     "description": "Body content of the drafted email.",
                 },
+                "attachment_path": {
+                    "type": "string",
+                    "description": "Optional local path to a PDF report attachment.",
+                },
             },
             "required": ["recipient", "subject", "body_content"],
         }
@@ -260,6 +264,7 @@ class EmailDraftingTool(BaseTool):
         recipient = str(kwargs.get("recipient") or "").strip()
         subject = str(kwargs.get("subject") or "").strip()
         body_content = str(kwargs.get("body_content") or "").strip()
+        attachment_path = str(kwargs.get("attachment_path") or "").strip() or None
 
         if not recipient:
             raise ValueError("EmailDraftingTool requires a non-empty 'recipient'.")
@@ -272,6 +277,8 @@ class EmailDraftingTool(BaseTool):
             "recipient": recipient,
             "subject": subject,
             "body_content": body_content,
+            "attachment_path": attachment_path,
+            "attachment_name": os.path.basename(attachment_path) if attachment_path else None,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "status": "draft",
         }

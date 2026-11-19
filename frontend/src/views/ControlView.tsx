@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api';
 import { useAuth } from '../context/AuthContext';
-import { Play, Loader, ShieldCheck, Clock, Zap, Plus, Minus, BellRing, Mail, Lock } from 'lucide-react';
+import { Play, Loader, ShieldCheck, Clock, Zap, Plus, Minus, BellRing, Mail, Lock, Copy, Check, Unlink, ChevronDown, ChevronUp } from 'lucide-react';
 
 type Config = {
   enabled: boolean;
@@ -18,6 +18,10 @@ type AlertingConfig = {
   fallback_email: string;
   sender_email: string;
   has_smtp_password: boolean;
+  google_client_id: string;
+  has_google_client_secret: boolean;
+  google_connected: boolean;
+  google_connected_email: string;
   in_window_count: number;
 };
 
@@ -67,11 +71,17 @@ const ControlView = () => {
   const [fallbackEmailInput, setFallbackEmailInput] = useState('');
   const [senderEmailInput, setSenderEmailInput] = useState('');
   const [smtpPasswordInput, setSmtpPasswordInput] = useState('');
+  const [googleClientIdInput, setGoogleClientIdInput] = useState('');
+  const [googleClientSecretInput, setGoogleClientSecretInput] = useState('');
+  const [showOAuthSetup, setShowOAuthSetup] = useState(false);
+  const [showSmtpFallback, setShowSmtpFallback] = useState(false);
+  const [copiedRedirectUri, setCopiedRedirectUri] = useState(false);
   const [loading, setLoading] = useState(true);
   const [savingConfig, setSavingConfig] = useState(false);
   const [savingAlertConfig, setSavingAlertConfig] = useState(false);
   const [runningScraper, setRunningScraper] = useState(false);
   const [runningAlertScan, setRunningAlertScan] = useState(false);
+  const [forceRescan, setForceRescan] = useState(false);
   const [runStatus, setRunStatus] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [alertStatus, setAlertStatus] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -97,10 +107,18 @@ const ControlView = () => {
           fallback_email: alertRes.fallback_email ?? '',
           sender_email: alertRes.sender_email ?? '',
           has_smtp_password: Boolean(alertRes.has_smtp_password),
+          google_client_id: alertRes.google_client_id ?? '',
+          has_google_client_secret: Boolean(alertRes.has_google_client_secret),
+          google_connected: Boolean(alertRes.google_connected),
+          google_connected_email: alertRes.google_connected_email ?? '',
           in_window_count: alertRes.in_window_count ?? 0,
         });
         setFallbackEmailInput(alertRes.fallback_email ?? '');
         setSenderEmailInput(alertRes.sender_email ?? '');
+        setGoogleClientIdInput(alertRes.google_client_id ?? '');
+        if (!alertRes.google_client_id && !alertRes.google_connected) {
+          setShowOAuthSetup(true);
+        }
       }
     } catch (err) {
       console.error("Error fetching control data:", err);
@@ -112,8 +130,28 @@ const ControlView = () => {
   useEffect(() => {
     fetchData();
     const handleRef = () => fetchData();
+    const handleOAuthMsg = (evt: MessageEvent) => {
+      if (evt?.data?.type === 'google-oauth-connected') {
+        if (evt.data.ok) {
+          setAlertStatus({
+            type: 'success',
+            text: `Connected Gmail sender via Google OAuth: ${evt.data.email}`
+          });
+          fetchData();
+        } else {
+          setAlertStatus({
+            type: 'error',
+            text: evt.data.message || 'Google OAuth connection failed.'
+          });
+        }
+      }
+    };
     window.addEventListener('refresh-proposals', handleRef);
-    return () => window.removeEventListener('refresh-proposals', handleRef);
+    window.addEventListener('message', handleOAuthMsg);
+    return () => {
+      window.removeEventListener('refresh-proposals', handleRef);
+      window.removeEventListener('message', handleOAuthMsg);
+    };
   }, []);
 
   const updateConfig = async (newCfg: Partial<Config>) => {
@@ -131,7 +169,13 @@ const ControlView = () => {
     }
   };
 
-  const updateAlertConfig = async (newCfg: Partial<AlertingConfig> & { smtp_password?: string }) => {
+  const updateAlertConfig = async (
+    newCfg: Partial<AlertingConfig> & {
+      smtp_password?: string;
+      google_client_id?: string;
+      google_client_secret?: string;
+    }
+  ) => {
     if (!alertConfig || isReadOnly) return;
     const updated = { ...alertConfig, ...newCfg };
     setAlertConfig(updated);
@@ -146,10 +190,17 @@ const ControlView = () => {
         fallback_email: res.fallback_email ?? updated.fallback_email,
         sender_email: res.sender_email ?? updated.sender_email,
         has_smtp_password: Boolean(res.has_smtp_password),
+        google_client_id: res.google_client_id ?? updated.google_client_id,
+        has_google_client_secret: Boolean(res.has_google_client_secret),
+        google_connected: Boolean(res.google_connected),
+        google_connected_email: res.google_connected_email ?? updated.google_connected_email,
         in_window_count: res.in_window_count ?? updated.in_window_count,
       });
       if (newCfg.smtp_password) {
         setSmtpPasswordInput('');
+      }
+      if (newCfg.google_client_secret) {
+        setGoogleClientSecretInput('');
       }
     } catch (err: any) {
       console.error(err);
@@ -160,11 +211,47 @@ const ControlView = () => {
     }
   };
 
+  const handleConnectGoogleOAuth = async () => {
+    setAlertStatus(null);
+    try {
+      const { auth_url } = await api.startGoogleOAuth();
+      const width = 520;
+      const height = 640;
+      const left = Math.max(0, window.screenX + (window.outerWidth - width) / 2);
+      const top = Math.max(0, window.screenY + (window.outerHeight - height) / 2);
+      const popup = window.open(
+        auth_url,
+        'google_oauth_connect',
+        `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+      );
+      if (!popup) {
+        window.location.href = auth_url;
+      }
+    } catch (err: any) {
+      setShowOAuthSetup(true);
+      setAlertStatus({ type: 'error', text: err?.message || 'Could not start Google OAuth flow.' });
+    }
+  };
+
+  const handleDisconnectGoogleOAuth = async () => {
+    setAlertStatus(null);
+    setSavingAlertConfig(true);
+    try {
+      await api.disconnectGoogleOAuth();
+      await fetchData();
+      setAlertStatus({ type: 'success', text: 'Disconnected Gmail sender account.' });
+    } catch (err: any) {
+      setAlertStatus({ type: 'error', text: err?.message || 'Failed to disconnect Gmail.' });
+    } finally {
+      setSavingAlertConfig(false);
+    }
+  };
+
   const handleRunAlertScanNow = async () => {
     setRunningAlertScan(true);
     setAlertStatus(null);
     try {
-      const res = await api.runExpiryAlertScan(false);
+      const res = await api.runExpiryAlertScan(forceRescan);
       setAlertStatus({
         type: 'success',
         text: `Scan complete (${res.alert_window_days}d window): ${res.total_in_window} in window, ${res.new_alerts_created} new alert(s), ${res.proposals_staged} email proposal(s) staged, ${res.already_alerted_skipped} already notified.`
@@ -644,92 +731,240 @@ const ControlView = () => {
 
             </div>
 
-            {/* Admin-Only Sender Email & SMTP App Password Row */}
-            <div className="glass-panel" style={{ padding: '1rem 1.25rem', borderRadius: '10px', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {/* Admin-Only Sender Email (Google OAuth 2.0 + Gmail API & Optional SMTP Fallback) */}
+            <div className="glass-panel" style={{ padding: '1rem 1.25rem', borderRadius: '10px', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
                   <Lock size={15} color="var(--brand-blue)" />
-                  <span style={{ fontSize: '0.86rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
-                    Sender Email & SMTP Credentials
+                  <span style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                    Sender Email (Gmail OAuth 2.0 API)
                   </span>
                 </div>
-                <span className="badge badge-blue" style={{ fontSize: '0.7rem', padding: '0.15rem 0.5rem' }}>
-                  Administrator Only
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', flexWrap: 'wrap' }}>
+                  <span className={`badge ${alertConfig.google_connected ? 'badge-green' : 'badge-red'}`} style={{ fontSize: '0.7rem', padding: '0.15rem 0.5rem' }}>
+                    {alertConfig.google_connected ? `Connected: ${alertConfig.google_connected_email}` : 'Not Connected'}
+                  </span>
+                  <span className="badge badge-blue" style={{ fontSize: '0.7rem', padding: '0.15rem 0.5rem' }}>
+                    Administrator Only
+                  </span>
+                </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '0.75rem', alignItems: 'center' }}>
-                <input
-                  type="email"
-                  value={senderEmailInput}
-                  disabled={!isAdmin || savingAlertConfig}
-                  placeholder={isAdmin ? 'sender@gmail.com' : 'Configured by Administrator'}
-                  onChange={(e) => setSenderEmailInput(e.target.value)}
-                  className="input"
-                  style={{
-                    padding: '0.4rem 0.6rem',
-                    fontSize: '0.85rem',
-                    backgroundColor: 'transparent',
-                    border: '1px solid #000000',
-                    color: 'var(--text-primary)',
-                    opacity: isAdmin ? 1 : 0.65
-                  }}
-                />
-                <input
-                  type="password"
-                  value={smtpPasswordInput}
-                  disabled={!isAdmin || savingAlertConfig}
-                  placeholder={alertConfig.has_smtp_password ? '•••••••••••• (App Password saved)' : 'Gmail / SMTP App Password'}
-                  onChange={(e) => setSmtpPasswordInput(e.target.value)}
-                  className="input"
-                  style={{
-                    padding: '0.4rem 0.6rem',
-                    fontSize: '0.85rem',
-                    backgroundColor: 'transparent',
-                    border: '1px solid #000000',
-                    color: 'var(--text-primary)',
-                    opacity: isAdmin ? 1 : 0.65
-                  }}
-                />
-                {isAdmin && (
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    disabled={savingAlertConfig}
-                    onClick={() => {
-                      const payload: { sender_email?: string; smtp_password?: string } = {
-                        sender_email: senderEmailInput,
-                      };
-                      if (smtpPasswordInput.trim()) {
-                        payload.smtp_password = smtpPasswordInput.trim();
-                      }
-                      updateAlertConfig(payload).then(() => {
-                        setAlertStatus({ type: 'success', text: 'Sender email credentials saved.' });
-                      });
-                    }}
-                    style={{
-                      border: '1px solid #000000',
-                      fontSize: '0.82rem',
-                      fontWeight: 600,
-                      justifyContent: 'center'
-                    }}
-                  >
-                    Save Sender Credentials
-                  </button>
-                )}
-              </div>
+              {isAdmin ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={savingAlertConfig}
+                      onClick={handleConnectGoogleOAuth}
+                      style={{
+                        border: '1px solid #000000',
+                        fontSize: '0.84rem',
+                        fontWeight: 600,
+                        padding: '0.5rem 0.95rem'
+                      }}
+                    >
+                      <Mail size={15} />
+                      {alertConfig.google_connected ? 'Switch / Reconnect Gmail Account' : 'Connect Gmail via Google OAuth'}
+                    </button>
+
+                    {alertConfig.google_connected && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        disabled={savingAlertConfig}
+                        onClick={handleDisconnectGoogleOAuth}
+                        style={{
+                          border: '1px solid #ef4444',
+                          color: '#ef4444',
+                          fontSize: '0.82rem',
+                          fontWeight: 600,
+                          padding: '0.5rem 0.85rem'
+                        }}
+                      >
+                        <Unlink size={14} /> Disconnect
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => setShowOAuthSetup((v) => !v)}
+                      style={{
+                        border: '1px solid #000000',
+                        fontSize: '0.78rem',
+                        padding: '0.45rem 0.75rem',
+                        marginLeft: 'auto'
+                      }}
+                    >
+                      OAuth Client Setup {showOAuthSetup ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                  </div>
+
+                  {showOAuthSetup && (
+                    <div style={{ padding: '0.85rem', borderRadius: '8px', backgroundColor: 'rgba(0, 0, 0, 0.04)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                      <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                        In Google Cloud Console (APIs & Services -&gt; Credentials -&gt; OAuth 2.0 Client ID -&gt; Web application), enable the <strong>Gmail API</strong> and add this Authorized Redirect URI:
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                        {(() => {
+                          const host = window.location.hostname;
+                          const isIpv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) && host !== '127.0.0.1';
+                          const portPart = window.location.port ? `:${window.location.port}` : '';
+                          const oauthOrigin = isIpv4
+                            ? `${window.location.protocol}//${host}.sslip.io${portPart}`
+                            : window.location.origin;
+                          const redirectUri = `${oauthOrigin}/api/v1/auth/google/callback`;
+                          return (
+                            <>
+                              <input
+                                type="text"
+                                readOnly
+                                value={redirectUri}
+                                className="input"
+                                style={{ flex: 1, fontSize: '0.78rem', border: '1px solid #000000', backgroundColor: 'transparent', color: 'var(--text-primary)' }}
+                              />
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                style={{ border: '1px solid #000000', fontSize: '0.76rem', padding: '0.35rem 0.65rem' }}
+                                onClick={() => {
+                                  navigator.clipboard?.writeText(redirectUri);
+                                  setCopiedRedirectUri(true);
+                                  setTimeout(() => setCopiedRedirectUri(false), 2000);
+                                }}
+                              >
+                                {copiedRedirectUri ? <Check size={13} /> : <Copy size={13} />}
+                                {copiedRedirectUri ? 'Copied' : 'Copy URI'}
+                              </button>
+                            </>
+                          );
+                        })()}
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.65rem', alignItems: 'center' }}>
+                        <input
+                          type="text"
+                          value={googleClientIdInput}
+                          placeholder="Google OAuth Client ID (...apps.googleusercontent.com)"
+                          onChange={(e) => setGoogleClientIdInput(e.target.value)}
+                          className="input"
+                          style={{ padding: '0.4rem 0.6rem', fontSize: '0.82rem', backgroundColor: 'transparent', border: '1px solid #000000', color: 'var(--text-primary)' }}
+                        />
+                        <input
+                          type="password"
+                          value={googleClientSecretInput}
+                          placeholder={alertConfig.has_google_client_secret ? '•••••••••••• (Client Secret saved)' : 'Google OAuth Client Secret'}
+                          onChange={(e) => setGoogleClientSecretInput(e.target.value)}
+                          className="input"
+                          style={{ padding: '0.4rem 0.6rem', fontSize: '0.82rem', backgroundColor: 'transparent', border: '1px solid #000000', color: 'var(--text-primary)' }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          disabled={savingAlertConfig}
+                          onClick={() => {
+                            const payload: { google_client_id?: string; google_client_secret?: string } = {
+                              google_client_id: googleClientIdInput,
+                            };
+                            if (googleClientSecretInput.trim()) {
+                              payload.google_client_secret = googleClientSecretInput.trim();
+                            }
+                            updateAlertConfig(payload).then(() => {
+                              setAlertStatus({ type: 'success', text: 'Google OAuth Client credentials saved. You can now click "Connect Gmail via Google OAuth".' });
+                            });
+                          }}
+                          style={{ border: '1px solid #000000', fontSize: '0.8rem', fontWeight: 600, justifyContent: 'center' }}
+                        >
+                          Save OAuth Credentials
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      onClick={() => setShowSmtpFallback((v) => !v)}
+                      style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', fontSize: '0.74rem', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+                    >
+                      {showSmtpFallback ? 'Hide SMTP Fallback' : 'Or configure SMTP App Password fallback'}
+                    </button>
+                  </div>
+
+                  {showSmtpFallback && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.65rem', alignItems: 'center' }}>
+                      <input
+                        type="email"
+                        value={senderEmailInput}
+                        disabled={savingAlertConfig}
+                        placeholder="sender@gmail.com"
+                        onChange={(e) => setSenderEmailInput(e.target.value)}
+                        className="input"
+                        style={{ padding: '0.4rem 0.6rem', fontSize: '0.84rem', backgroundColor: 'transparent', border: '1px solid #000000', color: 'var(--text-primary)' }}
+                      />
+                      <input
+                        type="password"
+                        value={smtpPasswordInput}
+                        disabled={savingAlertConfig}
+                        placeholder={alertConfig.has_smtp_password ? '•••••••••••• (App Password saved)' : '16-letter SMTP App Password'}
+                        onChange={(e) => setSmtpPasswordInput(e.target.value)}
+                        className="input"
+                        style={{ padding: '0.4rem 0.6rem', fontSize: '0.84rem', backgroundColor: 'transparent', border: '1px solid #000000', color: 'var(--text-primary)' }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        disabled={savingAlertConfig}
+                        onClick={() => {
+                          const payload: { sender_email?: string; smtp_password?: string } = {
+                            sender_email: senderEmailInput,
+                          };
+                          if (smtpPasswordInput.trim()) {
+                            payload.smtp_password = smtpPasswordInput.trim();
+                          }
+                          updateAlertConfig(payload).then(() => {
+                            setAlertStatus({ type: 'success', text: 'SMTP fallback credentials saved.' });
+                          });
+                        }}
+                        style={{ border: '1px solid #000000', fontSize: '0.8rem', fontWeight: 600, justifyContent: 'center' }}
+                      >
+                        Save SMTP Fallback
+                      </button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                  Active Sender: <strong>{alertConfig.sender_email || 'Not configured yet'}</strong> (managed exclusively by the Administrator).
+                </div>
+              )}
             </div>
 
-            {/* Run Alert Scan Button */}
-            <button
-              className="btn btn-primary"
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', padding: '0.65rem 1.25rem', fontSize: '0.88rem', fontWeight: 600, border: '1px solid #000000', opacity: isReadOnly ? 0.55 : 1 }}
-              onClick={handleRunAlertScanNow}
-              disabled={runningAlertScan || isReadOnly}
-            >
-              {runningAlertScan ? <Loader className="spinner" size={16} /> : <Play size={16} />}
-              {runningAlertScan ? 'Scanning Certificates...' : 'Run Alert Scan Now'}
-            </button>
+            {/* Run Alert Scan Row */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+              <button
+                className="btn btn-primary"
+                style={{ flex: 1, minWidth: '200px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', padding: '0.65rem 1.25rem', fontSize: '0.88rem', fontWeight: 600, border: '1px solid #000000', opacity: isReadOnly ? 0.55 : 1 }}
+                onClick={handleRunAlertScanNow}
+                disabled={runningAlertScan || isReadOnly}
+              >
+                {runningAlertScan ? <Loader className="spinner" size={16} /> : <Play size={16} />}
+                {runningAlertScan ? 'Scanning Certificates...' : 'Run Alert Scan Now'}
+              </button>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.82rem', color: 'var(--text-secondary)', cursor: isReadOnly ? 'not-allowed' : 'pointer', userSelect: 'none' }}>
+                <input
+                  type="checkbox"
+                  checked={forceRescan}
+                  disabled={isReadOnly || runningAlertScan}
+                  onChange={(e) => setForceRescan(e.target.checked)}
+                />
+                <span>Force Rescan (re-alert already notified)</span>
+              </label>
+            </div>
 
             {alertStatus && (
               <div className={`badge ${alertStatus.type === 'success' ? 'badge-green' : 'badge-red'}`} style={{ padding: '0.5rem 0.75rem', fontSize: '0.8rem', textAlign: 'center' }}>

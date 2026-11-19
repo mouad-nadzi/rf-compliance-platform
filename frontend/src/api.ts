@@ -195,6 +195,26 @@ export const api = {
     return res.json();
   },
 
+  startGoogleOAuth: async (): Promise<{ auth_url: string; redirect_uri: string }> => {
+    const res = await fetch(`${API_BASE}/agent/alerts/oauth/start`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.detail || 'Failed to start Google OAuth flow');
+    }
+    return res.json();
+  },
+
+  disconnectGoogleOAuth: async (): Promise<any> => {
+    const res = await fetch(`${API_BASE}/agent/alerts/oauth/disconnect`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.detail || 'Failed to disconnect Google OAuth');
+    }
+    return res.json();
+  },
+
   // URL Ingestion
   ingestUrl: async (url: string): Promise<any> => {
     const res = await fetch(`${API_BASE}/ingest/url`, {

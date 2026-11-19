@@ -668,6 +668,8 @@ const Sidebar = ({
               const recipient = p.payload?.recipient;
               const subject = p.payload?.subject;
               const bodyContent = p.payload?.body_content;
+              const draftId = p.payload?.draft_id;
+              const attachmentName = p.payload?.attachment_name;
               const summaryText = p.reasoning || p.sql_preview || p.payload?.description || p.type;
               const isProcessing = processingProposalId === propId;
 
@@ -729,6 +731,32 @@ const Sidebar = ({
                             >
                               {bodyContent}
                             </div>
+                          )}
+                          {attachmentName && draftId && (
+                            <a
+                              href={`/api/v1/agent/drafts/${encodeURIComponent(draftId)}/attachment`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.35rem',
+                                padding: '0.3rem 0.5rem',
+                                borderRadius: '6px',
+                                backgroundColor: 'rgba(59, 130, 246, 0.16)',
+                                border: '1px solid rgba(59, 130, 246, 0.45)',
+                                color: '#93c5fd',
+                                fontSize: '0.68rem',
+                                fontWeight: 600,
+                                textDecoration: 'none',
+                                overflowWrap: 'anywhere',
+                                wordBreak: 'break-word'
+                              }}
+                              title="Open attached PDF renewal report"
+                            >
+                              <FileText size={12} style={{ flexShrink: 0 }} />
+                              <span>{attachmentName}</span>
+                            </a>
                           )}
                         </div>
                       ) : (

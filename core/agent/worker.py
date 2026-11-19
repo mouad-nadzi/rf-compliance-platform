@@ -90,6 +90,12 @@ def _load_alerting_config() -> Dict[str, Any]:
             "fallback_email": str(data.get("fallback_email", EXPIRY_ALERT_FALLBACK_EMAIL) or "").strip(),
             "sender_email": str(data.get("sender_email", "") or "").strip(),
             "smtp_password": str(data.get("smtp_password", "") or "").strip(),
+            "google_client_id": str(data.get("google_client_id", "") or "").strip(),
+            "google_client_secret": str(data.get("google_client_secret", "") or "").strip(),
+            "google_refresh_token": str(data.get("google_refresh_token", "") or "").strip(),
+            "google_access_token": str(data.get("google_access_token", "") or "").strip(),
+            "google_token_expires_at": float(data.get("google_token_expires_at", 0) or 0),
+            "google_connected_email": str(data.get("google_connected_email", "") or "").strip(),
         }
     except Exception:
         return {
@@ -100,6 +106,12 @@ def _load_alerting_config() -> Dict[str, Any]:
             "fallback_email": str(EXPIRY_ALERT_FALLBACK_EMAIL or "").strip(),
             "sender_email": "",
             "smtp_password": "",
+            "google_client_id": "",
+            "google_client_secret": "",
+            "google_refresh_token": "",
+            "google_access_token": "",
+            "google_token_expires_at": 0.0,
+            "google_connected_email": "",
         }
 
 
@@ -531,9 +543,18 @@ def get_alerting_status() -> Dict[str, Any]:
     except Exception:
         pass
 
-    from server.config import SMTP_USER, SMTP_PASSWORD
+    from server.config import (
+        GOOGLE_OAUTH_CLIENT_ID,
+        GOOGLE_OAUTH_CLIENT_SECRET,
+        SMTP_PASSWORD,
+        SMTP_USER,
+    )
 
-    effective_sender = cfg.get("sender_email") or str(SMTP_USER or "").strip()
+    effective_client_id = cfg.get("google_client_id") or str(GOOGLE_OAUTH_CLIENT_ID or "").strip()
+    has_client_secret = bool(cfg.get("google_client_secret") or str(GOOGLE_OAUTH_CLIENT_SECRET or "").strip())
+    google_connected_email = cfg.get("google_connected_email") or ""
+    google_connected = bool(cfg.get("google_refresh_token") and effective_client_id and has_client_secret)
+    effective_sender = google_connected_email or cfg.get("sender_email") or str(SMTP_USER or "").strip()
     has_pwd = bool(cfg.get("smtp_password") or str(SMTP_PASSWORD or "").strip())
 
     auto_config = AutomationConfig(
@@ -552,6 +573,10 @@ def get_alerting_status() -> Dict[str, Any]:
             "fallback_email": cfg.get("fallback_email", ""),
             "sender_email": effective_sender,
             "has_smtp_password": has_pwd,
+            "google_client_id": effective_client_id,
+            "has_google_client_secret": has_client_secret,
+            "google_connected": google_connected,
+            "google_connected_email": google_connected_email,
         },
     )
 
@@ -561,6 +586,10 @@ def get_alerting_status() -> Dict[str, Any]:
     result["fallback_email"] = cfg.get("fallback_email", "")
     result["sender_email"] = effective_sender
     result["has_smtp_password"] = has_pwd
+    result["google_client_id"] = effective_client_id
+    result["has_google_client_secret"] = has_client_secret
+    result["google_connected"] = google_connected
+    result["google_connected_email"] = google_connected_email
     return result
 
 
@@ -572,6 +601,8 @@ def update_alerting_config(
     fallback_email: Optional[str] = None,
     sender_email: Optional[str] = None,
     smtp_password: Optional[str] = None,
+    google_client_id: Optional[str] = None,
+    google_client_secret: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Persist and apply an expiry alerting configuration change."""
     cfg = _load_alerting_config()
@@ -588,10 +619,15 @@ def update_alerting_config(
     if sender_email is not None:
         cfg["sender_email"] = str(sender_email or "").strip()
     if smtp_password is not None:
-        # Empty string leaves existing password untouched unless explicitly cleared; non-empty updates it
         cleaned_pwd = str(smtp_password).strip()
         if cleaned_pwd:
             cfg["smtp_password"] = cleaned_pwd
+    if google_client_id is not None:
+        cfg["google_client_id"] = str(google_client_id or "").strip()
+    if google_client_secret is not None:
+        cleaned_sec = str(google_client_secret).strip()
+        if cleaned_sec:
+            cfg["google_client_secret"] = cleaned_sec
     _save_alerting_config(cfg)
     _apply_alerting_config(cfg)
     return get_alerting_status()

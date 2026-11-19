@@ -208,7 +208,9 @@ class TestAlertingSystem(unittest.TestCase):
         from unittest.mock import MagicMock
         from core.agent.mailer import dispatch_email_draft, send_email_via_smtp
 
-        with patch("server.config.SMTP_USER", ""), patch("server.config.SMTP_PASSWORD", ""):
+        with patch("core.agent.worker._load_alerting_config", return_value={}), patch(
+            "server.config.SMTP_USER", ""
+        ), patch("server.config.SMTP_PASSWORD", ""):
             with self.assertRaises(RuntimeError):
                 send_email_via_smtp("user@example.com", "Test", "Body")
 
@@ -227,13 +229,15 @@ class TestAlertingSystem(unittest.TestCase):
                 )
 
             mock_smtp = MagicMock()
-            with patch("server.config.SMTP_HOST", "smtp.gmail.com"), patch(
-                "server.config.SMTP_PORT", 587
-            ), patch("server.config.SMTP_USER", "sender@gmail.com"), patch(
-                "server.config.SMTP_PASSWORD", "app-pass"
-            ), patch("server.config.SMTP_FROM", "sender@gmail.com"), patch(
-                "server.config.SMTP_USE_TLS", True
-            ), patch("core.agent.mailer.smtplib.SMTP", return_value=mock_smtp):
+            with patch("core.agent.worker._load_alerting_config", return_value={}), patch(
+                "server.config.SMTP_HOST", "smtp.gmail.com"
+            ), patch("server.config.SMTP_PORT", 587), patch(
+                "server.config.SMTP_USER", "sender@gmail.com"
+            ), patch("server.config.SMTP_PASSWORD", "app-pass"), patch(
+                "server.config.SMTP_FROM", "sender@gmail.com"
+            ), patch("server.config.SMTP_USE_TLS", True), patch(
+                "core.agent.mailer.smtplib.SMTP", return_value=mock_smtp
+            ):
                 res = dispatch_email_draft(draft_path)
                 self.assertEqual(res["recipient"], "mouadnadzi3@gmail.com")
                 srv = mock_smtp.__enter__.return_value
@@ -245,6 +249,120 @@ class TestAlertingSystem(unittest.TestCase):
                 updated = json.load(fh)
             self.assertEqual(updated["status"], "dispatched")
             self.assertIn("dispatched_at", updated)
+
+    def test_google_oauth_gmail_api_flow(self):
+        from unittest.mock import MagicMock
+        from core.agent.mailer import (
+            build_google_oauth_url,
+            disconnect_google_oauth,
+            exchange_google_oauth_code,
+            send_email_via_smtp,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = os.path.join(tmpdir, "alerting_config.json")
+            with patch.object(worker, "ALERTING_CONFIG_FILE", cfg_path), patch.object(
+                worker, "_apply_alerting_config"
+            ):
+                worker.update_alerting_config(
+                    google_client_id="client-123.apps.googleusercontent.com",
+                    google_client_secret="secret-xyz",
+                )
+                auth_url = build_google_oauth_url(
+                    redirect_uri="http://localhost:8000/api/v1/auth/google/callback",
+                    state="state-abc",
+                )
+                self.assertIn("accounts.google.com/o/oauth2/v2/auth", auth_url)
+                self.assertIn("gmail.send", auth_url)
+
+                token_resp = MagicMock(ok=True, status_code=200)
+                token_resp.json.return_value = {
+                    "access_token": "ya29.test_access",
+                    "refresh_token": "1//test_refresh",
+                    "expires_in": 3600,
+                }
+                userinfo_resp = MagicMock(ok=True, status_code=200)
+                userinfo_resp.json.return_value = {"email": "mouad.n047@gmail.com"}
+                gmail_send_resp = MagicMock(ok=True, status_code=200)
+
+                with patch("core.agent.mailer.requests.post", return_value=token_resp), patch(
+                    "core.agent.mailer.requests.get", return_value=userinfo_resp
+                ):
+                    ex = exchange_google_oauth_code(
+                        "code-123", "http://localhost:8000/api/v1/auth/google/callback"
+                    )
+                    self.assertEqual(ex["email"], "mouad.n047@gmail.com")
+                    self.assertTrue(ex["has_refresh_token"])
+
+                with patch("core.agent.mailer.requests.post", return_value=gmail_send_resp) as post_mock:
+                    send_res = send_email_via_smtp(
+                        "mouadnadzi3@gmail.com", "OAuth Test", "Body via Gmail API"
+                    )
+                    self.assertEqual(send_res["transport"], "gmail_oauth_api")
+                    self.assertEqual(send_res["from"], "mouad.n047@gmail.com")
+                    post_mock.assert_called_once()
+                    self.assertIn("gmail.googleapis.com", post_mock.call_args[0][0])
+
+                disconnect_google_oauth()
+                status = worker.get_alerting_status()
+                self.assertFalse(status["google_connected"])
+
+    def test_renewal_pdf_report_generation_and_attachment(self):
+        import base64
+        from unittest.mock import MagicMock
+        from core.agent.mailer import send_email_via_gmail_api
+        from core.agent.report_pdf import generate_renewal_alert_pdf
+
+        sample_certs = [
+            {
+                "component": "Fictive Antenna A",
+                "country": "France",
+                "certif_number": "FICT-001",
+                "authority": "ARCEP",
+                "supplier": "Valeo",
+                "exp_date": date.today() + timedelta(days=10),
+                "days_remaining": 10,
+            },
+            {
+                "component": "Fictive Antenna B",
+                "country": "Brazil",
+                "certif_number": "FICT-002",
+                "authority": "ANATEL",
+                "supplier": "Bosch",
+                "exp_date": date.today() + timedelta(days=25),
+                "days_remaining": 25,
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_path = os.path.join(tmpdir, "Renewal_Report_Test.pdf")
+            out_path = generate_renewal_alert_pdf(
+                certs=sample_certs,
+                recipient_name="Mouad Nadzi",
+                alert_days_before=30,
+                output_path=pdf_path,
+            )
+            self.assertTrue(os.path.exists(out_path))
+            with open(out_path, "rb") as fh:
+                header = fh.read(5)
+            self.assertEqual(header, b"%PDF-")
+
+            gmail_resp = MagicMock(ok=True, status_code=200)
+            with patch(
+                "core.agent.mailer._get_valid_gmail_access_token",
+                return_value=("ya29.token", "mouad.n047@gmail.com"),
+            ), patch("core.agent.mailer.requests.post", return_value=gmail_resp) as post_mock:
+                res = send_email_via_gmail_api(
+                    recipient="mouadnadzi3@gmail.com",
+                    subject="URGENT! RF Certification Renewal Alert",
+                    body_content="Dear Mouad Nadzi,\n\nPlease find attached...",
+                    attachment_path=out_path,
+                )
+                self.assertEqual(res["attachment"], "Renewal_Report_Test.pdf")
+                raw_b64 = post_mock.call_args.kwargs["json"]["raw"]
+                raw_mime = base64.urlsafe_b64decode(raw_b64.encode("ascii"))
+                self.assertIn(b"application/pdf", raw_mime)
+                self.assertIn(b"Renewal_Report_Test.pdf", raw_mime)
 
 
 if __name__ == "__main__":
